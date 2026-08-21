@@ -52,6 +52,23 @@ try {
     } else {
       process.stdout.write(`cross-store\tOK\t${comparison.structuredContent.succeeded} stores queried in parallel\n`);
     }
+
+    const reportChecks = [
+      ["portfolio-snapshot", "shopify_portfolio_snapshot", { stores: comparisonStores }],
+      ["inventory-report", "shopify_compare_inventory", { stores: comparisonStores.slice(0, 2), skus: ["__codex_missing_sku__"] }],
+      ["unfulfilled-orders", "shopify_list_unfulfilled_orders", { stores: comparisonStores.slice(0, 2), days: 1, first: 1 }],
+      ["catalog-report", "shopify_compare_catalog", { stores: comparisonStores.slice(0, 2), handles: ["codex-missing-product"] }]
+    ];
+    for (const [label, name, argumentsValue] of reportChecks) {
+      const report = await client.callTool({ name, arguments: argumentsValue });
+      if (report.isError || !report.structuredContent || report.structuredContent.failed > 0) {
+        failed = true;
+        const message = report.content?.find((item) => item.type === "text")?.text ?? "Unknown error";
+        process.stdout.write(`${label}\tFAIL\t${message}\n`);
+      } else {
+        process.stdout.write(`${label}\tOK\t${report.structuredContent.succeeded} stores\n`);
+      }
+    }
   }
 } finally {
   await client.close();

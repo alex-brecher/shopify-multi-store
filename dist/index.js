@@ -3,13 +3,16 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod/v4";
 import { findStore, loadStores } from "./config.js";
+import { compareCatalog, compareInventory, listUnfulfilledOrders, portfolioSnapshot } from "./reports.js";
 import { adminGraphql, requireMutation, requireQuery } from "./shopify.js";
 const server = new McpServer({
     name: "shopify-multi-store-mcp-server",
-    version: "1.1.0"
+    version: "1.2.0"
 });
 const StoreAliasSchema = z.string().min(1).max(64).describe("Configured store alias, such as main-store or wholesale-store");
 const StoreAliasesSchema = z.array(StoreAliasSchema).min(1).max(10).describe("One to ten configured store aliases");
+const SkuSchema = z.string().trim().min(1).max(255);
+const HandleSchema = z.string().trim().min(1).max(255).regex(/^[a-z0-9][a-z0-9-]*$/i);
 const VariablesSchema = z.record(z.string(), z.unknown()).default({}).describe("GraphQL variables as a JSON object");
 const MULTI_STORE_CHARACTER_LIMIT = 100_000;
 function success(value) {
@@ -151,6 +154,70 @@ server.registerTool("shopify_graphql_mutation", {
         const selected = await findStore(store);
         const result = await adminGraphql(selected, mutation, variables);
         return success(result);
+    }
+    catch (error) {
+        return failure(error);
+    }
+});
+server.registerTool("shopify_portfolio_snapshot", {
+    title: "Create Shopify Portfolio Snapshot",
+    description: "Create a read-only operating snapshot across selected stores or every configured store. Includes shop identity and product, order, customer, and location counts when scopes permit.",
+    inputSchema: z.object({
+        stores: StoreAliasesSchema.optional().describe("Stores to include. Omit this field to include every configured store.")
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+}, async ({ stores }) => {
+    try {
+        return success(await portfolioSnapshot(stores));
+    }
+    catch (error) {
+        return failure(error);
+    }
+});
+server.registerTool("shopify_compare_inventory", {
+    title: "Compare Shopify Inventory",
+    description: "Compare inventory, price, product status, and catalog details for selected SKUs across multiple Shopify stores.",
+    inputSchema: z.object({
+        stores: StoreAliasesSchema,
+        skus: z.array(SkuSchema).min(1).max(50).describe("One to fifty exact SKUs to compare.")
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+}, async ({ stores, skus }) => {
+    try {
+        return success(await compareInventory(stores, skus));
+    }
+    catch (error) {
+        return failure(error);
+    }
+});
+server.registerTool("shopify_list_unfulfilled_orders", {
+    title: "List Unfulfilled Orders Across Stores",
+    description: "List recent open, unfulfilled orders across multiple Shopify stores with independent per-store results.",
+    inputSchema: z.object({
+        stores: StoreAliasesSchema,
+        days: z.number().int().min(1).max(365).default(7).describe("Lookback window in days."),
+        first: z.number().int().min(1).max(100).default(25).describe("Maximum orders returned per store.")
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+}, async ({ stores, days, first }) => {
+    try {
+        return success(await listUnfulfilledOrders(stores, days, first));
+    }
+    catch (error) {
+        return failure(error);
+    }
+});
+server.registerTool("shopify_compare_catalog", {
+    title: "Compare Shopify Catalogs",
+    description: "Compare product titles, status, vendor, product type, and inventory for exact handles across multiple Shopify stores.",
+    inputSchema: z.object({
+        stores: StoreAliasesSchema,
+        handles: z.array(HandleSchema).min(1).max(50).describe("One to fifty exact product handles to compare.")
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+}, async ({ stores, handles }) => {
+    try {
+        return success(await compareCatalog(stores, handles));
     }
     catch (error) {
         return failure(error);

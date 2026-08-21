@@ -3,6 +3,12 @@ declare const StoreConfigSchema: z.ZodObject<{
     alias: z.ZodString;
     shop: z.ZodString;
     apiVersion: z.ZodDefault<z.ZodString>;
+    auth: z.ZodDefault<z.ZodDiscriminatedUnion<[z.ZodObject<{
+        type: z.ZodLiteral<"access_token">;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"client_credentials">;
+        clientId: z.ZodString;
+    }, z.core.$strict>], "type">>;
     tokenEnv: z.ZodOptional<z.ZodString>;
     baseUrl: z.ZodOptional<z.ZodString>;
 }, z.core.$strict>;

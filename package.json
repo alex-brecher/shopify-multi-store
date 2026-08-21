@@ -1,7 +1,7 @@
 {
   "name": "shopify-multi-store-mcp-server",
-  "version": "1.1.0",
-  "description": "Connect AI assistants to multiple Shopify stores at once with secure Admin GraphQL routing and cross-store queries.",
+  "version": "1.2.0",
+  "description": "Connect Claude, Codex, Cursor, and other MCP clients to multiple Shopify stores for secure queries, reports, comparisons, and updates.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -12,26 +12,50 @@
     "url": "https://github.com/alex-brecher/shopify-multi-store/issues"
   },
   "keywords": [
+    "ai-agent",
+    "claude",
     "codex",
+    "cursor",
+    "ecommerce",
+    "graphql",
     "mcp",
     "shopify",
-    "multi-store"
+    "shopify-admin-api",
+    "multi-store",
+    "agent-skill"
   ],
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "shopify-multi-store": "./scripts/cli.mjs"
+  },
+  "files": [
+    "dist/",
+    "scripts/",
+    "skills/",
+    ".claude/",
+    ".codex-plugin/",
+    ".mcp.json",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "configure": "node scripts/configure-store.mjs",
     "import-legacy": "node scripts/import-legacy-stores.mjs",
+    "sync:skills": "node scripts/sync-skills.mjs",
     "test": "npm run build && node --test tests/integration.test.mjs",
-    "test:live": "npm run build && node scripts/live-smoke-test.mjs"
+    "test:live": "npm run build && node scripts/live-smoke-test.mjs",
+    "prepack": "npm run sync:skills && npm test"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
+    "cross-keychain": "^1.1.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
