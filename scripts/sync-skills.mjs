@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { copyFile, mkdir } from "node:fs/promises";
+import { cp, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const source = join(root, "skills", "shopify-multi-store", "SKILL.md");
-const destination = join(root, ".claude", "skills", "shopify-multi-store", "SKILL.md");
+const source = join(root, "skills", "shopify-multi-store");
+const destination = join(root, ".claude", "skills", "shopify-multi-store");
 await mkdir(dirname(destination), { recursive: true });
-await copyFile(source, destination);
+await cp(source, destination, { recursive: true, force: true });
 process.stdout.write("Synced the Shopify multi-store skill for Claude.\n");

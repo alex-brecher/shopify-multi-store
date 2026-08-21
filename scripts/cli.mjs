@@ -20,11 +20,12 @@ if (command === "start") {
     list: ["configure-store.mjs", "list"],
     remove: ["configure-store.mjs", "remove"],
     doctor: ["configure-store.mjs", "doctor"],
-    import: ["import-legacy-stores.mjs"]
+    import: ["import-legacy-stores.mjs"],
+    "install-shopify-skills": ["install-shopify-skills.mjs"]
   };
   const mapped = commandMap[command];
   if (!mapped) {
-    process.stderr.write("Use: shopify-multi-store start, setup, oauth, list, remove <alias>, doctor, or import <file>.\n");
+    process.stderr.write("Use: shopify-multi-store start, setup, oauth, list, remove <alias>, doctor, import <file>, or install-shopify-skills.\n");
     process.exitCode = 1;
   } else {
     const result = spawnSync(process.execPath, [join(directory, mapped[0]), ...mapped.slice(1), ...args], {

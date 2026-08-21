@@ -45,6 +45,7 @@
     "start": "node dist/index.js",
     "configure": "node scripts/configure-store.mjs",
     "import-legacy": "node scripts/import-legacy-stores.mjs",
+    "skills:install": "node scripts/install-shopify-skills.mjs",
     "sync:skills": "node scripts/sync-skills.mjs",
     "test": "npm run build && node --test tests/integration.test.mjs",
     "test:live": "npm run build && node scripts/live-smoke-test.mjs",

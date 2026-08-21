@@ -156,6 +156,28 @@ Use `npx` as the command and `-y shopify-multi-store-mcp-server start` as the ar
 
 Clients without skill support can still use every MCP tool.
 
+## Official Shopify companion skills
+
+Install Shopify's official Admin GraphQL and ShopifyQL skills as optional companions:
+
+```bash
+shopify-multi-store install-shopify-skills
+```
+
+The default command installs both skills for every supported agent. Pass `--agent <name>` to limit the installation to one agent.
+
+The skills search Shopify documentation and validate custom GraphQL operations.
+
+The ShopifyQL skill adds sales, revenue, order, conversion, and trend analysis. This plugin can run its read-only GraphQL wrapper across selected stores.
+
+This MCP server still controls store selection, credentials, execution, and mutation authorization. This separation keeps the multi-store safety model intact.
+
+Shopify's skill scripts send usage telemetry by default. Set `OPT_OUT_INSTRUMENTATION=true` to turn it off.
+
+The plugin does not bundle large single-store skill collections. Their mutation flows can bypass this server's alias and confirmation controls.
+
+This integration uses the official [Shopify AI Toolkit](https://github.com/Shopify/Shopify-AI-Toolkit). Its operating workflows also reflect useful patterns from [Shopify Admin Skills](https://github.com/40rty-ai/shopify-admin-skills).
+
 ## Ready-made reports
 
 - `shopify_portfolio_snapshot` summarizes products, orders, customers, currency, plan, and store identity.
