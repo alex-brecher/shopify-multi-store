@@ -27,7 +27,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "shopify-multi-store": "./scripts/cli.mjs"
+    "shopify-multi-store": "scripts/cli.mjs"
   },
   "files": [
     "dist/",
