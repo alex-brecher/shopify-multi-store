@@ -1,20 +1,28 @@
-import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { promisify } from "node:util";
 import { z } from "zod/v4";
-const execFileAsync = promisify(execFile);
+import { accessTokenAccount, clientSecretAccount, readCredential } from "./credentials.js";
+const AccessTokenAuthSchema = z.object({
+    type: z.literal("access_token")
+}).strict();
+const ClientCredentialsAuthSchema = z.object({
+    type: z.literal("client_credentials"),
+    clientId: z.string().min(1)
+}).strict();
+const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema]);
 const StoreConfigSchema = z.object({
     alias: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/),
     shop: z.string().min(1),
     apiVersion: z.string().regex(/^\d{4}-\d{2}$/).default("2026-07"),
+    auth: StoreAuthSchema.default({ type: "access_token" }),
     tokenEnv: z.string().min(1).optional(),
     baseUrl: z.string().url().optional()
 }).strict();
 const ConfigSchema = z.object({
     stores: z.array(StoreConfigSchema).min(1)
 }).strict();
+const oauthTokenCache = new Map();
 export function configPath() {
     const configured = process.env.SHOPIFY_MULTI_STORE_CONFIG;
     return configured ? resolve(configured) : resolve(homedir(), ".config", "codex-shopify-multi-store", "stores.json");
@@ -72,24 +80,55 @@ export async function getAccessToken(store) {
     const envToken = process.env[envName];
     if (envToken)
         return envToken;
-    if (process.platform !== "darwin") {
-        throw new Error(`No token is available for ${store.alias}. Set ${envName} in the MCP server environment.`);
+    if (store.auth.type === "client_credentials") {
+        return getClientCredentialsToken(store);
     }
-    try {
-        const { stdout } = await execFileAsync("security", [
-            "find-generic-password",
-            "-s", "codex-shopify-multi-store",
-            "-a", store.alias,
-            "-w"
-        ], { timeout: 10_000, maxBuffer: 64 * 1024 });
-        const token = stdout.trim();
-        if (!token)
-            throw new Error("The Keychain item is empty.");
+    const token = await readCredential(accessTokenAccount(store.alias));
+    if (token)
         return token;
+    throw new Error(`No operating-system credential is available for ${store.alias}. Set ${envName} or run \"shopify-multi-store setup\".`);
+}
+async function getClientCredentialsToken(store) {
+    if (store.auth.type !== "client_credentials")
+        throw new Error("Client credentials are not configured.");
+    const cached = oauthTokenCache.get(store.alias);
+    if (cached && cached.expiresAt > Date.now() + 5 * 60_000)
+        return cached.token;
+    const secretEnv = `SHOPIFY_CLIENT_SECRET_${store.alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+    const clientSecret = process.env[secretEnv] ?? await readCredential(clientSecretAccount(store.alias));
+    if (!clientSecret) {
+        throw new Error(`No OAuth client secret is available for ${store.alias}. Set ${secretEnv} or reconnect the store.`);
     }
-    catch {
-        throw new Error(`No macOS Keychain token is available for ${store.alias}. Run \"npm run configure -- add\" in the plugin directory.`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    let response;
+    try {
+        response = await fetch(`https://${store.shop}/admin/oauth/access_token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "client_credentials",
+                client_id: store.auth.clientId,
+                client_secret: clientSecret
+            }),
+            signal: controller.signal
+        });
     }
+    finally {
+        clearTimeout(timeout);
+    }
+    const payload = await response.json();
+    if (!response.ok || typeof payload.access_token !== "string") {
+        const error = typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`;
+        const description = typeof payload.error_description === "string" ? `: ${payload.error_description}` : "";
+        throw new Error(`Shopify OAuth failed for ${store.alias}: ${error}${description}`);
+    }
+    const expiresIn = typeof payload.expires_in === "number" ? payload.expires_in : 86_399;
+    oauthTokenCache.set(store.alias, {
+        token: payload.access_token,
+        expiresAt: Date.now() + expiresIn * 1_000
+    });
+    return payload.access_token;
 }
 export function graphqlEndpoint(store) {
     if (store.baseUrl)
