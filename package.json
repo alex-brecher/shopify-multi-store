@@ -1,0 +1,42 @@
+{
+  "name": "shopify-multi-store-mcp-server",
+  "version": "1.0.0",
+  "description": "A local MCP server for multiple Shopify Admin stores.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alex-brecher/shopify-multi-store.git"
+  },
+  "homepage": "https://github.com/alex-brecher/shopify-multi-store#readme",
+  "bugs": {
+    "url": "https://github.com/alex-brecher/shopify-multi-store/issues"
+  },
+  "keywords": [
+    "codex",
+    "mcp",
+    "shopify",
+    "multi-store"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "configure": "node scripts/configure-store.mjs",
+    "import-legacy": "node scripts/import-legacy-stores.mjs",
+    "test": "npm run build && node --test tests/integration.test.mjs",
+    "test:live": "npm run build && node scripts/live-smoke-test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^24.10.1",
+    "typescript": "^7.0.2"
+  }
+}

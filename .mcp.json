@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "shopify-multi-store": {
+      "cwd": ".",
+      "command": "node",
+      "args": ["./dist/index.js"],
+      "env_vars": [
+        "HOME",
+        "PATH",
+        "SHOPIFY_MULTI_STORE_CONFIG",
+        "SHOPIFY_MULTI_STORE_ALLOW_INSECURE_HTTP"
+      ],
+      "startup_timeout_sec": 15,
+      "tool_timeout_sec": 60
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "shopify-multi-store",
+  "version": "1.0.0+codex.20260821064739",
+  "description": "Connect Codex to multiple Shopify Admin stores at the same time.",
+  "author": {
+    "name": "Alex Brecher"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Shopify Multi Store",
+    "shortDescription": "Use multiple Shopify stores in one task.",
+    "longDescription": "Connect multiple Shopify Admin stores with separate credentials. Select a named store for each query or mutation without disconnecting another store.",
+    "developerName": "Alex Brecher",
+    "category": "Business & Operations",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "List my connected Shopify stores.",
+      "Compare products across my Shopify stores.",
+      "Run an Admin GraphQL query on a named store."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
