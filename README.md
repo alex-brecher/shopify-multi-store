@@ -28,7 +28,7 @@ Linux credential storage requires a working Secret Service provider, such as GNO
 
 ## Install
 
-Install the command globally from npm after the package is published:
+Install the command globally from npm:
 
 ```bash
 npm install --global shopify-multi-store-mcp-server
