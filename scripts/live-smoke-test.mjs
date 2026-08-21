@@ -34,6 +34,25 @@ try {
     const shop = result.structuredContent?.data?.shop;
     process.stdout.write(`${configured.alias}\tOK\t${shop?.name ?? "unknown"}\t${shop?.myshopifyDomain ?? configured.shop}\n`);
   }
+
+  const comparisonStores = list.structuredContent.stores.slice(0, 3).map((store) => store.alias);
+  if (comparisonStores.length > 1) {
+    const comparison = await client.callTool({
+      name: "shopify_graphql_query_many",
+      arguments: {
+        stores: comparisonStores,
+        query: "query MultiStoreLiveCheck { shop { name myshopifyDomain } }",
+        variables: {}
+      }
+    });
+    if (comparison.isError || comparison.structuredContent?.failed !== 0) {
+      failed = true;
+      const message = comparison.content?.find((item) => item.type === "text")?.text ?? "Unknown error";
+      process.stdout.write(`cross-store\tFAIL\t${message}\n`);
+    } else {
+      process.stdout.write(`cross-store\tOK\t${comparison.structuredContent.succeeded} stores queried in parallel\n`);
+    }
+  }
 } finally {
   await client.close();
 }

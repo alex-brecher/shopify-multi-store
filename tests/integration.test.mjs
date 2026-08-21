@@ -54,6 +54,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
       "shopify_get_shop_info",
       "shopify_graphql_mutation",
       "shopify_graphql_query",
+      "shopify_graphql_query_many",
       "shopify_list_stores"
     ]);
 
@@ -74,6 +75,48 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(rejected.isError, true);
     assert.equal(requests.length, 1);
+
+    const comparison = await client.callTool({
+      name: "shopify_graphql_query_many",
+      arguments: {
+        stores: ["first-store", "second-store"],
+        query: "query CompareShops { shop { name currencyCode } }",
+        variables: {}
+      }
+    });
+    assert.equal(comparison.isError, undefined);
+    assert.equal(comparison.structuredContent.count, 2);
+    assert.equal(comparison.structuredContent.succeeded, 2);
+    assert.equal(comparison.structuredContent.failed, 0);
+    assert.deepEqual(comparison.structuredContent.results.map((result) => result.store), ["first-store", "second-store"]);
+    assert.equal(requests.length, 3);
+    assert.deepEqual(new Set(requests.slice(1).map((request) => request.token)), new Set(["test-first-token", "test-second-token"]));
+
+    const partial = await client.callTool({
+      name: "shopify_graphql_query_many",
+      arguments: {
+        stores: ["first-store", "missing-store"],
+        query: "query PartialComparison { shop { name } }",
+        variables: {}
+      }
+    });
+    assert.equal(partial.isError, undefined);
+    assert.equal(partial.structuredContent.succeeded, 1);
+    assert.equal(partial.structuredContent.failed, 1);
+    assert.equal(partial.structuredContent.results[1].store, "missing-store");
+    assert.match(partial.structuredContent.results[1].error, /Unknown store/);
+    assert.equal(requests.length, 4);
+
+    const rejectedComparison = await client.callTool({
+      name: "shopify_graphql_query_many",
+      arguments: {
+        stores: ["first-store", "second-store"],
+        query: "mutation BadComparison { productDelete(input: {}) { deletedProductId } }",
+        variables: {}
+      }
+    });
+    assert.equal(rejectedComparison.isError, true);
+    assert.equal(requests.length, 4);
   } finally {
     await client.close();
     await new Promise((resolveClose) => mock.close(resolveClose));

@@ -1,6 +1,20 @@
-# Shopify Multi Store
+# Shopify Multi-Store MCP Server for Codex
 
-This Codex plugin keeps multiple Shopify Admin stores available in one task. Each store has a separate alias and access token, so changing stores does not disconnect another store.
+[![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Connect Codex and other MCP-compatible AI assistants to multiple Shopify stores at the same time. Query, compare, and safely manage Shopify Admin data without disconnecting one store to use another.
+
+Each Shopify store has a required alias and separate credential. Read-only GraphQL queries can run across several stores in parallel, while mutations remain isolated to one explicitly selected store.
+
+## Why use it?
+
+- Keep multiple Shopify Admin stores connected in one MCP server.
+- Compare products, orders, inventory, customers, and other GraphQL data across stores.
+- Run one read-only query across up to ten stores in parallel.
+- Store access tokens in macOS Keychain instead of configuration files.
+- Require an explicit store alias for every operation.
+- Separate read-only queries from guarded mutations.
 
 ## Requirements
 
@@ -68,9 +82,17 @@ npm run configure -- remove store-alias
 - `shopify_list_stores` lists the connected store aliases.
 - `shopify_get_shop_info` gets the identity of one store.
 - `shopify_graphql_query` runs a read-only Admin GraphQL query.
+- `shopify_graphql_query_many` runs the same read-only query across as many as ten stores in parallel and preserves per-store errors.
 - `shopify_graphql_mutation` changes one store after exact authorization.
 
 Every store action needs a store alias. This requirement reduces the risk of a change to the wrong store.
+
+## Example requests
+
+- “Compare active product counts across all connected stores.”
+- “Show inventory for these SKUs in the retail and wholesale stores.”
+- “List unfulfilled orders from the last seven days in three stores.”
+- “Check the shop identity before updating a product in the main store.”
 
 ## Security
 

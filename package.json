@@ -1,7 +1,7 @@
 {
   "name": "shopify-multi-store-mcp-server",
-  "version": "1.0.0",
-  "description": "A local MCP server for multiple Shopify Admin stores.",
+  "version": "1.1.0",
+  "description": "Connect AI assistants to multiple Shopify stores at once with secure Admin GraphQL routing and cross-store queries.",
   "license": "MIT",
   "repository": {
     "type": "git",
