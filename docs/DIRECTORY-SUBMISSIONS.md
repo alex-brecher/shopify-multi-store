@@ -9,10 +9,10 @@ https://github.com/alex-brecher/shopify-multi-store
 | Directory | Submission route | Status |
 | --- | --- | --- |
 | Official MCP Registry | Published from `server.json` by the release workflow | v1.5.0 active and future releases automated |
-| Glama | https://glama.ai/mcp/servers | Repository metadata ready in `glama.json` |
+| Glama | https://glama.ai/mcp/servers | Repository metadata ready; account sign-up and server scan still required |
 | PulseMCP | https://www.pulsemcp.com/submit | Manual form |
 | MCP Servers | https://mcpservers.org/submit | Manual form |
-| Awesome MCP Servers | https://github.com/punkpeye/awesome-mcp-servers | Pull request to the E-Commerce section |
+| Awesome MCP Servers | https://github.com/punkpeye/awesome-mcp-servers/pull/12634 | Pull request open; waiting for the required Glama score badge |
 | Smithery | https://smithery.ai/docs/build/publish | Requires an MCPB bundle for this local stdio server |
 
 ## Canonical listing copy
