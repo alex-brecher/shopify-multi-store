@@ -9,11 +9,11 @@ Query, compare, report, and make guarded updates across Shopify stores from Clau
 <img src="docs/assets/shopify-multi-store-hero.png" alt="One MCP server connected to multiple ecommerce stores" width="1200">
 
 [![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
-[![npm v1.5.0](https://img.shields.io/badge/npm-v1.5.0-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
-[![npm provenance](https://img.shields.io/badge/npm-provenance-verified-2E8555?logo=npm&logoColor=white)](https://registry.npmjs.org/-/npm/v1/attestations/shopify-multi-store-mcp-server@1.5.0)
-[![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](package.json)
-[![MCP ready](https://img.shields.io/badge/MCP-ready-7C3AED)](https://modelcontextprotocol.io/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-F4C430)](LICENSE)
+[![npm v1.5.0](https://img.shields.io/badge/npm-v1.5.0-CB3837?logo=npm&logoColor=white&cacheSeconds=300)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
+[![npm provenance](https://img.shields.io/badge/npm-provenance-verified-2E8555?logo=npm&logoColor=white&cacheSeconds=300)](https://registry.npmjs.org/-/npm/v1/attestations/shopify-multi-store-mcp-server@1.5.0)
+[![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white&cacheSeconds=300)](package.json)
+[![MCP ready](https://img.shields.io/badge/MCP-ready-7C3AED?cacheSeconds=300)](https://modelcontextprotocol.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-F4C430?cacheSeconds=300)](LICENSE)
 
 [Demo](#see-it-work) · [Quick start](#quick-start) · [Reports](#ready-made-reports) · [AI clients](#connect-an-ai-client) · [Security](#security-model)
 

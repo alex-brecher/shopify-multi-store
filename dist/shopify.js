@@ -3,6 +3,7 @@ import { getAccessToken, graphqlEndpoint } from "./config.js";
 const CHARACTER_LIMIT = 50_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_THROTTLE_RETRIES = 3;
+const MAX_RETRY_DELAY_MS = 60_000;
 export const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
 function retryDelay(response, attempt) {
     const retryAfter = response?.headers.get("retry-after");
@@ -78,7 +79,11 @@ export async function adminGraphql(store, document, variables) {
         const throttled = response.status === 429 || hasThrottleError(payload);
         if (!throttled || attempt === MAX_THROTTLE_RETRIES)
             break;
-        await wait(retryDelay(response, attempt));
+        const delay = retryDelay(response, attempt);
+        if (delay > MAX_RETRY_DELAY_MS) {
+            throw new Error(`Shopify asked ${store.alias} to retry after ${Math.ceil(delay / 1_000)} seconds, which exceeds the ${MAX_RETRY_DELAY_MS / 1_000}-second retry limit. Try again later.`);
+        }
+        await wait(delay);
     }
     if (!response)
         throw new Error(`Shopify returned no response for ${store.alias}.`);

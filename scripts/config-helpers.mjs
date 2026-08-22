@@ -92,7 +92,9 @@ export async function exchangeAuthorizationCode({ shop, clientId, clientSecret, 
     throw new Error(`Shopify token exchange returned a non-JSON response. HTTP ${response.status}.`);
   }
   if (!response.ok || typeof payload?.access_token !== "string") {
-    const message = typeof payload?.error_description === "string" ? payload.error_description : `HTTP ${response.status}`;
+    const errorCode = typeof payload?.error === "string" ? payload.error : `HTTP ${response.status}`;
+    const description = typeof payload?.error_description === "string" ? `: ${payload.error_description}` : "";
+    const message = `${errorCode}${description}`;
     throw new Error(`Shopify token exchange failed: ${message}`);
   }
   return payload.access_token;

@@ -9,6 +9,7 @@ import {
 } from "../dist/credentials.js";
 import { getAccessToken } from "../dist/config.js";
 import { adminGraphql } from "../dist/shopify.js";
+import { DEFAULT_API_VERSION } from "../dist/constants.js";
 import {
   configPath,
   loadConfig,
@@ -30,7 +31,7 @@ async function addStore(args) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const alias = (args[0] ?? await rl.question("Store alias: ")).trim().toLowerCase();
   const shop = normalizeShop(args[1] ?? await rl.question("Permanent *.myshopify.com domain: "));
-  const apiVersion = (args[2] ?? "2026-07").trim();
+  const apiVersion = (args[2] ?? DEFAULT_API_VERSION).trim();
   rl.close();
   validateAlias(alias);
   validateApiVersion(apiVersion);
@@ -76,23 +77,23 @@ async function doctor() {
   process.stdout.write(`Credential store: ${backend.name} (${backend.id})\n`);
   process.stdout.write(`Configuration: ${configPath}\n`);
   process.stdout.write(`Configured stores: ${config.stores.length}\n`);
-  let failures = 0;
-  for (const configured of config.stores) {
+  const checks = await Promise.all(config.stores.map(async (configured) => {
     const store = {
       ...configured,
-      apiVersion: configured.apiVersion ?? "2026-07",
+      apiVersion: configured.apiVersion ?? DEFAULT_API_VERSION,
       auth: configured.auth ?? { type: "access_token" }
     };
     try {
       await getAccessToken(store);
       const result = await adminGraphql(store, "query DoctorStoreCheck { shop { name myshopifyDomain } }", {});
       const shop = result.data?.shop;
-      process.stdout.write(`${store.alias}\tOK\t${shop?.name ?? store.shop}\t${result.elapsedMs}ms\n`);
+      return { ok: true, line: `${store.alias}\tOK\t${shop?.name ?? store.shop}\t${result.elapsedMs}ms` };
     } catch (error) {
-      failures += 1;
-      process.stdout.write(`${store.alias}\tFAIL\t${error instanceof Error ? error.message : String(error)}\n`);
+      return { ok: false, line: `${store.alias}\tFAIL\t${error instanceof Error ? error.message : String(error)}` };
     }
-  }
+  }));
+  for (const check of checks) process.stdout.write(`${check.line}\n`);
+  const failures = checks.filter((check) => !check.ok).length;
   if (failures) throw new Error(`Doctor found ${failures} store connection failure${failures === 1 ? "" : "s"}.`);
 }
 

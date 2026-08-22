@@ -23,7 +23,16 @@ test("limits multi-store output per store instead of discarding every result", (
   assert.equal(fitted.responseTruncated, true);
   assert.deepEqual(fitted.omittedStores, ["large-store"]);
   assert.equal(fitted.results[0].complete, false);
+  assert.equal(fitted.results[0].ok, true);
   assert.equal(fitted.results[1].ok, true);
+  assert.equal(fitted.succeeded, 2);
+  assert.equal(fitted.failed, 0);
+});
+
+test("fails loudly when multi-store errors alone exceed the output limit", () => {
+  assert.throws(() => fitMultiStoreResults([
+    { store: "failed-store", ok: false, error: "x".repeat(1_000) }
+  ], 300), /combined multi-store errors exceed 300 characters/i);
 });
 
 test("lists two stores and routes a shop query to the selected store", async () => {
@@ -46,6 +55,11 @@ test("lists two stores and routes a shop query to the selected store", async () 
           response.end(JSON.stringify({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }));
           return;
         }
+      }
+      if (parsedBody.query.includes("ExcessiveRetryAfter")) {
+        response.writeHead(429, { "content-type": "application/json", "x-request-id": "long-retry", "retry-after": "3600" });
+        response.end(JSON.stringify({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }));
+        return;
       }
       if (parsedBody.query.includes("NonJsonResponse")) {
         response.writeHead(502, { "content-type": "text/html", "x-request-id": "html-response" });
@@ -430,13 +444,21 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(persistentGraphqlThrottleAttempts, 4);
     assert.equal(requests.length, 58);
 
+    const excessiveRetry = await client.callTool({
+      name: "shopify_graphql_query",
+      arguments: { store: "first-store", query: "query ExcessiveRetryAfter { shop { name } }", variables: {} }
+    });
+    assert.equal(excessiveRetry.isError, true);
+    assert.match(excessiveRetry.content[0].text, /retry after 3600 seconds.*exceeds the 60-second retry limit/i);
+    assert.equal(requests.length, 59);
+
     const oversized = await client.callTool({
       name: "shopify_graphql_query",
       arguments: { store: "first-store", query: "query OversizedResponse { shop { name } }", variables: {} }
     });
     assert.equal(oversized.isError, true);
     assert.match(oversized.content[0].text, /more than 50000 characters/);
-    assert.equal(requests.length, 59);
+    assert.equal(requests.length, 60);
 
     const nonJson = await client.callTool({
       name: "shopify_graphql_query",
@@ -444,7 +466,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(nonJson.isError, true);
     assert.match(nonJson.content[0].text, /non-JSON response.*HTTP 502/);
-    assert.equal(requests.length, 60);
+    assert.equal(requests.length, 61);
 
     const incompleteCatalog = await client.callTool({
       name: "shopify_compare_catalog",
@@ -453,7 +475,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(incompleteCatalog.isError, undefined);
     assert.equal(incompleteCatalog.structuredContent.failed, 2);
     assert.match(incompleteCatalog.structuredContent.results[0].error, /no variant page information/i);
-    assert.equal(requests.length, 62);
+    assert.equal(requests.length, 63);
 
     const repeatedCursor = await client.callTool({
       name: "shopify_compare_inventory",
@@ -590,6 +612,24 @@ test("authorization-code exchange handles non-JSON responses and timeouts", asyn
       code: "code",
       timeoutMs: 5
     }), /did not respond within 0.005 seconds/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("authorization-code exchange includes the OAuth error code and description", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => Response.json({
+      error: "invalid_grant",
+      error_description: "The authorization code expired."
+    }, { status: 400 });
+    await assert.rejects(exchangeAuthorizationCode({
+      shop: "oauth-code.myshopify.com",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      code: "expired-code"
+    }), /invalid_grant: The authorization code expired\./);
   } finally {
     globalThis.fetch = originalFetch;
   }

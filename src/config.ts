@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { z } from "zod/v4";
+import { DEFAULT_API_VERSION } from "./constants.js";
 import { accessTokenAccount, clientSecretAccount, readCredential } from "./credentials.js";
 
 const AccessTokenAuthSchema = z.object({
@@ -19,7 +20,7 @@ const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, Cli
 const StoreConfigSchema = z.object({
   alias: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/),
   shop: z.string().min(1),
-  apiVersion: z.string().regex(/^\d{4}-\d{2}$/).default("2026-07"),
+  apiVersion: z.string().regex(/^\d{4}-\d{2}$/).default(DEFAULT_API_VERSION),
   auth: StoreAuthSchema.default({ type: "access_token" }),
   tokenEnv: z.string().min(1).optional(),
   baseUrl: z.string().url().optional()

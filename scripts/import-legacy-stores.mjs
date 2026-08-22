@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { accessTokenAccount, clientSecretAccount, readCredential, removeCredential, storeCredential } from "../dist/credentials.js";
+import { DEFAULT_API_VERSION } from "../dist/constants.js";
 import { configPath, importStoresWithRollback, loadConfig, parseLegacyStores } from "./config-helpers.mjs";
 
 const sourcePath = process.argv[2];
@@ -12,7 +13,7 @@ if (!sourcePath) {
 
 const resolvedSourcePath = resolve(sourcePath);
 const source = JSON.parse(readFileSync(resolvedSourcePath, "utf8"));
-const apiVersion = /^\d{4}-\d{2}$/.test(source.api_version ?? "") ? source.api_version : "2026-07";
+const apiVersion = /^\d{4}-\d{2}$/.test(source.api_version ?? "") ? source.api_version : DEFAULT_API_VERSION;
 const imported = parseLegacyStores(source);
 
 const duplicateAliases = imported.filter((item, index) => imported.findIndex((candidate) => candidate.alias === item.alias) !== index);

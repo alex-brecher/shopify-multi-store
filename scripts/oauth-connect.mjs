@@ -6,6 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { accessTokenAccount, clientSecretAccount, removeCredential, storeCredential } from "../dist/credentials.js";
 import { getAccessToken } from "../dist/config.js";
 import { adminGraphql } from "../dist/shopify.js";
+import { DEFAULT_API_VERSION } from "../dist/constants.js";
 import { exchangeAuthorizationCode, normalizeShop, readHidden, upsertStore, validateAlias, validateApiVersion } from "./config-helpers.mjs";
 
 const DEFAULT_SCOPES = ["read_products", "read_orders", "read_inventory", "read_locations", "read_customers"];
@@ -117,7 +118,7 @@ try {
   if (!new Set(["client-credentials", "authorization-code"]).has(mode)) throw new Error("Use client-credentials or authorization-code.");
   const alias = (aliasArg ?? await rl.question("Store alias: ")).trim().toLowerCase();
   const shop = normalizeShop(shopArg ?? await rl.question("Permanent *.myshopify.com domain: "));
-  const apiVersion = (apiVersionArg ?? "2026-07").trim();
+  const apiVersion = (apiVersionArg ?? DEFAULT_API_VERSION).trim();
   validateAlias(alias);
   validateApiVersion(apiVersion);
   const clientId = (await rl.question("Shopify app client ID: ")).trim();
