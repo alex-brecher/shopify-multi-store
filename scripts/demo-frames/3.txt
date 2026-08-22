@@ -1,0 +1,8 @@
+SKU PROTEIN-42
+
+STORE        STATUS    PRICE    INVENTORY
+retail       ACTIVE    $29.99   0
+wholesale    ACTIVE    $18.50   84
+outlet       DRAFT     $24.99   12
+
+Transfer opportunity: wholesale -> retail

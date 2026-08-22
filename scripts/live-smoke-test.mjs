@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const serverPath = process.argv[2] ? resolve(process.argv[2]) : resolve(root, "dist", "index.js");
 const client = new Client({ name: "shopify-multi-store-live-test", version: "1.0.0" });
 const transport = new StdioClientTransport({

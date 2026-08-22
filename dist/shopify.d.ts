@@ -4,6 +4,9 @@ export interface GraphqlEnvelope {
     store: string;
     shop: string;
     apiVersion: string;
+    requestId?: string;
+    elapsedMs: number;
+    retryCount: number;
     data?: unknown;
     errors?: unknown;
     extensions?: unknown;

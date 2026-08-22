@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { accessTokenAccount, clientSecretAccount, removeCredential, storeCredential } from "../dist/credentials.js";
 import { getAccessToken } from "../dist/config.js";
 import { adminGraphql } from "../dist/shopify.js";
-import { normalizeShop, readHidden, upsertStore, validateAlias, validateApiVersion } from "./config-helpers.mjs";
+import { exchangeAuthorizationCode, normalizeShop, readHidden, upsertStore, validateAlias, validateApiVersion } from "./config-helpers.mjs";
 
 const DEFAULT_SCOPES = ["read_products", "read_orders", "read_inventory", "read_locations", "read_customers"];
 
@@ -34,25 +34,12 @@ function validHmac(url, clientSecret) {
   return timingSafeEqual(Buffer.from(received, "hex"), Buffer.from(expected, "hex"));
 }
 
-async function exchangeAuthorizationCode(shop, clientId, clientSecret, code) {
-  const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code })
-  });
-  const payload = await response.json();
-  if (!response.ok || typeof payload.access_token !== "string") {
-    const message = typeof payload.error_description === "string" ? payload.error_description : `HTTP ${response.status}`;
-    throw new Error(`Shopify token exchange failed: ${message}`);
-  }
-  return payload.access_token;
-}
-
 async function waitForAuthorization({ shop, clientId, clientSecret, scopes, port }) {
   const state = randomBytes(24).toString("hex");
   const redirectUri = `http://127.0.0.1:${port}/oauth/callback`;
   let resolveCallback;
   let rejectCallback;
+  let callbackSettled = false;
   const callback = new Promise((resolve, reject) => {
     resolveCallback = resolve;
     rejectCallback = reject;
@@ -65,18 +52,23 @@ async function waitForAuthorization({ shop, clientId, clientSecret, scopes, port
         response.writeHead(404).end("Not found");
         return;
       }
+      if (callbackSettled) throw new Error("The OAuth callback was already used.");
       if (url.searchParams.get("state") !== state) throw new Error("The OAuth state did not match.");
       if (url.searchParams.get("shop") !== shop) throw new Error("The OAuth store did not match.");
       if (!validHmac(url, clientSecret)) throw new Error("The OAuth HMAC was invalid.");
       const code = url.searchParams.get("code");
       if (!code) throw new Error("Shopify did not return an authorization code.");
+      callbackSettled = true;
       response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Shopify authorization succeeded. You can close this window.");
       resolveCallback(code);
     } catch (error) {
       response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Shopify authorization failed. Return to the terminal for details.");
-      rejectCallback(error);
+      if (!callbackSettled) {
+        callbackSettled = true;
+        rejectCallback(error);
+      }
     }
   });
 
@@ -96,7 +88,12 @@ async function waitForAuthorization({ shop, clientId, clientSecret, scopes, port
   process.stdout.write(`Authorization URL: ${authorizeUrl.toString()}\n`);
   if (!openBrowser(authorizeUrl.toString())) process.stdout.write("Open the authorization URL in a browser.\n");
 
-  const timeout = setTimeout(() => rejectCallback(new Error("Shopify authorization timed out after five minutes.")), 5 * 60_000);
+  const timeout = setTimeout(() => {
+    if (!callbackSettled) {
+      callbackSettled = true;
+      rejectCallback(new Error("Shopify authorization timed out after five minutes."));
+    }
+  }, 5 * 60_000);
   try {
     return await callback;
   } finally {
@@ -154,7 +151,7 @@ try {
     }
   } else {
     const code = await waitForAuthorization({ shop, clientId, clientSecret, scopes, port });
-    const token = await exchangeAuthorizationCode(shop, clientId, clientSecret, code);
+    const token = await exchangeAuthorizationCode({ shop, clientId, clientSecret, code });
     const store = { alias, shop, apiVersion, auth: { type: "access_token" } };
     await storeCredential(accessTokenAccount(alias), token);
     try {

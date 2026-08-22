@@ -1,0 +1,7 @@
+$ shopify-multi-store doctor
+
+Credential store: macOS Keychain
+Configured stores: 3
+retail      OK    184ms
+wholesale   OK    201ms
+outlet      OK    176ms

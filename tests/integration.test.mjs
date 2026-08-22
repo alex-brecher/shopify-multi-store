@@ -10,14 +10,27 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { PasswordDeleteError } from "cross-keychain";
 import { getAccessToken } from "../dist/config.js";
 import { isMissingCredentialError } from "../dist/credentials.js";
-import { parseLegacyStores, verifyAccessToken } from "../scripts/config-helpers.mjs";
+import { fitMultiStoreResults } from "../dist/result-limits.js";
+import { collectHiddenInput, exchangeAuthorizationCode, importStoresWithRollback, parseLegacyStores, verifyAccessToken } from "../scripts/config-helpers.mjs";
 
 const pluginRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+
+test("limits multi-store output per store instead of discarding every result", () => {
+  const fitted = fitMultiStoreResults([
+    { store: "large-store", ok: true, result: { requestId: "request-1", elapsedMs: 25, data: { value: "x".repeat(500) } } },
+    { store: "small-store", ok: true, result: { data: { value: "ok" } } }
+  ], 500);
+  assert.equal(fitted.responseTruncated, true);
+  assert.deepEqual(fitted.omittedStores, ["large-store"]);
+  assert.equal(fitted.results[0].complete, false);
+  assert.equal(fitted.results[1].ok, true);
+});
 
 test("lists two stores and routes a shop query to the selected store", async () => {
   const requests = [];
   let throttleAttempts = 0;
   let graphqlThrottleAttempts = 0;
+  let persistentGraphqlThrottleAttempts = 0;
   const mock = http.createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -40,7 +53,10 @@ test("lists two stores and routes a shop query to the selected store", async () 
         return;
       }
       response.writeHead(200, { "content-type": "application/json", "x-request-id": "mock-request" });
-      if (parsedBody.query.includes("GraphqlBudgetRetry")) {
+      if (parsedBody.query.includes("AlwaysGraphqlThrottled")) {
+        persistentGraphqlThrottleAttempts += 1;
+        response.end(JSON.stringify({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }));
+      } else if (parsedBody.query.includes("GraphqlBudgetRetry")) {
         graphqlThrottleAttempts += 1;
         response.end(JSON.stringify(graphqlThrottleAttempts === 1
           ? { errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }
@@ -62,16 +78,19 @@ test("lists two stores and routes a shop query to the selected store", async () 
         if (storeId === "1") nodes.push({ id: "gid://shopify/Product/111", title: "Only First", handle: "only-first", status: "ACTIVE", vendor: "Vendor", productType: "Type", totalInventory: 3, updatedAt: "2026-08-21T00:00:00Z" });
         response.end(JSON.stringify({ data: { products: { nodes, pageInfo: { hasNextPage: parsedBody.variables.first === 1, endCursor: parsedBody.variables.first === 1 ? "catalog-gap-page-1" : null } } } }));
       } else if (parsedBody.query.includes("CompareInventory")) {
+        const repeatCursor = String(parsedBody.variables.query).includes("REPEAT-CURSOR");
         const secondPage = parsedBody.variables.after === "inventory-page-1";
         const variantId = secondPage ? 2 : 1;
-        response.end(JSON.stringify({ data: { productVariants: { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}${variantId}`, sku: "SKU-1", title: secondPage ? "Second" : "Default", inventoryQuantity: secondPage ? 7 : 5, price: "10.00", compareAtPrice: null, product: { id: `gid://shopify/Product/${storeId}`, title: "Example", handle: "example", status: "ACTIVE", vendor: "Example Vendor", productType: "Example" } }], pageInfo: { hasNextPage: !secondPage, endCursor: secondPage ? null : "inventory-page-1" } } } }));
+        response.end(JSON.stringify({ data: { productVariants: { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}${variantId}`, sku: repeatCursor ? "REPEAT-CURSOR" : "SKU-1", title: secondPage ? "Second" : "Default", inventoryQuantity: secondPage ? 7 : 5, price: "10.00", compareAtPrice: null, product: { id: `gid://shopify/Product/${storeId}`, title: "Example", handle: "example", status: "ACTIVE", vendor: "Example Vendor", productType: "Example" } }], pageInfo: { hasNextPage: repeatCursor || !secondPage, endCursor: repeatCursor || !secondPage ? "inventory-page-1" : null } } } }));
       } else if (parsedBody.query.includes("UnfulfilledOrders")) {
         response.end(JSON.stringify({ data: { orders: { nodes: [{ id: "gid://shopify/Order/1", name: "#1001", createdAt: "2026-08-21T00:00:00Z", updatedAt: "2026-08-21T00:00:00Z", displayFinancialStatus: "PAID", displayFulfillmentStatus: "UNFULFILLED", totalPriceSet: { shopMoney: { amount: "25.00", currencyCode: "USD" } } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
       } else if (parsedBody.query.includes("CatalogVariantsPage")) {
         response.end(JSON.stringify({ data: { product: { variants: { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}2`, sku: "SKU-2", title: "Second", price: "12.00", compareAtPrice: null, inventoryQuantity: 3 }], pageInfo: { hasNextPage: false, endCursor: null } } } } }));
       } else if (parsedBody.query.includes("CompareCatalog")) {
         const missingPageInfo = String(parsedBody.variables.query).includes("missing-page-info");
-        response.end(JSON.stringify({ data: { products: { nodes: [{ id: `gid://shopify/Product/${storeId}`, handle: missingPageInfo ? "missing-page-info" : "example", title: "Example", status: "ACTIVE", vendor: "Example Vendor", productType: "Example", totalInventory: 8, updatedAt: "2026-08-21T00:00:00Z", variants: missingPageInfo ? { nodes: [] } : { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}1`, sku: "SKU-1", title: "Default", price: "10.00", compareAtPrice: null, inventoryQuantity: 5 }], pageInfo: { hasNextPage: true, endCursor: "catalog-variant-page-1" } } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
+        const absent = String(parsedBody.variables.query).includes("absent");
+        const nodes = absent ? [] : [{ id: `gid://shopify/Product/${storeId}`, handle: missingPageInfo ? "missing-page-info" : "example", title: "Example", status: "ACTIVE", vendor: "Example Vendor", productType: "Example", totalInventory: 8, updatedAt: "2026-08-21T00:00:00Z", variants: missingPageInfo ? { nodes: [] } : { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}1`, sku: "SKU-1", title: "Default", price: "10.00", compareAtPrice: null, inventoryQuantity: 5 }], pageInfo: { hasNextPage: true, endCursor: "catalog-variant-page-1" } } }];
+        response.end(JSON.stringify({ data: { products: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } }));
       } else if (parsedBody.query.includes("PortfolioSnapshot")) {
         response.end(JSON.stringify({ data: { shop: { name: "First Store", myshopifyDomain: "first-store.myshopify.com", currencyCode: "USD", timezoneAbbreviation: "EDT", plan: { displayName: "Shopify" } }, productsCount: { count: 1, precision: "EXACT" }, activeProducts: { count: 1, precision: "EXACT" }, draftProducts: { count: 0, precision: "EXACT" }, ordersCount: { count: 1, precision: "EXACT" }, unfulfilledOrders: { count: 1, precision: "EXACT" }, customersCount: { count: 1, precision: "EXACT" }, locationsCount: { count: 1, precision: "EXACT" } } }));
       } else if (parsedBody.query.includes("OrderSummary")) {
@@ -93,6 +112,10 @@ test("lists two stores and routes a shop query to the selected store", async () 
         response.end(JSON.stringify({ data: { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Warehouse", deactivatedAt: null, addressVerified: true, fulfillsOnlineOrders: true, hasActiveInventory: true, address: { address1: "1 Main St", address2: null, city: "Albany", province: "New York", provinceCode: "NY", country: "United States", countryCode: "US", zip: "12201", formatted: ["1 Main St", "Albany NY 12201"] } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
       } else if (parsedBody.query.includes("DuplicateSkuReport")) {
         response.end(JSON.stringify({ data: { productVariants: { nodes: [{ id: "gid://shopify/ProductVariant/4", sku: "DUP-1", title: "First", product: { id: "gid://shopify/Product/6", title: "Duplicate One", handle: "duplicate-one", status: "ACTIVE" } }, { id: "gid://shopify/ProductVariant/5", sku: "DUP-1", title: "Second", product: { id: "gid://shopify/Product/7", title: "Duplicate Two", handle: "duplicate-two", status: "ACTIVE" } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
+      } else if (parsedBody.query.includes("ComparePrices")) {
+        const absent = String(parsedBody.variables.query).includes("ABSENT");
+        const nodes = absent ? [] : [{ id: `gid://shopify/ProductVariant/${storeId}1`, sku: "SKU-1", title: "Default", price: "10.00", compareAtPrice: null, product: { title: "Example", handle: "example" } }];
+        response.end(JSON.stringify({ data: { productVariants: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } }));
       } else {
         response.end(JSON.stringify({ data: { shop: { id: "gid://shopify/Shop/1", name: "First Store", myshopifyDomain: "first-store.myshopify.com", email: "owner@example.com", currencyCode: "USD", timezoneAbbreviation: "EDT" } } }));
       }
@@ -325,7 +348,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(prices.isError, undefined);
     assert.equal(prices.structuredContent.matrix[0].consistent, true);
     assert.equal(prices.structuredContent.matrix[0].stores["first-store"][0].price, "10.00");
-    assert.equal(requests.length, 38);
+    assert.equal(requests.length, 36);
 
     const everywhere = await client.callTool({
       name: "shopify_get_product_everywhere",
@@ -334,7 +357,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(everywhere.isError, undefined);
     assert.equal(everywhere.structuredContent.stores["first-store"].matches[0].variants[0].inventoryQuantity, 5);
     assert.equal(everywhere.structuredContent.stores["second-store"].matches[0].variants[0].inventoryQuantity, 7);
-    assert.equal(requests.length, 40);
+    assert.equal(requests.length, 38);
 
     const everywhereByHandle = await client.callTool({
       name: "shopify_get_product_everywhere",
@@ -343,7 +366,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(everywhereByHandle.isError, undefined);
     assert.equal(everywhereByHandle.structuredContent.stores["first-store"].matches[0].variants.length, 2);
     assert.equal(everywhereByHandle.structuredContent.stores["first-store"].matches[0].variants[1].barcode, undefined);
-    assert.equal(requests.length, 44);
+    assert.equal(requests.length, 42);
 
     const search = await client.callTool({
       name: "shopify_search_products_many",
@@ -352,7 +375,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(search.isError, undefined);
     assert.equal(search.structuredContent.summaries[0].returnedProducts, 1);
     assert.equal(search.structuredContent.results[0].result.data.products.nodes[0].handle, "example-protein");
-    assert.equal(requests.length, 46);
+    assert.equal(requests.length, 44);
 
     const sla = await client.callTool({
       name: "shopify_fulfillment_sla_report",
@@ -361,7 +384,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(sla.isError, undefined);
     assert.equal(sla.structuredContent.summaries[0].breachedOrders, 1);
     assert.equal(sla.structuredContent.summaries[0].complete, true);
-    assert.equal(requests.length, 48);
+    assert.equal(requests.length, 46);
 
     const gaps = await client.callTool({
       name: "shopify_catalog_gap_report",
@@ -371,7 +394,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(gaps.structuredContent.gapAnalysisComplete, true);
     assert.equal(gaps.structuredContent.gaps[0].handle, "only-first");
     assert.deepEqual(gaps.structuredContent.gaps[0].missingStores, ["second-store"]);
-    assert.equal(requests.length, 50);
+    assert.equal(requests.length, 48);
 
     const incompleteGaps = await client.callTool({
       name: "shopify_catalog_gap_report",
@@ -380,7 +403,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(incompleteGaps.isError, undefined);
     assert.equal(incompleteGaps.structuredContent.gapAnalysisComplete, false);
     assert.equal(incompleteGaps.structuredContent.resultLabel, "potentialCatalogGaps");
-    assert.equal(requests.length, 52);
+    assert.equal(requests.length, 50);
 
     const throttled = await client.callTool({
       name: "shopify_graphql_query",
@@ -388,7 +411,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(throttled.isError, undefined);
     assert.equal(throttleAttempts, 2);
-    assert.equal(requests.length, 54);
+    assert.equal(requests.length, 52);
 
     const graphqlThrottled = await client.callTool({
       name: "shopify_graphql_query",
@@ -396,7 +419,16 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(graphqlThrottled.isError, undefined);
     assert.equal(graphqlThrottleAttempts, 2);
-    assert.equal(requests.length, 56);
+    assert.equal(requests.length, 54);
+
+    const persistentThrottle = await client.callTool({
+      name: "shopify_graphql_query",
+      arguments: { store: "first-store", query: "query AlwaysGraphqlThrottled { shop { name } }", variables: {} }
+    });
+    assert.equal(persistentThrottle.isError, true);
+    assert.match(persistentThrottle.content[0].text, /throttled.*after 4 attempts/i);
+    assert.equal(persistentGraphqlThrottleAttempts, 4);
+    assert.equal(requests.length, 58);
 
     const oversized = await client.callTool({
       name: "shopify_graphql_query",
@@ -404,7 +436,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(oversized.isError, true);
     assert.match(oversized.content[0].text, /more than 50000 characters/);
-    assert.equal(requests.length, 57);
+    assert.equal(requests.length, 59);
 
     const nonJson = await client.callTool({
       name: "shopify_graphql_query",
@@ -412,7 +444,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(nonJson.isError, true);
     assert.match(nonJson.content[0].text, /non-JSON response.*HTTP 502/);
-    assert.equal(requests.length, 58);
+    assert.equal(requests.length, 60);
 
     const incompleteCatalog = await client.callTool({
       name: "shopify_compare_catalog",
@@ -421,7 +453,44 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(incompleteCatalog.isError, undefined);
     assert.equal(incompleteCatalog.structuredContent.failed, 2);
     assert.match(incompleteCatalog.structuredContent.results[0].error, /no variant page information/i);
-    assert.equal(requests.length, 60);
+    assert.equal(requests.length, 62);
+
+    const repeatedCursor = await client.callTool({
+      name: "shopify_compare_inventory",
+      arguments: { stores: ["first-store", "second-store"], skus: ["REPEAT-CURSOR"] }
+    });
+    assert.equal(repeatedCursor.isError, undefined);
+    assert.equal(repeatedCursor.structuredContent.failed, 2);
+    assert.match(repeatedCursor.structuredContent.results[0].error, /invalid pagination cursor/i);
+
+    for (const [name, argumentsValue] of [
+      ["shopify_order_summary", { stores: ["missing-store"], days: 30, first: 10 }],
+      ["shopify_list_unfulfilled_orders", { stores: ["missing-store"], days: 7, first: 10 }],
+      ["shopify_recent_product_changes", { stores: ["missing-store"], days: 7, first: 10 }],
+      ["shopify_search_products_many", { stores: ["missing-store"], query: "protein", first: 10 }],
+      ["shopify_catalog_health", { stores: ["missing-store"], first: 10 }],
+      ["shopify_duplicate_sku_report", { stores: ["missing-store"], first: 10 }],
+      ["shopify_fulfillment_sla_report", { stores: ["missing-store"], lookbackDays: 30, slaDays: 2, first: 10 }]
+    ]) {
+      const failedReport = await client.callTool({ name, arguments: argumentsValue });
+      assert.equal(failedReport.isError, undefined);
+      assert.equal(failedReport.structuredContent.summaries[0].ok, false);
+      assert.equal(failedReport.structuredContent.summaries[0].complete, false);
+    }
+
+    const missingCatalog = await client.callTool({
+      name: "shopify_compare_catalog",
+      arguments: { stores: ["first-store", "second-store"], handles: ["absent"] }
+    });
+    assert.equal(missingCatalog.structuredContent.matrix[0].foundAnywhere, false);
+    assert.equal(missingCatalog.structuredContent.matrix[0].consistent, false);
+
+    const missingPrice = await client.callTool({
+      name: "shopify_compare_prices",
+      arguments: { stores: ["first-store", "second-store"], skus: ["ABSENT"] }
+    });
+    assert.equal(missingPrice.structuredContent.matrix[0].foundAnywhere, false);
+    assert.equal(missingPrice.structuredContent.matrix[0].consistent, false);
   } finally {
     await client.close();
     await new Promise((resolveClose) => mock.close(resolveClose));
@@ -456,6 +525,74 @@ test("parses array and Hermes object legacy store formats", () => {
     auth: { type: "client_credentials", clientId: "client-id" },
     credential: "client-secret"
   }]);
+});
+
+test("rejects hidden input when stdin ends before Enter", async () => {
+  async function* endedInput() {
+    yield "partial-secret";
+  }
+  await assert.rejects(collectHiddenInput(endedInput()), /ended before you pressed Enter/);
+
+  async function* submittedInput() {
+    yield "secrex\u007ft\n";
+  }
+  assert.equal(await collectHiddenInput(submittedInput()), "secret");
+});
+
+test("legacy import restores credentials after a partial failure", async () => {
+  const credentials = new Map([["first", "old-secret"]]);
+  let writes = 0;
+  let configSaved = false;
+  await assert.rejects(importStoresWithRollback({
+    imported: [
+      { alias: "first", shop: "first.myshopify.com", auth: { type: "access_token" }, credential: "new-secret" },
+      { alias: "second", shop: "second.myshopify.com", auth: { type: "access_token" }, credential: "second-secret" }
+    ],
+    config: { stores: [] },
+    apiVersion: "2026-07",
+    accountFor: ({ alias }) => alias,
+    readCredential: async (account) => credentials.get(account) ?? null,
+    storeCredential: async (account, value) => {
+      writes += 1;
+      if (writes === 2) throw new Error("simulated keychain failure");
+      credentials.set(account, value);
+    },
+    removeCredential: async (account) => { credentials.delete(account); },
+    saveConfigValue: () => { configSaved = true; }
+  }), /rolled back.*simulated keychain failure/);
+  assert.equal(credentials.get("first"), "old-secret");
+  assert.equal(credentials.has("second"), false);
+  assert.equal(configSaved, false);
+});
+
+test("authorization-code exchange handles non-JSON responses and timeouts", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response("<html>Bad gateway</html>", { status: 502 });
+    await assert.rejects(exchangeAuthorizationCode({
+      shop: "oauth-code.myshopify.com",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      code: "code"
+    }), /non-JSON response.*HTTP 502/);
+
+    globalThis.fetch = async (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("Aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    });
+    await assert.rejects(exchangeAuthorizationCode({
+      shop: "oauth-code.myshopify.com",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      code: "code",
+      timeoutMs: 5
+    }), /did not respond within 0.005 seconds/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("OAuth errors identify non-JSON responses", async () => {
@@ -493,6 +630,26 @@ test("OAuth cache changes when client credentials change", async () => {
   } finally {
     globalThis.fetch = originalFetch;
     delete process.env.SHOPIFY_CLIENT_SECRET_OAUTH_CACHE;
+  }
+});
+
+test("concurrent OAuth requests share one in-flight token exchange", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    return Response.json({ access_token: "shared-token", expires_in: 86_399 });
+  };
+  try {
+    process.env.SHOPIFY_CLIENT_SECRET_OAUTH_CONCURRENT = "client-secret";
+    const store = { alias: "oauth-concurrent", shop: "oauth-concurrent.myshopify.com", apiVersion: "2026-07", auth: { type: "client_credentials", clientId: "client-id" } };
+    const tokens = await Promise.all([getAccessToken(store), getAccessToken(store), getAccessToken(store)]);
+    assert.deepEqual(tokens, ["shared-token", "shared-token", "shared-token"]);
+    assert.equal(requests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.SHOPIFY_CLIENT_SECRET_OAUTH_CONCURRENT;
   }
 });
 

@@ -23,6 +23,7 @@ import {
   storeLocations
 } from "./reports.js";
 import { adminGraphql, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
+import { fitMultiStoreResults } from "./result-limits.js";
 
 const server = new McpServer({
   name: "shopify-multi-store-mcp-server",
@@ -141,7 +142,7 @@ server.registerTool(
   async ({ stores, query, variables }) => {
     try {
       requireQuery(query);
-      const requestedStores = [...new Set(stores)];
+      const requestedStores = stores.filter((store, index) => stores.findIndex((candidate) => candidate.toLowerCase() === store.toLowerCase()) === index);
       const configuredStores = await loadStores();
       const storesByAlias = new Map(configuredStores.map((store) => [store.alias.toLowerCase(), store]));
       const results = await Promise.all(requestedStores.map(async (store) => {
@@ -160,15 +161,7 @@ server.registerTool(
           };
         }
       }));
-      const value = {
-        count: results.length,
-        succeeded: results.filter((result) => result.ok).length,
-        failed: results.filter((result) => !result.ok).length,
-        results
-      };
-      if (JSON.stringify(value).length > MULTI_STORE_CHARACTER_LIMIT) {
-        throw new Error(`The combined response exceeded ${MULTI_STORE_CHARACTER_LIMIT} characters. Request fewer fields, fewer stores, or use cursor pagination.`);
-      }
+      const value = fitMultiStoreResults(results, MULTI_STORE_CHARACTER_LIMIT);
       return success(value);
     } catch (error) {
       return failure(error);

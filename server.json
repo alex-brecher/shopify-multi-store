@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.alex-brecher/shopify-multi-store",
+  "description": "Connect AI agents to multiple Shopify Admin stores for reports, comparisons, and guarded updates.",
+  "repository": {
+    "url": "https://github.com/alex-brecher/shopify-multi-store",
+    "source": "github"
+  },
+  "version": "1.5.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "shopify-multi-store-mcp-server",
+      "version": "1.5.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

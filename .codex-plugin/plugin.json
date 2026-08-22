@@ -1,6 +1,6 @@
 {
   "name": "shopify-multi-store",
-  "version": "1.4.0+codex.20260822034204",
+  "version": "1.5.0+codex.20260822003600",
   "description": "Connect every Shopify store to Codex. Search products, compare catalogs, find stock and fulfillment gaps, and make guarded updates.",
   "author": {
     "name": "Alex Brecher"

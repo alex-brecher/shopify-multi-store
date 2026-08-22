@@ -1,0 +1,9 @@
+Portfolio report complete.
+
+3 stores succeeded
+0 stores failed
+complete: true
+currencies kept separate
+credentials kept separate
+
+One MCP server. Every Shopify store.

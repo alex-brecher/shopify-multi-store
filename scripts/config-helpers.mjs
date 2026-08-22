@@ -31,26 +31,71 @@ export function upsertStore(store) {
   saveConfig(config);
 }
 
+export async function collectHiddenInput(input) {
+  let value = "";
+  let submitted = false;
+  outer: for await (const chunk of input) {
+    for (const character of String(chunk)) {
+      if (character === "\r" || character === "\n") {
+        submitted = true;
+        break outer;
+      }
+      if (character === "\u0003") throw new Error("Canceled.");
+      if (character === "\u007f") value = value.slice(0, -1);
+      else value += character;
+    }
+  }
+  if (!submitted) throw new Error("Secret input ended before you pressed Enter. The secret was not saved.");
+  return value;
+}
+
 export async function readHidden(prompt) {
   if (!process.stdin.isTTY) throw new Error("Run this command in an interactive terminal.");
   process.stdout.write(prompt);
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.setEncoding("utf8");
-  let value = "";
   try {
-    for await (const character of process.stdin) {
-      if (character === "\r" || character === "\n") break;
-      if (character === "\u0003") throw new Error("Canceled.");
-      if (character === "\u007f") value = value.slice(0, -1);
-      else value += character;
-    }
+    return await collectHiddenInput(process.stdin);
   } finally {
     process.stdin.setRawMode(false);
     process.stdin.pause();
     process.stdout.write("\n");
   }
-  return value;
+}
+
+export async function exchangeAuthorizationCode({ shop, clientId, clientSecret, code, timeoutMs = 30_000 }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Shopify token exchange did not respond within ${timeoutMs / 1_000} seconds.`);
+    }
+    throw new Error(`Shopify token exchange failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const responseText = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    throw new Error(`Shopify token exchange returned a non-JSON response. HTTP ${response.status}.`);
+  }
+  if (!response.ok || typeof payload?.access_token !== "string") {
+    const message = typeof payload?.error_description === "string" ? payload.error_description : `HTTP ${response.status}`;
+    throw new Error(`Shopify token exchange failed: ${message}`);
+  }
+  return payload.access_token;
 }
 
 export function validateAlias(alias) {
@@ -111,6 +156,45 @@ export function parseLegacyStores(source) {
     }
     return { alias, shop, auth: { type: "client_credentials", clientId }, credential: clientSecret };
   });
+}
+
+export async function importStoresWithRollback({
+  imported,
+  config,
+  apiVersion,
+  accountFor,
+  readCredential,
+  storeCredential,
+  removeCredential,
+  saveConfigValue = saveConfig
+}) {
+  const changedCredentials = [];
+  try {
+    for (const item of imported) {
+      const { alias, shop, auth, credential } = item;
+      const account = accountFor(item);
+      const previous = await readCredential(account);
+      await storeCredential(account, credential);
+      changedCredentials.push({ account, previous });
+      const store = { alias, shop, apiVersion, auth };
+      const index = config.stores.findIndex((candidate) => candidate.alias === alias);
+      if (index >= 0) config.stores[index] = store;
+      else config.stores.push(store);
+    }
+    saveConfigValue(config);
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const { account, previous } of changedCredentials.reverse()) {
+      try {
+        if (previous === null) await removeCredential(account);
+        else await storeCredential(account, previous);
+      } catch (rollbackError) {
+        rollbackErrors.push(`${account}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+    }
+    const rollbackDetails = rollbackErrors.length ? ` Credential rollback errors: ${rollbackErrors.join("; ")}` : "";
+    throw new Error(`The import failed and stored credentials were rolled back. ${error instanceof Error ? error.message : String(error)}${rollbackDetails}`);
+  }
 }
 
 export async function verifyAccessToken({ shop, apiVersion, token }) {

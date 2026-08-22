@@ -9,14 +9,20 @@ Query, compare, report, and make guarded updates across Shopify stores from Clau
 <img src="docs/assets/shopify-multi-store-hero.png" alt="One MCP server connected to multiple ecommerce stores" width="1200">
 
 [![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
-[![npm v1.4.0](https://img.shields.io/badge/npm-v1.4.0-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
+[![npm v1.5.0](https://img.shields.io/badge/npm-v1.5.0-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](package.json)
 [![MCP ready](https://img.shields.io/badge/MCP-ready-7C3AED)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4C430)](LICENSE)
 
-[Quick start](#quick-start) · [Reports](#ready-made-reports) · [AI clients](#connect-an-ai-client) · [Security](#security-model)
+[Demo](#see-it-work) · [Quick start](#quick-start) · [Reports](#ready-made-reports) · [AI clients](#connect-an-ai-client) · [Security](#security-model)
 
 </div>
+
+## See it work
+
+<img src="docs/assets/multi-store-demo.gif" alt="Terminal demonstration of a multi-store Shopify health check and product search" width="1200">
+
+The demonstration uses sample stores and sample data. The server keeps each real store credential separate.
 
 ## Quick start
 
@@ -46,6 +52,21 @@ Each store gets a permanent alias and a separate secure credential. Every store 
 | Guarded mutations | Target one store and pass an explicit confirmation for each update. |
 | Secure credentials | Use macOS Keychain, Windows Credential Manager, or Linux Secret Service. |
 | Portable skills | Guide Claude, Codex, Cursor, and other compatible agents. |
+
+## This server and Shopify Dev MCP
+
+The two servers solve different problems. Use both when an agent needs Shopify reference material and access to your stores.
+
+| Capability | Shopify Multi-Store MCP | [Shopify Dev MCP](https://shopify.dev/docs/apps/build/ai-toolkit#install-with-the-dev-mcp-server) |
+| --- | --- | --- |
+| Primary purpose | Operate connected Shopify Admin stores. | Search Shopify developer resources. |
+| Store data | Read and compare configured stores. | Does not connect to Shopify Admin store data. |
+| Multiple stores | Keep named stores active in one session. | Not designed for store portfolio operations. |
+| Reports | Provide ready-made operations and catalog reports. | Provide developer documentation and API schemas. |
+| Updates | Run guarded mutations against one selected store. | Does not run Admin API updates against your stores. |
+| Authentication | Use separate credentials for each store. | Needs no authentication. |
+
+Shopify Dev MCP helps an agent create and examine Shopify code. This server runs the approved operation against the selected store.
 
 ## Ready-made reports
 
@@ -284,3 +305,5 @@ The live test uses configured stores and performs read-only Shopify Admin API ca
 ## License
 
 MIT
+
+Read the [changelog](CHANGELOG.md), [contribution guide](CONTRIBUTING.md), [security policy](SECURITY.md), and [directory submission guide](docs/DIRECTORY-SUBMISSIONS.md).

@@ -9,10 +9,10 @@ function retryDelay(response, attempt) {
     if (retryAfter) {
         const seconds = Number(retryAfter);
         if (Number.isFinite(seconds))
-            return Math.min(Math.max(seconds * 1_000, 0), 10_000);
+            return Math.max(seconds * 1_000, 0);
         const dateDelay = Date.parse(retryAfter) - Date.now();
         if (Number.isFinite(dateDelay))
-            return Math.min(Math.max(dateDelay, 0), 10_000);
+            return Math.max(dateDelay, 0);
     }
     return 250 * 2 ** attempt;
 }
@@ -68,10 +68,12 @@ async function graphqlRequest(store, document, variables, token) {
     return { response, payload };
 }
 export async function adminGraphql(store, document, variables) {
+    const startedAt = Date.now();
     const token = await getAccessToken(store);
     let response;
     let payload;
-    for (let attempt = 0; attempt <= MAX_THROTTLE_RETRIES; attempt += 1) {
+    let attempt = 0;
+    for (; attempt <= MAX_THROTTLE_RETRIES; attempt += 1) {
         ({ response, payload } = await graphqlRequest(store, document, variables, token));
         const throttled = response.status === 429 || hasThrottleError(payload);
         if (!throttled || attempt === MAX_THROTTLE_RETRIES)
@@ -85,11 +87,18 @@ export async function adminGraphql(store, document, variables) {
         const details = JSON.stringify(payload).slice(0, 2_000);
         throw new Error(`Shopify returned HTTP ${response.status} for ${store.alias}. Request ID: ${requestId ?? "not provided"}. Response: ${details}`);
     }
+    if (hasThrottleError(payload)) {
+        const details = JSON.stringify(payload).slice(0, 2_000);
+        throw new Error(`Shopify throttled ${store.alias} after ${MAX_THROTTLE_RETRIES + 1} attempts. Request ID: ${requestId ?? "not provided"}. Response: ${details}`);
+    }
     const body = payload && typeof payload === "object" ? payload : {};
     const envelope = {
         store: store.alias,
         shop: store.shop,
         apiVersion: store.apiVersion,
+        ...(requestId ? { requestId } : {}),
+        elapsedMs: Date.now() - startedAt,
+        retryCount: Math.min(attempt, MAX_THROTTLE_RETRIES),
         ...(body.data !== undefined ? { data: body.data } : {}),
         ...(body.errors !== undefined ? { errors: body.errors } : {}),
         ...(body.extensions !== undefined ? { extensions: body.extensions } : {})

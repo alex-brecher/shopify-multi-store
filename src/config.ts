@@ -32,6 +32,7 @@ const ConfigSchema = z.object({
 export type StoreConfig = z.infer<typeof StoreConfigSchema>;
 
 const oauthTokenCache = new Map<string, { token: string; expiresAt: number }>();
+const oauthTokenRequests = new Map<string, Promise<string>>();
 
 export function configPath(): string {
   const configured = process.env.SHOPIFY_MULTI_STORE_CONFIG;
@@ -113,6 +114,21 @@ async function getClientCredentialsToken(store: StoreConfig): Promise<string> {
   const cacheKey = `${store.alias}\0${store.shop}\0${store.auth.clientId}\0${secretFingerprint}`;
   const cached = oauthTokenCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now() + 5 * 60_000) return cached.token;
+
+  const pending = oauthTokenRequests.get(cacheKey);
+  if (pending) return pending;
+
+  const request = requestClientCredentialsToken(store, clientSecret, cacheKey);
+  oauthTokenRequests.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    if (oauthTokenRequests.get(cacheKey) === request) oauthTokenRequests.delete(cacheKey);
+  }
+}
+
+async function requestClientCredentialsToken(store: StoreConfig, clientSecret: string, cacheKey: string): Promise<string> {
+  if (store.auth.type !== "client_credentials") throw new Error("Client credentials are not configured.");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);

@@ -1,7 +1,8 @@
 {
   "name": "shopify-multi-store-mcp-server",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Multi-store Shopify Admin MCP server for Claude, Codex, Cursor, and VS Code. Search products, compare inventory and catalogs, run reports, and make guarded updates.",
+  "mcpName": "io.github.alex-brecher/shopify-multi-store",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,13 +18,25 @@
     "codex",
     "cursor",
     "ecommerce",
+    "ecommerce-reporting",
     "graphql",
     "mcp",
+    "mcp-server",
+    "model-context-protocol",
     "shopify",
+    "shopify-mcp",
     "shopify-admin-api",
+    "shopify-graphql",
+    "shopify-multi-store",
     "multi-store",
+    "inventory-management",
+    "order-management",
     "agent-skill"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -31,12 +44,18 @@
   },
   "files": [
     "dist/",
+    "docs/assets/",
+    "docs/DIRECTORY-SUBMISSIONS.md",
     "scripts/",
     "skills/",
     ".claude/",
     ".codex-plugin/",
     ".mcp.json",
+    "server.json",
+    "glama.json",
     "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "SECURITY.md",
     "LICENSE"
   ],

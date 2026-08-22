@@ -1,0 +1,7 @@
+> Find SKU PROTEIN-42 across every store.
+
+shopify_get_product_everywhere
+matchBy: sku
+stores: retail, wholesale, outlet
+
+Searching 3 stores in parallel...

@@ -7,6 +7,8 @@ import {
   removeCredential,
   storeCredential
 } from "../dist/credentials.js";
+import { getAccessToken } from "../dist/config.js";
+import { adminGraphql } from "../dist/shopify.js";
 import {
   configPath,
   loadConfig,
@@ -54,6 +56,7 @@ function listStores() {
 }
 
 async function removeStore(alias) {
+  alias = alias.trim().toLowerCase();
   validateAlias(alias);
   const config = loadConfig();
   const next = config.stores.filter((item) => item.alias !== alias);
@@ -73,6 +76,24 @@ async function doctor() {
   process.stdout.write(`Credential store: ${backend.name} (${backend.id})\n`);
   process.stdout.write(`Configuration: ${configPath}\n`);
   process.stdout.write(`Configured stores: ${config.stores.length}\n`);
+  let failures = 0;
+  for (const configured of config.stores) {
+    const store = {
+      ...configured,
+      apiVersion: configured.apiVersion ?? "2026-07",
+      auth: configured.auth ?? { type: "access_token" }
+    };
+    try {
+      await getAccessToken(store);
+      const result = await adminGraphql(store, "query DoctorStoreCheck { shop { name myshopifyDomain } }", {});
+      const shop = result.data?.shop;
+      process.stdout.write(`${store.alias}\tOK\t${shop?.name ?? store.shop}\t${result.elapsedMs}ms\n`);
+    } catch (error) {
+      failures += 1;
+      process.stdout.write(`${store.alias}\tFAIL\t${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  }
+  if (failures) throw new Error(`Doctor found ${failures} store connection failure${failures === 1 ? "" : "s"}.`);
 }
 
 const [command = "list", ...args] = process.argv.slice(2);
