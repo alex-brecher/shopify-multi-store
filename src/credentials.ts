@@ -11,7 +11,6 @@ const SECURE_BACKENDS = new Set([
   "secret-service"
 ]);
 
-const credentialCache = new Map<string, string>();
 let backendPromise: Promise<{ id: string; name: string }> | undefined;
 
 export function accessTokenAccount(alias: string): string {
@@ -42,21 +41,15 @@ export async function credentialBackend(): Promise<{ id: string; name: string }>
 export async function storeCredential(account: string, value: string): Promise<void> {
   await credentialBackend();
   await setPassword(CREDENTIAL_SERVICE, account, value);
-  credentialCache.set(account, value);
 }
 
 export async function readCredential(account: string): Promise<string | null> {
-  const cached = credentialCache.get(account);
-  if (cached) return cached;
   await credentialBackend();
-  const value = await getPassword(CREDENTIAL_SERVICE, account);
-  if (value) credentialCache.set(account, value);
-  return value;
+  return getPassword(CREDENTIAL_SERVICE, account);
 }
 
 export async function removeCredential(account: string): Promise<void> {
   await credentialBackend();
-  credentialCache.delete(account);
   try {
     await deletePassword(CREDENTIAL_SERVICE, account);
   } catch (error) {

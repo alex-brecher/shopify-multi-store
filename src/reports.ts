@@ -161,13 +161,20 @@ async function completeCatalogVariants(store: StoreConfig, envelope: GraphqlEnve
   for (const product of products.nodes) {
     const productId = product.id;
     const variantsValue = product.variants;
-    if (typeof productId !== "string" || !variantsValue || typeof variantsValue !== "object") continue;
+    if (typeof productId !== "string") {
+      throw new Error(`Shopify returned a product without an ID while paginating variants for ${store.alias}.`);
+    }
+    if (!variantsValue || typeof variantsValue !== "object") {
+      throw new Error(`Shopify returned no variant connection for ${String(productId)} on ${store.alias}.`);
+    }
     const variantsRecord = variantsValue as Record<string, unknown>;
     const initialNodes = Array.isArray(variantsRecord.nodes)
       ? variantsRecord.nodes.filter((node): node is Record<string, unknown> => Boolean(node) && typeof node === "object")
       : [];
     const pageInfoValue = variantsRecord.pageInfo;
-    if (!pageInfoValue || typeof pageInfoValue !== "object") continue;
+    if (!pageInfoValue || typeof pageInfoValue !== "object") {
+      throw new Error(`Shopify returned no variant page information for ${String(productId)} on ${store.alias}.`);
+    }
     const initialPage = pageInfoValue as Record<string, unknown>;
     if (initialPage.hasNextPage === true && typeof initialPage.endCursor !== "string") {
       throw new Error(`Shopify returned an invalid pagination cursor for product variants on ${store.alias}.`);
@@ -282,7 +289,18 @@ export async function listUnfulfilledOrders(aliases: string[], days: number, fir
       pageInfo { hasNextPage endCursor }
     }
   }`, { first, query: queryText }));
-  return responseWithinLimit({ since, days, rowLimitPerStore: first, ...report });
+  const summaries = report.results.map((result) => {
+    const orders = nodesFrom(result, "orders");
+    const pageInfo = recordValue(connectionRecordFrom(result, "orders").pageInfo);
+    return {
+      store: result.store,
+      ok: result.ok,
+      returnedOrders: orders.length,
+      complete: pageInfo?.hasNextPage !== true,
+      truncated: pageInfo?.hasNextPage === true
+    };
+  });
+  return responseWithinLimit({ since, days, rowLimitPerStore: first, summaries, ...report });
 }
 
 export async function compareCatalog(aliases: string[], handles: string[]): Promise<MultiStoreReport> {
@@ -323,10 +341,340 @@ export async function compareCatalog(aliases: string[], handles: string[]): Prom
           vendor: product.vendor,
           productType: product.productType,
           totalInventory: product.totalInventory,
-          variants: product.variants
+          variants: (() => {
+            const variants = recordValue(product.variants);
+            const nodes = Array.isArray(variants?.nodes)
+              ? variants.nodes.filter((variant): variant is Record<string, unknown> => Boolean(variant) && typeof variant === "object")
+              : [];
+            return nodes.map((variant) => ({
+              sku: variant.sku,
+              title: variant.title,
+              price: variant.price,
+              compareAtPrice: variant.compareAtPrice,
+              inventoryQuantity: variant.inventoryQuantity
+            })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+          })()
         })
       : "missing"));
     return { handle, consistent: fingerprints.size <= 1, stores };
   });
   return responseWithinLimit({ requestedHandles: uniqueHandles, differences: matrix.filter((row) => !row.consistent), matrix, ...report });
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+}
+
+function dataFrom(result: StoreReportResult): Record<string, unknown> {
+  return recordValue(result.result?.data) ?? {};
+}
+
+function connectionRecordFrom(result: StoreReportResult, connection: string): Record<string, unknown> {
+  return recordValue(dataFrom(result)[connection]) ?? {};
+}
+
+function moneyFrom(value: unknown): { amount: number; currencyCode: string } | undefined {
+  const set = recordValue(value);
+  const shopMoney = recordValue(set?.shopMoney);
+  const amount = Number(shopMoney?.amount);
+  const currencyCode = shopMoney?.currencyCode;
+  if (!Number.isFinite(amount) || typeof currencyCode !== "string") return undefined;
+  return { amount, currencyCode };
+}
+
+function countValue(value: unknown): { count: number; precision?: unknown } {
+  const count = recordValue(value);
+  return {
+    count: typeof count?.count === "number" ? count.count : 0,
+    ...(count?.precision !== undefined ? { precision: count.precision } : {})
+  };
+}
+
+export async function orderSummary(aliases: string[], days: number, first: number): Promise<MultiStoreReport> {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const queryText = `created_at:>=${since}`;
+  const report = await runReport(aliases, (store) => adminGraphql(store, `query OrderSummary($first: Int!, $query: String!) {
+    orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+      nodes {
+        id name createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus
+        currentTotalPriceSet { shopMoney { amount currencyCode } }
+        currentTotalDiscountsSet { shopMoney { amount currencyCode } }
+        currentShippingPriceSet { shopMoney { amount currencyCode } }
+        currentTotalTaxSet { shopMoney { amount currencyCode } }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { first, query: queryText }));
+
+  const summaries = report.results.map((result) => {
+    const orders = nodesFrom(result, "orders");
+    const statusCounts = { financial: {} as Record<string, number>, fulfillment: {} as Record<string, number> };
+    const currencyTotals: Record<string, { orders: number; currentOrderValue: number; discounts: number; shipping: number; tax: number; averageOrderValue: number }> = {};
+    let cancelled = 0;
+    for (const order of orders) {
+      const financial = String(order.displayFinancialStatus ?? "UNKNOWN");
+      const fulfillment = String(order.displayFulfillmentStatus ?? "UNKNOWN");
+      statusCounts.financial[financial] = (statusCounts.financial[financial] ?? 0) + 1;
+      statusCounts.fulfillment[fulfillment] = (statusCounts.fulfillment[fulfillment] ?? 0) + 1;
+      if (order.cancelledAt) cancelled += 1;
+      const total = moneyFrom(order.currentTotalPriceSet);
+      if (!total) continue;
+      const bucket = currencyTotals[total.currencyCode] ?? { orders: 0, currentOrderValue: 0, discounts: 0, shipping: 0, tax: 0, averageOrderValue: 0 };
+      bucket.orders += 1;
+      bucket.currentOrderValue += total.amount;
+      bucket.discounts += moneyFrom(order.currentTotalDiscountsSet)?.amount ?? 0;
+      bucket.shipping += moneyFrom(order.currentShippingPriceSet)?.amount ?? 0;
+      bucket.tax += moneyFrom(order.currentTotalTaxSet)?.amount ?? 0;
+      bucket.averageOrderValue = bucket.orders ? bucket.currentOrderValue / bucket.orders : 0;
+      currencyTotals[total.currencyCode] = bucket;
+    }
+    const pageInfo = recordValue(connectionRecordFrom(result, "orders").pageInfo);
+    return {
+      store: result.store,
+      ok: result.ok,
+      returnedOrders: orders.length,
+      complete: pageInfo?.hasNextPage !== true,
+      cancelledOrders: cancelled,
+      statusCounts,
+      currencyTotals
+    };
+  });
+  return responseWithinLimit({ since, days, rowLimitPerStore: first, summaries, ...report });
+}
+
+export async function lowStockReport(aliases: string[], threshold: number): Promise<MultiStoreReport> {
+  const queryText = `inventory_quantity:<=${threshold} product_status:ACTIVE`;
+  const report = await runReport(aliases, (store) => paginatedConnection(store, `query LowStockReport($query: String!, $after: String) {
+    productVariants(first: 250, after: $after, query: $query, sortKey: INVENTORY_QUANTITY) {
+      nodes {
+        id sku barcode title inventoryQuantity price inventoryPolicy
+        product { id title handle status vendor productType }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { query: queryText }, "productVariants"));
+  const summaries = report.results.map((result) => {
+    const variants = nodesFrom(result, "productVariants");
+    return {
+      store: result.store,
+      ok: result.ok,
+      variantsAtOrBelowThreshold: variants.length,
+      outOfStock: variants.filter((variant) => Number(variant.inventoryQuantity) === 0).length,
+      negativeInventory: variants.filter((variant) => Number(variant.inventoryQuantity) < 0).length,
+      lowStock: variants.filter((variant) => Number(variant.inventoryQuantity) > 0).length
+    };
+  });
+  return responseWithinLimit({ threshold, summaries, ...report });
+}
+
+export async function catalogHealth(aliases: string[], first: number): Promise<MultiStoreReport> {
+  const report = await runReport(aliases, (store) => adminGraphql(store, `query CatalogHealth($first: Int!) {
+    products(first: $first, sortKey: UPDATED_AT, reverse: true) {
+      nodes {
+        id title handle status vendor productType totalInventory tracksInventory updatedAt
+        seo { title description }
+        featuredMedia { alt }
+        variantsCount { count precision }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { first }));
+  const summaries = report.results.map((result) => {
+    const products = nodesFrom(result, "products");
+    const issues = products.map((product) => {
+      const productIssues: string[] = [];
+      const seo = recordValue(product.seo);
+      const featuredMedia = recordValue(product.featuredMedia);
+      if (!String(product.vendor ?? "").trim()) productIssues.push("missing_vendor");
+      if (!String(product.productType ?? "").trim()) productIssues.push("missing_product_type");
+      if (!String(seo?.title ?? "").trim()) productIssues.push("missing_seo_title");
+      if (!String(seo?.description ?? "").trim()) productIssues.push("missing_seo_description");
+      if (!featuredMedia) productIssues.push("missing_featured_media");
+      else if (!String(featuredMedia.alt ?? "").trim()) productIssues.push("missing_featured_media_alt");
+      if (product.status === "ACTIVE" && product.tracksInventory === true && Number(product.totalInventory) <= 0) productIssues.push("active_without_inventory");
+      return productIssues.length ? { id: product.id, title: product.title, handle: product.handle, status: product.status, issues: productIssues } : null;
+    }).filter(Boolean);
+    const pageInfo = recordValue(connectionRecordFrom(result, "products").pageInfo);
+    return {
+      store: result.store,
+      ok: result.ok,
+      scannedProducts: products.length,
+      complete: pageInfo?.hasNextPage !== true,
+      productsWithIssues: issues.length,
+      issues
+    };
+  });
+  return responseWithinLimit({ rowLimitPerStore: first, summaries, ...report });
+}
+
+export async function recentProductChanges(aliases: string[], days: number, first: number): Promise<MultiStoreReport> {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const report = await runReport(aliases, (store) => adminGraphql(store, `query RecentProductChanges($first: Int!, $query: String!) {
+    products(first: $first, query: $query, sortKey: UPDATED_AT, reverse: true) {
+      nodes { id title handle status vendor productType totalInventory createdAt updatedAt }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { first, query: `updated_at:>=${since}` }));
+  const summaries = report.results.map((result) => {
+    const products = nodesFrom(result, "products");
+    const pageInfo = recordValue(connectionRecordFrom(result, "products").pageInfo);
+    return { store: result.store, ok: result.ok, returnedProducts: products.length, complete: pageInfo?.hasNextPage !== true };
+  });
+  return responseWithinLimit({ since, days, rowLimitPerStore: first, summaries, ...report });
+}
+
+export async function customerGrowth(aliases: string[], days: number): Promise<MultiStoreReport> {
+  const now = Date.now();
+  const currentSince = new Date(now - days * 86_400_000).toISOString();
+  const previousSince = new Date(now - days * 2 * 86_400_000).toISOString();
+  const report = await runReport(aliases, (store) => adminGraphql(store, `query CustomerGrowth($current: String!, $previous: String!) {
+    shop { currencyCode }
+    totalCustomers: customersCount(limit: 10000) { count precision }
+    currentCustomers: customersCount(limit: 10000, query: $current) { count precision }
+    previousCustomers: customersCount(limit: 10000, query: $previous) { count precision }
+  }`, {
+    current: `customer_date:>=${currentSince}`,
+    previous: `customer_date:>=${previousSince} customer_date:<${currentSince}`
+  }));
+  const summaries = report.results.map((result) => {
+    const data = dataFrom(result);
+    const total = countValue(data.totalCustomers);
+    const current = countValue(data.currentCustomers);
+    const previous = countValue(data.previousCustomers);
+    const change = current.count - previous.count;
+    return {
+      store: result.store,
+      ok: result.ok,
+      totalCustomers: total,
+      currentPeriodNewCustomers: current,
+      previousPeriodNewCustomers: previous,
+      change,
+      growthRate: previous.count ? change / previous.count : null
+    };
+  });
+  return responseWithinLimit({ days, currentSince, previousSince, summaries, ...report });
+}
+
+export async function compareCollections(aliases: string[], handles: string[]): Promise<MultiStoreReport> {
+  const uniqueHandles = [...new Set(handles.map((handle) => handle.trim().toLowerCase()).filter(Boolean))];
+  const queryText = uniqueHandles.map((handle) => `handle:${searchValue(handle)}`).join(" OR ");
+  const report = await runReport(aliases, (store) => paginatedConnection(store, `query CompareCollections($query: String!, $after: String) {
+    collections(first: 250, after: $after, query: $query, sortKey: TITLE) {
+      nodes {
+        id handle title updatedAt sortOrder
+        productsCount { count precision }
+        seo { title description }
+        image { altText url }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { query: queryText }, "collections"));
+  const matrix = uniqueHandles.map((handle) => {
+    const stores = Object.fromEntries(report.results.map((result) => {
+      const collection = nodesFrom(result, "collections").find((node) => String(node.handle ?? "").toLowerCase() === handle);
+      return [result.store, collection ?? null];
+    }));
+    const fingerprints = new Set(Object.values(stores).map((collection) => collection ? JSON.stringify({
+      title: collection.title,
+      sortOrder: collection.sortOrder,
+      productsCount: collection.productsCount,
+      seo: collection.seo,
+      image: collection.image
+    }) : "missing"));
+    return { handle, consistent: fingerprints.size <= 1, stores };
+  });
+  return responseWithinLimit({ requestedHandles: uniqueHandles, differences: matrix.filter((row) => !row.consistent), matrix, ...report });
+}
+
+export async function storeLocations(aliases?: string[]): Promise<MultiStoreReport> {
+  const report = await runReport(aliases, (store) => paginatedConnection(store, `query StoreLocations($after: String) {
+    locations(first: 250, after: $after, includeInactive: true, includeLegacy: true, sortKey: NAME) {
+      nodes {
+        id name deactivatedAt addressVerified fulfillsOnlineOrders hasActiveInventory
+        address { address1 address2 city province provinceCode country countryCode zip formatted }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, {}, "locations"));
+  const summaries = report.results.map((result) => {
+    const locations = nodesFrom(result, "locations");
+    return {
+      store: result.store,
+      ok: result.ok,
+      locations: locations.length,
+      active: locations.filter((location) => !location.deactivatedAt).length,
+      inactive: locations.filter((location) => Boolean(location.deactivatedAt)).length,
+      fulfillsOnlineOrders: locations.filter((location) => location.fulfillsOnlineOrders === true).length,
+      withActiveInventory: locations.filter((location) => location.hasActiveInventory === true).length,
+      unverifiedAddresses: locations.filter((location) => location.addressVerified === false).length
+    };
+  });
+  return responseWithinLimit({ summaries, ...report });
+}
+
+export async function duplicateSkuReport(aliases: string[], first: number): Promise<MultiStoreReport> {
+  const report = await runReport(aliases, (store) => adminGraphql(store, `query DuplicateSkuReport($first: Int!) {
+    productVariants(first: $first, query: "sku:*", sortKey: SKU) {
+      nodes { id sku title product { id title handle status } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { first }));
+  const bySku = new Map<string, Array<{ store: string; variant: Record<string, unknown> }>>();
+  const summaries = report.results.map((result) => {
+    const variants = nodesFrom(result, "productVariants");
+    const local = new Map<string, Record<string, unknown>[]>();
+    for (const variant of variants) {
+      const sku = String(variant.sku ?? "").trim();
+      if (!sku) continue;
+      const key = sku.toLowerCase();
+      local.set(key, [...(local.get(key) ?? []), variant]);
+      bySku.set(key, [...(bySku.get(key) ?? []), { store: result.store, variant }]);
+    }
+    const pageInfo = recordValue(connectionRecordFrom(result, "productVariants").pageInfo);
+    return {
+      store: result.store,
+      ok: result.ok,
+      scannedVariants: variants.length,
+      complete: pageInfo?.hasNextPage !== true,
+      duplicateSkus: [...local.entries()].filter(([, entries]) => entries.length > 1).map(([sku, entries]) => ({ sku, variants: entries }))
+    };
+  });
+  const crossStoreSkus = [...bySku.entries()].map(([sku, entries]) => ({
+    sku,
+    stores: [...new Set(entries.map((entry) => entry.store))],
+    entries
+  })).filter((row) => row.stores.length > 1);
+  return responseWithinLimit({ rowLimitPerStore: first, summaries, crossStoreSkus, ...report });
+}
+
+export async function comparePrices(aliases: string[], skus: string[]): Promise<MultiStoreReport> {
+  const inventory = await compareInventory(aliases, skus);
+  const inventoryMatrix = Array.isArray(inventory.matrix) ? inventory.matrix.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object") : [];
+  const matrix = inventoryMatrix.map((row) => {
+    const storesValue = recordValue(row.stores) ?? {};
+    const stores = Object.fromEntries(Object.entries(storesValue).map(([store, value]) => {
+      const variants = Array.isArray(value) ? value.filter((variant): variant is Record<string, unknown> => Boolean(variant) && typeof variant === "object") : [];
+      return [store, variants.map((variant) => ({
+        id: variant.id,
+        title: variant.title,
+        price: variant.price,
+        compareAtPrice: variant.compareAtPrice,
+        product: variant.product
+      }))];
+    }));
+    const fingerprints = new Set(Object.values(stores).map((value) => JSON.stringify(value.map((variant) => ({
+      price: variant.price,
+      compareAtPrice: variant.compareAtPrice
+    })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))))));
+    return { sku: row.sku, consistent: fingerprints.size <= 1, stores };
+  });
+  return responseWithinLimit({
+    requestedSkus: inventory.requestedSkus,
+    differences: matrix.filter((row) => !row.consistent),
+    matrix,
+    count: inventory.count,
+    succeeded: inventory.succeeded,
+    failed: inventory.failed,
+    results: inventory.results
+  });
 }

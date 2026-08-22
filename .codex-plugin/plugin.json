@@ -1,6 +1,6 @@
 {
   "name": "shopify-multi-store",
-  "version": "1.2.1+codex.20260822025223",
+  "version": "1.3.0+codex.20260822030928",
   "description": "One secure connection for every Shopify store. Compare, report, query, and make guarded updates from Codex.",
   "author": {
     "name": "Alex Brecher"

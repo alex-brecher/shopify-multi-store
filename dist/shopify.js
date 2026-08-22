@@ -1,8 +1,36 @@
+import { readFileSync } from "node:fs";
 import { getAccessToken, graphqlEndpoint } from "./config.js";
 const CHARACTER_LIMIT = 50_000;
 const REQUEST_TIMEOUT_MS = 30_000;
-export async function adminGraphql(store, document, variables) {
-    const token = await getAccessToken(store);
+const MAX_THROTTLE_RETRIES = 3;
+const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
+function retryDelay(response, attempt) {
+    const retryAfter = response?.headers.get("retry-after");
+    if (retryAfter) {
+        const seconds = Number(retryAfter);
+        if (Number.isFinite(seconds))
+            return Math.min(Math.max(seconds * 1_000, 0), 10_000);
+        const dateDelay = Date.parse(retryAfter) - Date.now();
+        if (Number.isFinite(dateDelay))
+            return Math.min(Math.max(dateDelay, 0), 10_000);
+    }
+    return 250 * 2 ** attempt;
+}
+function hasThrottleError(payload) {
+    const body = payload && typeof payload === "object" ? payload : {};
+    if (!Array.isArray(body.errors))
+        return false;
+    return body.errors.some((error) => {
+        if (!error || typeof error !== "object")
+            return false;
+        const extensions = error.extensions;
+        return Boolean(extensions && typeof extensions === "object" && extensions.code === "THROTTLED");
+    });
+}
+async function wait(milliseconds) {
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+async function graphqlRequest(store, document, variables, token) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     let response;
@@ -13,7 +41,7 @@ export async function adminGraphql(store, document, variables) {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "X-Shopify-Access-Token": token,
-                "User-Agent": "codex-shopify-multi-store/1.0.0"
+                "User-Agent": `shopify-multi-store-mcp-server/${PACKAGE_VERSION}`
             },
             body: JSON.stringify({ query: document, variables }),
             signal: controller.signal
@@ -37,6 +65,22 @@ export async function adminGraphql(store, document, variables) {
     catch {
         throw new Error(`Shopify returned a non-JSON response for ${store.alias}. HTTP ${response.status}. Request ID: ${requestId ?? "not provided"}`);
     }
+    return { response, payload };
+}
+export async function adminGraphql(store, document, variables) {
+    const token = await getAccessToken(store);
+    let response;
+    let payload;
+    for (let attempt = 0; attempt <= MAX_THROTTLE_RETRIES; attempt += 1) {
+        ({ response, payload } = await graphqlRequest(store, document, variables, token));
+        const throttled = response.status === 429 || hasThrottleError(payload);
+        if (!throttled || attempt === MAX_THROTTLE_RETRIES)
+            break;
+        await wait(retryDelay(response, attempt));
+    }
+    if (!response)
+        throw new Error(`Shopify returned no response for ${store.alias}.`);
+    const requestId = response.headers.get("x-request-id");
     if (!response.ok) {
         const details = JSON.stringify(payload).slice(0, 2_000);
         throw new Error(`Shopify returned HTTP ${response.status} for ${store.alias}. Request ID: ${requestId ?? "not provided"}. Response: ${details}`);

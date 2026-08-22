@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -103,14 +104,15 @@ export async function getAccessToken(store: StoreConfig): Promise<string> {
 
 async function getClientCredentialsToken(store: StoreConfig): Promise<string> {
   if (store.auth.type !== "client_credentials") throw new Error("Client credentials are not configured.");
-  const cached = oauthTokenCache.get(store.alias);
-  if (cached && cached.expiresAt > Date.now() + 5 * 60_000) return cached.token;
-
   const secretEnv = `SHOPIFY_CLIENT_SECRET_${store.alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
   const clientSecret = process.env[secretEnv] ?? await readCredential(clientSecretAccount(store.alias));
   if (!clientSecret) {
     throw new Error(`No OAuth client secret is available for ${store.alias}. Set ${secretEnv} or reconnect the store.`);
   }
+  const secretFingerprint = createHash("sha256").update(clientSecret).digest("hex");
+  const cacheKey = `${store.alias}\0${store.shop}\0${store.auth.clientId}\0${secretFingerprint}`;
+  const cached = oauthTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 5 * 60_000) return cached.token;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
@@ -126,11 +128,23 @@ async function getClientCredentialsToken(store: StoreConfig): Promise<string> {
       }),
       signal: controller.signal
     });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Shopify OAuth did not respond within 30 seconds for ${store.alias}.`);
+    }
+    throw new Error(`Shopify OAuth request failed for ${store.alias}: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timeout);
   }
 
-  const payload = await response.json() as Record<string, unknown>;
+  const responseText = await response.text();
+  let payload: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(responseText);
+    payload = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  } catch {
+    throw new Error(`Shopify OAuth returned a non-JSON response for ${store.alias}. HTTP ${response.status}.`);
+  }
   if (!response.ok || typeof payload.access_token !== "string") {
     const error = typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`;
     const description = typeof payload.error_description === "string" ? `: ${payload.error_description}` : "";
@@ -138,7 +152,10 @@ async function getClientCredentialsToken(store: StoreConfig): Promise<string> {
   }
 
   const expiresIn = typeof payload.expires_in === "number" ? payload.expires_in : 86_399;
-  oauthTokenCache.set(store.alias, {
+  for (const key of oauthTokenCache.keys()) {
+    if (key.startsWith(`${store.alias}\0`) && key !== cacheKey) oauthTokenCache.delete(key);
+  }
+  oauthTokenCache.set(cacheKey, {
     token: payload.access_token,
     expiresAt: Date.now() + expiresIn * 1_000
   });

@@ -15,7 +15,8 @@ import {
   saveConfig,
   upsertStore,
   validateAlias,
-  validateApiVersion
+  validateApiVersion,
+  verifyAccessToken
 } from "./config-helpers.mjs";
 
 process.stdout.on("error", (error) => {
@@ -34,9 +35,10 @@ async function addStore(args) {
 
   const token = await readHidden("Shopify Admin API access token: ");
   if (!token) throw new Error("The access token cannot be empty.");
+  const verified = await verifyAccessToken({ shop, apiVersion, token });
   await storeCredential(accessTokenAccount(alias), token);
   upsertStore({ alias, shop, apiVersion, auth: { type: "access_token" } });
-  process.stdout.write(`Saved ${alias} (${shop}).\n`);
+  process.stdout.write(`Saved ${alias} (${verified.name}, ${shop}).\n`);
 }
 
 function listStores() {
