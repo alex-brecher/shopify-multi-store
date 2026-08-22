@@ -57,6 +57,140 @@ function nodesFrom(result, connection) {
     const nodes = value.nodes;
     return Array.isArray(nodes) ? nodes.filter((node) => Boolean(node) && typeof node === "object") : [];
 }
+function connectionFrom(envelope, connection) {
+    const data = envelope.data;
+    if (!data || typeof data !== "object")
+        return undefined;
+    const value = data[connection];
+    if (!value || typeof value !== "object")
+        return undefined;
+    const record = value;
+    const nodes = Array.isArray(record.nodes)
+        ? record.nodes.filter((node) => Boolean(node) && typeof node === "object")
+        : [];
+    const pageInfo = record.pageInfo;
+    if (!pageInfo || typeof pageInfo !== "object")
+        return undefined;
+    const page = pageInfo;
+    return {
+        ...record,
+        nodes,
+        pageInfo: {
+            hasNextPage: page.hasNextPage === true,
+            endCursor: typeof page.endCursor === "string" ? page.endCursor : null
+        }
+    };
+}
+function withConnection(envelope, connection, value) {
+    const data = envelope.data && typeof envelope.data === "object" ? envelope.data : {};
+    return { ...envelope, data: { ...data, [connection]: value } };
+}
+function nextCursor(connection, store, label, previous) {
+    if (!connection.pageInfo.hasNextPage)
+        return undefined;
+    const cursor = connection.pageInfo.endCursor;
+    if (!cursor || cursor === previous) {
+        throw new Error(`Shopify returned an invalid pagination cursor for ${label} on ${store.alias}.`);
+    }
+    return cursor;
+}
+async function paginatedConnection(store, document, variables, connectionName) {
+    let after;
+    let firstEnvelope;
+    let firstConnection;
+    const nodes = [];
+    do {
+        const envelope = await adminGraphql(store, document, { ...variables, after: after ?? null });
+        firstEnvelope ??= envelope;
+        if (Array.isArray(envelope.errors) && envelope.errors.length > 0)
+            return envelope;
+        const connection = connectionFrom(envelope, connectionName);
+        if (!connection)
+            throw new Error(`Shopify returned no ${connectionName} connection for ${store.alias}.`);
+        firstConnection ??= connection;
+        nodes.push(...connection.nodes);
+        if (JSON.stringify(nodes).length > REPORT_CHARACTER_LIMIT) {
+            throw new Error(`The complete ${connectionName} result exceeded ${REPORT_CHARACTER_LIMIT} characters for ${store.alias}. Request fewer values.`);
+        }
+        const previous = after;
+        after = nextCursor(connection, store, connectionName, previous);
+    } while (after);
+    if (!firstEnvelope || !firstConnection)
+        throw new Error(`Shopify returned no ${connectionName} data for ${store.alias}.`);
+    return withConnection(firstEnvelope, connectionName, {
+        ...firstConnection,
+        nodes,
+        pageInfo: { hasNextPage: false, endCursor: null }
+    });
+}
+async function completeCatalogVariants(store, envelope) {
+    const products = connectionFrom(envelope, "products");
+    if (!products)
+        return envelope;
+    for (const product of products.nodes) {
+        const productId = product.id;
+        const variantsValue = product.variants;
+        if (typeof productId !== "string" || !variantsValue || typeof variantsValue !== "object")
+            continue;
+        const variantsRecord = variantsValue;
+        const initialNodes = Array.isArray(variantsRecord.nodes)
+            ? variantsRecord.nodes.filter((node) => Boolean(node) && typeof node === "object")
+            : [];
+        const pageInfoValue = variantsRecord.pageInfo;
+        if (!pageInfoValue || typeof pageInfoValue !== "object")
+            continue;
+        const initialPage = pageInfoValue;
+        if (initialPage.hasNextPage === true && typeof initialPage.endCursor !== "string") {
+            throw new Error(`Shopify returned an invalid pagination cursor for product variants on ${store.alias}.`);
+        }
+        let after = initialPage.hasNextPage === true && typeof initialPage.endCursor === "string" ? initialPage.endCursor : undefined;
+        const variantNodes = [...initialNodes];
+        while (after) {
+            const page = await adminGraphql(store, `query CatalogVariantsPage($productId: ID!, $after: String) {
+        product(id: $productId) {
+          variants(first: 250, after: $after) {
+            nodes { id sku title price compareAtPrice inventoryQuantity }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }`, { productId, after });
+            if (Array.isArray(page.errors) && page.errors.length > 0) {
+                throw new Error(`Shopify returned GraphQL errors while paginating variants for ${store.alias}: ${JSON.stringify(page.errors).slice(0, 2_000)}`);
+            }
+            const data = page.data && typeof page.data === "object" ? page.data : {};
+            if (!data.product || typeof data.product !== "object") {
+                throw new Error(`Shopify returned no product while paginating variants for ${store.alias}.`);
+            }
+            const pageProduct = data.product;
+            if (!pageProduct.variants || typeof pageProduct.variants !== "object") {
+                throw new Error(`Shopify returned no variant connection while paginating ${String(productId)} on ${store.alias}.`);
+            }
+            const pageVariants = pageProduct.variants;
+            const pageNodes = Array.isArray(pageVariants.nodes)
+                ? pageVariants.nodes.filter((node) => Boolean(node) && typeof node === "object")
+                : [];
+            variantNodes.push(...pageNodes);
+            if (JSON.stringify(variantNodes).length > REPORT_CHARACTER_LIMIT) {
+                throw new Error(`The complete variant result exceeded ${REPORT_CHARACTER_LIMIT} characters for ${store.alias}. Request fewer product handles.`);
+            }
+            if (!pageVariants.pageInfo || typeof pageVariants.pageInfo !== "object") {
+                throw new Error(`Shopify returned no variant page information while paginating ${String(productId)} on ${store.alias}.`);
+            }
+            const pageInfo = pageVariants.pageInfo;
+            const next = pageInfo.hasNextPage === true && typeof pageInfo.endCursor === "string" ? pageInfo.endCursor : undefined;
+            if (pageInfo.hasNextPage === true && (!next || next === after)) {
+                throw new Error(`Shopify returned an invalid pagination cursor for product variants on ${store.alias}.`);
+            }
+            after = next;
+        }
+        product.variants = {
+            ...variantsRecord,
+            nodes: variantNodes,
+            pageInfo: { hasNextPage: false, endCursor: null }
+        };
+    }
+    return withConnection(envelope, "products", products);
+}
 export async function portfolioSnapshot(aliases) {
     const report = await runReport(aliases, (store) => adminGraphql(store, `query PortfolioSnapshot {
     shop { name myshopifyDomain currencyCode timezoneAbbreviation plan { displayName } }
@@ -73,8 +207,8 @@ export async function portfolioSnapshot(aliases) {
 export async function compareInventory(aliases, skus) {
     const uniqueSkus = [...new Set(skus.map((sku) => sku.trim()).filter(Boolean))];
     const queryText = uniqueSkus.map((sku) => `sku:${searchValue(sku)}`).join(" OR ");
-    const report = await runReport(aliases, (store) => adminGraphql(store, `query CompareInventory($query: String!) {
-    productVariants(first: 100, query: $query, sortKey: SKU) {
+    const report = await runReport(aliases, (store) => paginatedConnection(store, `query CompareInventory($query: String!, $after: String) {
+    productVariants(first: 250, after: $after, query: $query, sortKey: SKU) {
       nodes {
         id
         sku
@@ -86,7 +220,7 @@ export async function compareInventory(aliases, skus) {
       }
       pageInfo { hasNextPage endCursor }
     }
-  }`, { query: queryText }));
+  }`, { query: queryText }, "productVariants"));
     const matrix = uniqueSkus.map((sku) => ({
         sku,
         stores: Object.fromEntries(report.results.map((result) => {
@@ -118,8 +252,9 @@ export async function listUnfulfilledOrders(aliases, days, first) {
 export async function compareCatalog(aliases, handles) {
     const uniqueHandles = [...new Set(handles.map((handle) => handle.trim().toLowerCase()).filter(Boolean))];
     const queryText = uniqueHandles.map((handle) => `handle:${searchValue(handle)}`).join(" OR ");
-    const report = await runReport(aliases, (store) => adminGraphql(store, `query CompareCatalog($query: String!) {
-    products(first: 100, query: $query, sortKey: TITLE) {
+    const report = await runReport(aliases, async (store) => {
+        const products = await paginatedConnection(store, `query CompareCatalog($query: String!, $after: String) {
+    products(first: 250, after: $after, query: $query, sortKey: TITLE) {
       nodes {
         id
         handle
@@ -129,14 +264,16 @@ export async function compareCatalog(aliases, handles) {
         productType
         totalInventory
         updatedAt
-        variants(first: 100) {
+        variants(first: 250) {
           nodes { id sku title price compareAtPrice inventoryQuantity }
           pageInfo { hasNextPage endCursor }
         }
       }
       pageInfo { hasNextPage endCursor }
     }
-  }`, { query: queryText }));
+  }`, { query: queryText }, "products");
+        return completeCatalogVariants(store, products);
+    });
     const matrix = uniqueHandles.map((handle) => {
         const stores = Object.fromEntries(report.results.map((result) => {
             const product = nodesFrom(result, "products").find((node) => String(node.handle ?? "").toLowerCase() === handle);

@@ -8,7 +8,7 @@ import { adminGraphql, requireMutation, requireQuery } from "./shopify.js";
 
 const server = new McpServer({
   name: "shopify-multi-store-mcp-server",
-  version: "1.2.0"
+  version: "1.2.1"
 });
 
 const StoreAliasSchema = z.string().min(1).max(64).describe("Configured store alias, such as main-store or wholesale-store");

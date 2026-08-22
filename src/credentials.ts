@@ -1,4 +1,4 @@
-import { deletePassword, diagnose, getPassword, setPassword, useBackend } from "cross-keychain";
+import { deletePassword, diagnose, getPassword, PasswordDeleteError, setPassword, useBackend } from "cross-keychain";
 
 export const CREDENTIAL_SERVICE = "codex-shopify-multi-store";
 
@@ -59,7 +59,12 @@ export async function removeCredential(account: string): Promise<void> {
   credentialCache.delete(account);
   try {
     await deletePassword(CREDENTIAL_SERVICE, account);
-  } catch {
-    // Configuration removal remains valid when the credential does not exist.
+  } catch (error) {
+    if (isMissingCredentialError(error)) return;
+    throw error;
   }
+}
+
+export function isMissingCredentialError(error: unknown): boolean {
+  return error instanceof PasswordDeleteError && error.message === "Password not found";
 }

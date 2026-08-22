@@ -1,11 +1,41 @@
-# Shopify Multi-Store MCP Server and AI Skill
+# One MCP server. Every Shopify store.
 
 [![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/shopify-multi-store-mcp-server?logo=npm&color=CB3837)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
+[![npm downloads](https://img.shields.io/npm/dm/shopify-multi-store-mcp-server?logo=npm)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
+[![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](package.json)
+[![MCP](https://img.shields.io/badge/MCP-ready-7C3AED)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Connect Claude, Codex, Cursor, VS Code, and other MCP clients to multiple Shopify stores at once.
+Connect Claude, Codex, Cursor, VS Code, and other MCP clients to every Shopify store you manage.
 
-Use one secure MCP server to query, compare, report on, and manage Shopify Admin data across stores. Each store keeps a separate credential and a required alias. Read-only operations can run in parallel. Mutations remain isolated to one explicitly selected store.
+Query stores together. Compare inventory and catalogs. Find unfulfilled orders. Make guarded updates without switching connections.
+
+Each store keeps a separate secure credential and a required alias. Read-only work runs in parallel. Mutations stay isolated to one selected store.
+
+```mermaid
+flowchart LR
+    A["Claude · Codex · Cursor · VS Code"] --> B["Shopify Multi-Store MCP"]
+    B --> C["Retail Store"]
+    B --> D["Wholesale Store"]
+    B --> E["International Store"]
+    B --> F["More Shopify Stores"]
+```
+
+| One connection | Cross-store intelligence | Safer changes |
+| --- | --- | --- |
+| Keep multiple stores active at once. | Run reports, comparisons, and GraphQL queries in parallel. | Target one store and require explicit mutation approval. |
+
+## Why it stands out
+
+Many Shopify MCP servers connect one store per process. This server keeps multiple stores available in one AI conversation.
+
+- Use one permanent alias for each store.
+- Keep each credential in the operating system credential store.
+- Get partial results when one store fails.
+- Use complete pagination for inventory and catalog comparisons.
+- Use portable skills with Claude, Codex, Cursor, and other compatible agents.
+- Add Shopify's official GraphQL and ShopifyQL skills when you need deeper analysis.
 
 ## What it does
 

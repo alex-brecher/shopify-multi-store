@@ -1,7 +1,7 @@
 {
   "name": "shopify-multi-store-mcp-server",
-  "version": "1.2.0",
-  "description": "Connect Claude, Codex, Cursor, and other MCP clients to multiple Shopify stores for secure queries, reports, comparisons, and updates.",
+  "version": "1.2.1",
+  "description": "One secure MCP server for multiple Shopify stores. Query, compare, report, and make guarded updates from Claude, Codex, Cursor, and VS Code.",
   "license": "MIT",
   "repository": {
     "type": "git",
