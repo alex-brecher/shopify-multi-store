@@ -10,6 +10,7 @@ Query, compare, report, and make guarded updates across Shopify stores from Clau
 
 [![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
 [![npm v1.5.0](https://img.shields.io/badge/npm-v1.5.0-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
+[![npm provenance](https://img.shields.io/badge/npm-provenance-verified-2E8555?logo=npm&logoColor=white)](https://registry.npmjs.org/-/npm/v1/attestations/shopify-multi-store-mcp-server@1.5.0)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](package.json)
 [![MCP ready](https://img.shields.io/badge/MCP-ready-7C3AED)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4C430)](LICENSE)
