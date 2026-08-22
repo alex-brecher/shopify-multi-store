@@ -1,15 +1,15 @@
 {
   "name": "shopify-multi-store",
-  "version": "1.2.0+codex.20260821112714",
-  "description": "Connect, compare, report on, and safely manage multiple Shopify Admin stores from Codex.",
+  "version": "1.2.1+codex.20260822024212",
+  "description": "One secure connection for every Shopify store. Compare, report, query, and make guarded updates from Codex.",
   "author": {
     "name": "Alex Brecher"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Shopify Multi Store",
-    "shortDescription": "Query, report on, and manage Shopify stores together.",
-    "longDescription": "Connect Codex to multiple Shopify Admin stores with separate secure credentials. Create reports, run parallel queries, compare store data, and use Shopify's official skill to validate custom GraphQL before guarded execution.",
+    "shortDescription": "One secure connection for every Shopify store.",
+    "longDescription": "Keep multiple Shopify Admin stores active in one Codex task. Run parallel queries, compare inventory and catalogs, create operating reports, and make guarded updates with separate secure credentials.",
     "developerName": "Alex Brecher",
     "category": "Business & Operations",
     "capabilities": [

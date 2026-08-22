@@ -8,3 +8,4 @@ export declare function credentialBackend(): Promise<{
 export declare function storeCredential(account: string, value: string): Promise<void>;
 export declare function readCredential(account: string): Promise<string | null>;
 export declare function removeCredential(account: string): Promise<void>;
+export declare function isMissingCredentialError(error: unknown): boolean;
