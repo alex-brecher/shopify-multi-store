@@ -7,7 +7,7 @@
 Query, compare, report, and make guarded updates across Shopify stores from Claude, Codex, Cursor, VS Code, and other MCP clients.
 
 [![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
-[![npm v1.3.0](https://img.shields.io/badge/npm-v1.3.0-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
+[![npm v1.4.0](https://img.shields.io/badge/npm-v1.4.0-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](package.json)
 [![MCP ready](https://img.shields.io/badge/MCP-ready-7C3AED)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4C430)](LICENSE)
@@ -39,7 +39,7 @@ Each store gets a permanent alias and a separate secure credential. Every store 
 | Capability | Result |
 | --- | --- |
 | Multiple active stores | Keep every Shopify store available in one AI conversation. |
-| Cross-store reports | Compare inventory and catalogs, find unfulfilled orders, and review a portfolio snapshot. |
+| Cross-store reports | Search products, compare catalogs, find stock gaps, and report fulfillment SLA breaches. |
 | Parallel GraphQL | Run one read-only query across up to ten stores. |
 | Guarded mutations | Target one store and pass an explicit confirmation for each update. |
 | Secure credentials | Use macOS Keychain, Windows Credential Manager, or Linux Secret Service. |
@@ -52,12 +52,16 @@ Each store gets a permanent alias and a separate secure credential. Every store 
 | `shopify_portfolio_snapshot` | Summarize products, orders, customers, currency, plan, and store identity. |
 | `shopify_order_summary` | Summarize order values, discounts, tax, shipping, cancellations, and statuses. |
 | `shopify_customer_growth` | Compare new-customer counts across equal periods. |
+| `shopify_get_product_everywhere` | Find one exact SKU or handle across stores. |
+| `shopify_search_products_many` | Search products across stores with one query. |
 | `shopify_compare_inventory` | Compare inventory quantities for selected SKUs across stores. |
-| `shopify_low_stock_report` | Find low, zero, and negative inventory. |
+| `shopify_low_stock_report` | Find low inventory and cross-store transfer opportunities. |
 | `shopify_compare_prices` | Highlight price and compare-at-price differences for exact SKUs. |
 | `shopify_duplicate_sku_report` | Find repeated SKUs inside stores and shared SKUs across stores. |
 | `shopify_list_unfulfilled_orders` | List open fulfillment work across selected stores. |
+| `shopify_fulfillment_sla_report` | Find late unfulfilled orders and show age buckets. |
 | `shopify_compare_catalog` | Compare products by handle, status, vendor, type, and variants. |
+| `shopify_catalog_gap_report` | Find products that are missing or have different statuses. |
 | `shopify_catalog_health` | Find missing merchandising, SEO, media, alt text, and inventory data. |
 | `shopify_recent_product_changes` | List products updated during a selected period. |
 | `shopify_compare_collections` | Compare collection content and configuration by handle. |
@@ -68,6 +72,11 @@ Try prompts like these:
 - “Give me a portfolio snapshot for every connected store.”
 - “Summarize orders and current order values for the last 30 days. Keep currencies separate.”
 - “Show low, zero, and negative inventory across retail and wholesale.”
+- “Show products that are out of stock here but available in another store.”
+- “Find SKU A123 across every store and compare its status, price, and inventory.”
+- “Search every store for products related to protein.”
+- “Show unfulfilled orders older than two days, grouped by age.”
+- “Find products that are active in one store but missing or draft in another.”
 - “Find price differences and duplicate SKUs across these stores.”
 - “Compare inventory for SKU A123 and B456 across retail and wholesale.”
 - “List unfulfilled orders from the last seven days in three stores.”
@@ -184,12 +193,16 @@ The import copies credentials into the operating system credential store and pre
 | `shopify_portfolio_snapshot` | Create a cross-store summary. |
 | `shopify_order_summary` | Summarize recent orders and monetary totals by currency. |
 | `shopify_customer_growth` | Compare new-customer counts across equal periods. |
+| `shopify_get_product_everywhere` | Find one exact SKU or handle across stores. |
+| `shopify_search_products_many` | Search products across selected stores. |
 | `shopify_compare_inventory` | Compare SKU inventory. |
-| `shopify_low_stock_report` | Find low, zero, and negative inventory. |
+| `shopify_low_stock_report` | Find low inventory and transfer opportunities. |
 | `shopify_compare_prices` | Compare exact SKU prices. |
 | `shopify_duplicate_sku_report` | Find duplicate and shared SKUs. |
 | `shopify_list_unfulfilled_orders` | Report fulfillment work. |
+| `shopify_fulfillment_sla_report` | Report order age and SLA breaches. |
 | `shopify_compare_catalog` | Compare product catalogs. |
+| `shopify_catalog_gap_report` | Find missing products and status differences. |
 | `shopify_catalog_health` | Audit product merchandising and SEO data. |
 | `shopify_recent_product_changes` | List recently updated products. |
 | `shopify_compare_collections` | Compare collections by handle. |

@@ -49,6 +49,18 @@ test("lists two stores and routes a shop query to the selected store", async () 
         response.end(JSON.stringify({ data: { oversized: "x".repeat(51_000) } }));
       } else if (parsedBody.query.includes("ThrottleThenSucceed")) {
         response.end(JSON.stringify({ data: { shop: { name: "First Store" } } }));
+      } else if (parsedBody.query.includes("GetProductEverywhereByHandle")) {
+        response.end(JSON.stringify({ data: { products: { nodes: [{ id: `gid://shopify/Product/${storeId}`, title: "Example", handle: "example", status: "ACTIVE", vendor: "Example Vendor", productType: "Example", totalInventory: 8, updatedAt: "2026-08-21T00:00:00Z", variants: { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}1`, sku: "SKU-1", barcode: "12345", title: "Default", price: "10.00", compareAtPrice: null, inventoryQuantity: 5, inventoryPolicy: "DENY" }], pageInfo: { hasNextPage: true, endCursor: "catalog-variant-page-1" } } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
+      } else if (parsedBody.query.includes("GetProductEverywhereBySku")) {
+        response.end(JSON.stringify({ data: { productVariants: { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}1`, sku: "SKU-1", barcode: "12345", title: "Default", inventoryQuantity: storeId === "2" ? 7 : 5, price: "10.00", compareAtPrice: null, inventoryPolicy: "DENY", product: { id: `gid://shopify/Product/${storeId}`, title: "Example", handle: "example", status: "ACTIVE", vendor: "Example Vendor", productType: "Example", totalInventory: storeId === "2" ? 7 : 5, updatedAt: "2026-08-21T00:00:00Z" } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
+      } else if (parsedBody.query.includes("SearchProductsMany")) {
+        response.end(JSON.stringify({ data: { products: { nodes: [{ id: `gid://shopify/Product/${storeId}`, title: "Example Protein", handle: "example-protein", status: "ACTIVE", vendor: "Example Vendor", productType: "Protein", totalInventory: 12, updatedAt: "2026-08-21T00:00:00Z", tags: ["protein"], featuredMedia: null, variants: { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}8`, sku: "PROTEIN-1", barcode: null, title: "Default", price: "19.00", compareAtPrice: null, inventoryQuantity: 12 }], pageInfo: { hasNextPage: false, endCursor: null } } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
+      } else if (parsedBody.query.includes("FulfillmentSlaReport")) {
+        response.end(JSON.stringify({ data: { orders: { nodes: [{ id: `gid://shopify/Order/${storeId}9`, name: `#200${storeId}`, createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-02T00:00:00Z", displayFinancialStatus: "PAID", displayFulfillmentStatus: "UNFULFILLED", totalPriceSet: { shopMoney: { amount: "50.00", currencyCode: "USD" } } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
+      } else if (parsedBody.query.includes("CatalogGapReport")) {
+        const nodes = [{ id: `gid://shopify/Product/${storeId}10`, title: "Shared", handle: "shared", status: "ACTIVE", vendor: "Vendor", productType: "Type", totalInventory: 5, updatedAt: "2026-08-21T00:00:00Z" }];
+        if (storeId === "1") nodes.push({ id: "gid://shopify/Product/111", title: "Only First", handle: "only-first", status: "ACTIVE", vendor: "Vendor", productType: "Type", totalInventory: 3, updatedAt: "2026-08-21T00:00:00Z" });
+        response.end(JSON.stringify({ data: { products: { nodes, pageInfo: { hasNextPage: parsedBody.variables.first === 1, endCursor: parsedBody.variables.first === 1 ? "catalog-gap-page-1" : null } } } }));
       } else if (parsedBody.query.includes("CompareInventory")) {
         const secondPage = parsedBody.variables.after === "inventory-page-1";
         const variantId = secondPage ? 2 : 1;
@@ -65,7 +77,10 @@ test("lists two stores and routes a shop query to the selected store", async () 
       } else if (parsedBody.query.includes("OrderSummary")) {
         response.end(JSON.stringify({ data: { orders: { nodes: [{ id: "gid://shopify/Order/2", name: "#1002", createdAt: "2026-08-21T00:00:00Z", cancelledAt: null, displayFinancialStatus: "PAID", displayFulfillmentStatus: "UNFULFILLED", currentTotalPriceSet: { shopMoney: { amount: "100.00", currencyCode: "USD" } }, currentTotalDiscountsSet: { shopMoney: { amount: "10.00", currencyCode: "USD" } }, currentShippingPriceSet: { shopMoney: { amount: "5.00", currencyCode: "USD" } }, currentTotalTaxSet: { shopMoney: { amount: "8.00", currencyCode: "USD" } } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
       } else if (parsedBody.query.includes("LowStockReport")) {
-        response.end(JSON.stringify({ data: { productVariants: { nodes: [{ id: "gid://shopify/ProductVariant/3", sku: "LOW-1", barcode: null, title: "Default", inventoryQuantity: 0, price: "9.00", inventoryPolicy: "DENY", product: { id: "gid://shopify/Product/3", title: "Low Stock", handle: "low-stock", status: "ACTIVE", vendor: "Vendor", productType: "Type" } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
+        const nodes = storeId === "1" ? [{ id: "gid://shopify/ProductVariant/3", sku: "LOW-1", barcode: null, title: "Default", inventoryQuantity: 0, price: "9.00", inventoryPolicy: "DENY", product: { id: "gid://shopify/Product/3", title: "Low Stock", handle: "low-stock", status: "ACTIVE", vendor: "Vendor", productType: "Type" } }] : [];
+        response.end(JSON.stringify({ data: { productVariants: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } }));
+      } else if (parsedBody.query.includes("LowStockTransferAvailability")) {
+        response.end(JSON.stringify({ data: { productVariants: { nodes: [{ id: `gid://shopify/ProductVariant/${storeId}30`, sku: "LOW-1", title: "Default", inventoryQuantity: storeId === "2" ? 25 : 0, product: { id: `gid://shopify/Product/${storeId}30`, title: "Low Stock", handle: "low-stock", status: "ACTIVE" } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
       } else if (parsedBody.query.includes("CatalogHealth")) {
         response.end(JSON.stringify({ data: { products: { nodes: [{ id: "gid://shopify/Product/4", title: "Needs Work", handle: "needs-work", status: "ACTIVE", vendor: "", productType: "", totalInventory: 0, tracksInventory: true, updatedAt: "2026-08-21T00:00:00Z", seo: { title: "", description: "" }, featuredMedia: null, variantsCount: { count: 1, precision: "EXACT" } }], pageInfo: { hasNextPage: false, endCursor: null } } } }));
       } else if (parsedBody.query.includes("RecentProductChanges")) {
@@ -112,6 +127,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     await client.connect(transport);
     const listed = await client.listTools();
     assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
+      "shopify_catalog_gap_report",
       "shopify_catalog_health",
       "shopify_compare_catalog",
       "shopify_compare_collections",
@@ -119,6 +135,8 @@ test("lists two stores and routes a shop query to the selected store", async () 
       "shopify_compare_prices",
       "shopify_customer_growth",
       "shopify_duplicate_sku_report",
+      "shopify_fulfillment_sla_report",
+      "shopify_get_product_everywhere",
       "shopify_get_shop_info",
       "shopify_graphql_mutation",
       "shopify_graphql_query",
@@ -129,6 +147,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
       "shopify_order_summary",
       "shopify_portfolio_snapshot",
       "shopify_recent_product_changes",
+      "shopify_search_products_many",
       "shopify_store_locations"
     ]);
 
@@ -245,7 +264,8 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(lowStock.isError, undefined);
     assert.equal(lowStock.structuredContent.summaries[0].outOfStock, 1);
-    assert.equal(requests.length, 20);
+    assert.equal(lowStock.structuredContent.transferOpportunities[0].destinations[0].store, "second-store");
+    assert.equal(requests.length, 22);
 
     const health = await client.callTool({
       name: "shopify_catalog_health",
@@ -254,7 +274,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(health.isError, undefined);
     assert.equal(health.structuredContent.summaries[0].productsWithIssues, 1);
     assert.ok(health.structuredContent.summaries[0].issues[0].issues.includes("missing_vendor"));
-    assert.equal(requests.length, 22);
+    assert.equal(requests.length, 24);
 
     const recent = await client.callTool({
       name: "shopify_recent_product_changes",
@@ -262,7 +282,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(recent.isError, undefined);
     assert.equal(recent.structuredContent.summaries[0].returnedProducts, 1);
-    assert.equal(requests.length, 24);
+    assert.equal(requests.length, 26);
 
     const growth = await client.callTool({
       name: "shopify_customer_growth",
@@ -271,7 +291,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(growth.isError, undefined);
     assert.equal(growth.structuredContent.summaries[0].change, 2);
     assert.equal(growth.structuredContent.summaries[0].growthRate, 0.2);
-    assert.equal(requests.length, 26);
+    assert.equal(requests.length, 28);
 
     const collections = await client.callTool({
       name: "shopify_compare_collections",
@@ -279,7 +299,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(collections.isError, undefined);
     assert.equal(collections.structuredContent.matrix[0].consistent, true);
-    assert.equal(requests.length, 28);
+    assert.equal(requests.length, 30);
 
     const locations = await client.callTool({
       name: "shopify_store_locations",
@@ -287,7 +307,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(locations.isError, undefined);
     assert.equal(locations.structuredContent.summaries[0].fulfillsOnlineOrders, 1);
-    assert.equal(requests.length, 30);
+    assert.equal(requests.length, 32);
 
     const duplicates = await client.callTool({
       name: "shopify_duplicate_sku_report",
@@ -296,7 +316,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(duplicates.isError, undefined);
     assert.equal(duplicates.structuredContent.summaries[0].duplicateSkus.length, 1);
     assert.equal(duplicates.structuredContent.crossStoreSkus.length, 1);
-    assert.equal(requests.length, 32);
+    assert.equal(requests.length, 34);
 
     const prices = await client.callTool({
       name: "shopify_compare_prices",
@@ -305,7 +325,62 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(prices.isError, undefined);
     assert.equal(prices.structuredContent.matrix[0].consistent, true);
     assert.equal(prices.structuredContent.matrix[0].stores["first-store"][0].price, "10.00");
-    assert.equal(requests.length, 36);
+    assert.equal(requests.length, 38);
+
+    const everywhere = await client.callTool({
+      name: "shopify_get_product_everywhere",
+      arguments: { stores: ["first-store", "second-store"], identifier: "SKU-1", matchBy: "sku" }
+    });
+    assert.equal(everywhere.isError, undefined);
+    assert.equal(everywhere.structuredContent.stores["first-store"].matches[0].variants[0].inventoryQuantity, 5);
+    assert.equal(everywhere.structuredContent.stores["second-store"].matches[0].variants[0].inventoryQuantity, 7);
+    assert.equal(requests.length, 40);
+
+    const everywhereByHandle = await client.callTool({
+      name: "shopify_get_product_everywhere",
+      arguments: { stores: ["first-store", "second-store"], identifier: "example", matchBy: "handle" }
+    });
+    assert.equal(everywhereByHandle.isError, undefined);
+    assert.equal(everywhereByHandle.structuredContent.stores["first-store"].matches[0].variants.length, 2);
+    assert.equal(everywhereByHandle.structuredContent.stores["first-store"].matches[0].variants[1].barcode, undefined);
+    assert.equal(requests.length, 44);
+
+    const search = await client.callTool({
+      name: "shopify_search_products_many",
+      arguments: { stores: ["first-store", "second-store"], query: "protein", first: 25 }
+    });
+    assert.equal(search.isError, undefined);
+    assert.equal(search.structuredContent.summaries[0].returnedProducts, 1);
+    assert.equal(search.structuredContent.results[0].result.data.products.nodes[0].handle, "example-protein");
+    assert.equal(requests.length, 46);
+
+    const sla = await client.callTool({
+      name: "shopify_fulfillment_sla_report",
+      arguments: { stores: ["first-store", "second-store"], lookbackDays: 90, slaDays: 2, first: 100 }
+    });
+    assert.equal(sla.isError, undefined);
+    assert.equal(sla.structuredContent.summaries[0].breachedOrders, 1);
+    assert.equal(sla.structuredContent.summaries[0].complete, true);
+    assert.equal(requests.length, 48);
+
+    const gaps = await client.callTool({
+      name: "shopify_catalog_gap_report",
+      arguments: { stores: ["first-store", "second-store"], first: 250 }
+    });
+    assert.equal(gaps.isError, undefined);
+    assert.equal(gaps.structuredContent.gapAnalysisComplete, true);
+    assert.equal(gaps.structuredContent.gaps[0].handle, "only-first");
+    assert.deepEqual(gaps.structuredContent.gaps[0].missingStores, ["second-store"]);
+    assert.equal(requests.length, 50);
+
+    const incompleteGaps = await client.callTool({
+      name: "shopify_catalog_gap_report",
+      arguments: { stores: ["first-store", "second-store"], first: 1 }
+    });
+    assert.equal(incompleteGaps.isError, undefined);
+    assert.equal(incompleteGaps.structuredContent.gapAnalysisComplete, false);
+    assert.equal(incompleteGaps.structuredContent.resultLabel, "potentialCatalogGaps");
+    assert.equal(requests.length, 52);
 
     const throttled = await client.callTool({
       name: "shopify_graphql_query",
@@ -313,7 +388,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(throttled.isError, undefined);
     assert.equal(throttleAttempts, 2);
-    assert.equal(requests.length, 38);
+    assert.equal(requests.length, 54);
 
     const graphqlThrottled = await client.callTool({
       name: "shopify_graphql_query",
@@ -321,7 +396,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(graphqlThrottled.isError, undefined);
     assert.equal(graphqlThrottleAttempts, 2);
-    assert.equal(requests.length, 40);
+    assert.equal(requests.length, 56);
 
     const oversized = await client.callTool({
       name: "shopify_graphql_query",
@@ -329,7 +404,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(oversized.isError, true);
     assert.match(oversized.content[0].text, /more than 50000 characters/);
-    assert.equal(requests.length, 41);
+    assert.equal(requests.length, 57);
 
     const nonJson = await client.callTool({
       name: "shopify_graphql_query",
@@ -337,7 +412,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     });
     assert.equal(nonJson.isError, true);
     assert.match(nonJson.content[0].text, /non-JSON response.*HTTP 502/);
-    assert.equal(requests.length, 42);
+    assert.equal(requests.length, 58);
 
     const incompleteCatalog = await client.callTool({
       name: "shopify_compare_catalog",
@@ -346,7 +421,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(incompleteCatalog.isError, undefined);
     assert.equal(incompleteCatalog.structuredContent.failed, 2);
     assert.match(incompleteCatalog.structuredContent.results[0].error, /no variant page information/i);
-    assert.equal(requests.length, 44);
+    assert.equal(requests.length, 60);
   } finally {
     await client.close();
     await new Promise((resolveClose) => mock.close(resolveClose));

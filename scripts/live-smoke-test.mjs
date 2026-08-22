@@ -56,8 +56,12 @@ try {
     const reportChecks = [
       ["portfolio-snapshot", "shopify_portfolio_snapshot", { stores: comparisonStores }],
       ["inventory-report", "shopify_compare_inventory", { stores: comparisonStores.slice(0, 2), skus: ["__codex_missing_sku__"] }],
+      ["product-everywhere", "shopify_get_product_everywhere", { stores: comparisonStores.slice(0, 2), identifier: "__codex_missing_sku__", matchBy: "sku" }],
+      ["product-search", "shopify_search_products_many", { stores: comparisonStores.slice(0, 2), query: "__codex_missing_product__", first: 1 }],
       ["unfulfilled-orders", "shopify_list_unfulfilled_orders", { stores: comparisonStores.slice(0, 2), days: 1, first: 1 }],
+      ["fulfillment-sla", "shopify_fulfillment_sla_report", { stores: comparisonStores.slice(0, 2), lookbackDays: 1, slaDays: 1, first: 1 }],
       ["catalog-report", "shopify_compare_catalog", { stores: comparisonStores.slice(0, 2), handles: ["codex-missing-product"] }],
+      ["catalog-gaps", "shopify_catalog_gap_report", { stores: comparisonStores.slice(0, 2), first: 1 }],
       ["order-summary", "shopify_order_summary", { stores: comparisonStores.slice(0, 2), days: 1, first: 1 }],
       ["low-stock", "shopify_low_stock_report", { stores: comparisonStores.slice(0, 2), threshold: -999 }],
       ["catalog-health", "shopify_catalog_health", { stores: comparisonStores.slice(0, 2), first: 1 }],

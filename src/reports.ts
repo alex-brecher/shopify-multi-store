@@ -186,7 +186,7 @@ async function completeCatalogVariants(store: StoreConfig, envelope: GraphqlEnve
       const page = await adminGraphql(store, `query CatalogVariantsPage($productId: ID!, $after: String) {
         product(id: $productId) {
           variants(first: 250, after: $after) {
-            nodes { id sku title price compareAtPrice inventoryQuantity }
+            nodes { id sku barcode title price compareAtPrice inventoryQuantity inventoryPolicy }
             pageInfo { hasNextPage endCursor }
           }
         }
@@ -272,6 +272,130 @@ export async function compareInventory(aliases: string[], skus: string[]): Promi
   return responseWithinLimit({ requestedSkus: uniqueSkus, matrix, ...report });
 }
 
+export async function getProductEverywhere(
+  aliases: string[],
+  identifier: string,
+  matchBy: "sku" | "handle"
+): Promise<MultiStoreReport> {
+  const requestedIdentifier = identifier.trim();
+  const normalizedIdentifier = requestedIdentifier.toLowerCase();
+  const report = matchBy === "sku"
+    ? await runReport(aliases, (store) => paginatedConnection(store, `query GetProductEverywhereBySku($query: String!, $after: String) {
+        productVariants(first: 250, after: $after, query: $query, sortKey: SKU) {
+          nodes {
+            id sku barcode title price compareAtPrice inventoryQuantity inventoryPolicy
+            product { id title handle status vendor productType totalInventory updatedAt }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`, { query: `sku:${searchValue(requestedIdentifier)}` }, "productVariants"))
+    : await runReport(aliases, async (store) => {
+        const products = await paginatedConnection(store, `query GetProductEverywhereByHandle($query: String!, $after: String) {
+          products(first: 250, after: $after, query: $query, sortKey: TITLE) {
+            nodes {
+              id title handle status vendor productType totalInventory updatedAt
+              variants(first: 250) {
+                nodes { id sku barcode title price compareAtPrice inventoryQuantity inventoryPolicy }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }`, { query: `handle:${searchValue(requestedIdentifier)}` }, "products");
+        return completeCatalogVariants(store, products);
+      });
+
+  const stores = Object.fromEntries(report.results.map((result) => {
+    if (!result.ok) return [result.store, { ok: false, error: result.error, matches: [] }];
+    if (matchBy === "handle") {
+      const matches = nodesFrom(result, "products")
+        .filter((product) => String(product.handle ?? "").toLowerCase() === normalizedIdentifier)
+        .map((product) => {
+          const variants = recordValue(product.variants);
+          return {
+            product: {
+              id: product.id,
+              title: product.title,
+              handle: product.handle,
+              status: product.status,
+              vendor: product.vendor,
+              productType: product.productType,
+              totalInventory: product.totalInventory,
+              updatedAt: product.updatedAt
+            },
+            variants: Array.isArray(variants?.nodes) ? variants.nodes : []
+          };
+        });
+      return [result.store, { ok: true, found: matches.length > 0, matches }];
+    }
+
+    const variants = nodesFrom(result, "productVariants")
+      .filter((variant) => String(variant.sku ?? "").toLowerCase() === normalizedIdentifier);
+    const products = new Map<string, { product: Record<string, unknown>; variants: Record<string, unknown>[] }>();
+    for (const variant of variants) {
+      const product = recordValue(variant.product) ?? {};
+      const key = String(product.id ?? product.handle ?? "unknown");
+      const row = products.get(key) ?? {
+        product: {
+          id: product.id,
+          title: product.title,
+          handle: product.handle,
+          status: product.status,
+          vendor: product.vendor,
+          productType: product.productType,
+          totalInventory: product.totalInventory,
+          updatedAt: product.updatedAt
+        },
+        variants: []
+      };
+      row.variants.push({
+        id: variant.id,
+        sku: variant.sku,
+        barcode: variant.barcode,
+        title: variant.title,
+        price: variant.price,
+        compareAtPrice: variant.compareAtPrice,
+        inventoryQuantity: variant.inventoryQuantity,
+        inventoryPolicy: variant.inventoryPolicy
+      });
+      products.set(key, row);
+    }
+    const matches = [...products.values()];
+    return [result.store, { ok: true, found: matches.length > 0, matches }];
+  }));
+
+  return responseWithinLimit({ identifier: requestedIdentifier, matchBy, stores, ...report });
+}
+
+export async function searchProductsMany(aliases: string[], query: string, first: number): Promise<MultiStoreReport> {
+  const searchQuery = query.trim();
+  const report = await runReport(aliases, (store) => adminGraphql(store, `query SearchProductsMany($first: Int!, $query: String!) {
+    products(first: $first, query: $query, sortKey: RELEVANCE) {
+      nodes {
+        id title handle status vendor productType totalInventory updatedAt tags
+        featuredMedia { alt preview { image { url } } }
+        variants(first: 10) {
+          nodes { id sku barcode title price compareAtPrice inventoryQuantity }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { first, query: searchQuery }));
+  const summaries = report.results.map((result) => {
+    const products = nodesFrom(result, "products");
+    const pageInfo = recordValue(connectionRecordFrom(result, "products").pageInfo);
+    return {
+      store: result.store,
+      ok: result.ok,
+      returnedProducts: products.length,
+      complete: pageInfo?.hasNextPage !== true,
+      productsWithAdditionalVariants: products.filter((product) => recordValue(recordValue(product.variants)?.pageInfo)?.hasNextPage === true).length
+    };
+  });
+  return responseWithinLimit({ query: searchQuery, rowLimitPerStore: first, summaries, ...report });
+}
+
 export async function listUnfulfilledOrders(aliases: string[], days: number, first: number): Promise<MultiStoreReport> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
   const queryText = `created_at:>=${since} fulfillment_status:unfulfilled status:open`;
@@ -301,6 +425,66 @@ export async function listUnfulfilledOrders(aliases: string[], days: number, fir
     };
   });
   return responseWithinLimit({ since, days, rowLimitPerStore: first, summaries, ...report });
+}
+
+export async function fulfillmentSlaReport(
+  aliases: string[],
+  lookbackDays: number,
+  slaDays: number,
+  first: number
+): Promise<MultiStoreReport> {
+  const generatedAt = new Date();
+  const since = new Date(generatedAt.getTime() - lookbackDays * 86_400_000).toISOString();
+  const queryText = `created_at:>=${since} fulfillment_status:unfulfilled status:open`;
+  const report = await runReport(aliases, (store) => adminGraphql(store, `query FulfillmentSlaReport($first: Int!, $query: String!) {
+    orders(first: $first, query: $query, sortKey: CREATED_AT) {
+      nodes {
+        id name createdAt updatedAt displayFinancialStatus displayFulfillmentStatus
+        totalPriceSet { shopMoney { amount currencyCode } }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { first, query: queryText }));
+  const summaries = report.results.map((result) => {
+    const orders = nodesFrom(result, "orders").map((order) => {
+      const createdAt = new Date(String(order.createdAt ?? ""));
+      const ageHours = Number.isFinite(createdAt.getTime())
+        ? Math.max(0, (generatedAt.getTime() - createdAt.getTime()) / 3_600_000)
+        : null;
+      return {
+        id: order.id,
+        name: order.name,
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+        displayFinancialStatus: order.displayFinancialStatus,
+        displayFulfillmentStatus: order.displayFulfillmentStatus,
+        totalPriceSet: order.totalPriceSet,
+        ageHours: ageHours === null ? null : Math.round(ageHours * 10) / 10,
+        ageDays: ageHours === null ? null : Math.round((ageHours / 24) * 10) / 10,
+        breached: ageHours !== null && ageHours > slaDays * 24
+      };
+    });
+    const numericAges = orders.map((order) => order.ageHours).filter((age): age is number => typeof age === "number");
+    const pageInfo = recordValue(connectionRecordFrom(result, "orders").pageInfo);
+    return {
+      store: result.store,
+      ok: result.ok,
+      returnedOrders: orders.length,
+      complete: pageInfo?.hasNextPage !== true,
+      truncated: pageInfo?.hasNextPage === true,
+      breachedOrders: orders.filter((order) => order.breached).length,
+      oldestOrderAgeDays: numericAges.length ? Math.round((Math.max(...numericAges) / 24) * 10) / 10 : null,
+      ageBuckets: {
+        underOneDay: numericAges.filter((age) => age < 24).length,
+        oneToThreeDays: numericAges.filter((age) => age >= 24 && age < 96).length,
+        fourToSevenDays: numericAges.filter((age) => age >= 96 && age < 192).length,
+        eightToFourteenDays: numericAges.filter((age) => age >= 192 && age < 360).length,
+        fifteenDaysOrMore: numericAges.filter((age) => age >= 360).length
+      },
+      breaches: orders.filter((order) => order.breached)
+    };
+  });
+  return responseWithinLimit({ generatedAt: generatedAt.toISOString(), since, lookbackDays, slaDays, rowLimitPerStore: first, summaries, ...report });
 }
 
 export async function compareCatalog(aliases: string[], handles: string[]): Promise<MultiStoreReport> {
@@ -359,6 +543,61 @@ export async function compareCatalog(aliases: string[], handles: string[]): Prom
     return { handle, consistent: fingerprints.size <= 1, stores };
   });
   return responseWithinLimit({ requestedHandles: uniqueHandles, differences: matrix.filter((row) => !row.consistent), matrix, ...report });
+}
+
+export async function catalogGapReport(aliases: string[], first: number): Promise<MultiStoreReport> {
+  const report = await runReport(aliases, (store) => adminGraphql(store, `query CatalogGapReport($first: Int!) {
+    products(first: $first, sortKey: TITLE) {
+      nodes { id title handle status vendor productType totalInventory updatedAt }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`, { first }));
+  const successful = report.results.filter((result) => result.ok);
+  const complete = successful.length === report.results.length && successful.every((result) => {
+    const pageInfo = recordValue(connectionRecordFrom(result, "products").pageInfo);
+    return pageInfo?.hasNextPage !== true;
+  });
+  const handles = new Set<string>();
+  for (const result of successful) {
+    for (const product of nodesFrom(result, "products")) {
+      const handle = String(product.handle ?? "").trim().toLowerCase();
+      if (handle) handles.add(handle);
+    }
+  }
+  const gaps = [...handles].sort().map((handle) => {
+    const stores = Object.fromEntries(report.results.map((result) => {
+      if (!result.ok) return [result.store, { available: false, unknown: true, error: result.error }];
+      const product = nodesFrom(result, "products").find((node) => String(node.handle ?? "").toLowerCase() === handle);
+      return [result.store, product
+        ? { available: true, status: product.status, title: product.title, vendor: product.vendor, productType: product.productType, totalInventory: product.totalInventory, updatedAt: product.updatedAt }
+        : { available: false }];
+    }));
+    const values = Object.values(stores).map((value) => recordValue(value) ?? {});
+    const statuses = new Set(values.filter((value) => value.available === true).map((value) => String(value.status ?? "UNKNOWN")));
+    const missingStores = Object.entries(stores).filter(([, value]) => recordValue(value)?.available === false && recordValue(value)?.unknown !== true).map(([store]) => store);
+    const activeStores = Object.entries(stores).filter(([, value]) => recordValue(value)?.status === "ACTIVE").map(([store]) => store);
+    return {
+      handle,
+      missingStores,
+      activeStores,
+      statusMismatch: statuses.size > 1,
+      stores
+    };
+  }).filter((row) => row.missingStores.length > 0 || row.statusMismatch);
+  const summaries = report.results.map((result) => {
+    const products = nodesFrom(result, "products");
+    const pageInfo = recordValue(connectionRecordFrom(result, "products").pageInfo);
+    return { store: result.store, ok: result.ok, scannedProducts: products.length, complete: result.ok && pageInfo?.hasNextPage !== true };
+  });
+  return responseWithinLimit({
+    rowLimitPerStore: first,
+    gapAnalysisComplete: complete,
+    resultLabel: complete ? "catalogGaps" : "potentialCatalogGaps",
+    gapCount: gaps.length,
+    gaps,
+    summaries,
+    ...report
+  });
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
@@ -464,7 +703,45 @@ export async function lowStockReport(aliases: string[], threshold: number): Prom
       lowStock: variants.filter((variant) => Number(variant.inventoryQuantity) > 0).length
     };
   });
-  return responseWithinLimit({ threshold, summaries, ...report });
+  const outOfStockSkus = [...new Set(report.results.flatMap((result) => nodesFrom(result, "productVariants"))
+    .filter((variant) => Number(variant.inventoryQuantity) <= 0)
+    .map((variant) => String(variant.sku ?? "").trim())
+    .filter(Boolean))];
+  const transferSkuLimit = 50;
+  const transferSkus = outOfStockSkus.slice(0, transferSkuLimit);
+  const availability = transferSkus.length
+    ? await runReport(aliases, (store) => paginatedConnection(store, `query LowStockTransferAvailability($query: String!, $after: String) {
+        productVariants(first: 250, after: $after, query: $query, sortKey: SKU) {
+          nodes { id sku title inventoryQuantity product { id title handle status } }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`, { query: transferSkus.map((sku) => `sku:${searchValue(sku)}`).join(" OR ") }, "productVariants"))
+    : { count: 0, succeeded: 0, failed: 0, results: [] };
+  const transferOpportunities = transferSkus.flatMap((sku) => {
+    const sources = report.results.flatMap((result) => nodesFrom(result, "productVariants")
+      .filter((variant) => String(variant.sku ?? "").toLowerCase() === sku.toLowerCase() && Number(variant.inventoryQuantity) <= 0)
+      .map((variant) => ({ store: result.store, inventoryQuantity: Number(variant.inventoryQuantity), variant })));
+    const destinations = availability.results.flatMap((result) => nodesFrom(result, "productVariants")
+      .filter((variant) => String(variant.sku ?? "").toLowerCase() === sku.toLowerCase() && Number(variant.inventoryQuantity) > 0)
+      .map((variant) => ({ store: result.store, inventoryQuantity: Number(variant.inventoryQuantity), variant })));
+    return sources.flatMap((source) => {
+      const crossStoreDestinations = destinations.filter((destination) => destination.store !== source.store);
+      return crossStoreDestinations.length ? [{ sku, source, destinations: crossStoreDestinations }] : [];
+    });
+  });
+  return responseWithinLimit({
+    threshold,
+    summaries,
+    transferAnalysis: {
+      analyzedSkus: transferSkus.length,
+      eligibleSkus: outOfStockSkus.length,
+      complete: outOfStockSkus.length <= transferSkuLimit && availability.failed === 0,
+      skuLimit: transferSkuLimit,
+      storeResults: availability.results.map((result) => ({ store: result.store, ok: result.ok, ...(result.error ? { error: result.error } : {}) }))
+    },
+    transferOpportunities,
+    ...report
+  });
 }
 
 export async function catalogHealth(aliases: string[], first: number): Promise<MultiStoreReport> {

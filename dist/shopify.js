@@ -3,7 +3,7 @@ import { getAccessToken, graphqlEndpoint } from "./config.js";
 const CHARACTER_LIMIT = 50_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_THROTTLE_RETRIES = 3;
-const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
+export const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
 function retryDelay(response, attempt) {
     const retryAfter = response?.headers.get("retry-after");
     if (retryAfter) {

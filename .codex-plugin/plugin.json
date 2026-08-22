@@ -1,7 +1,7 @@
 {
   "name": "shopify-multi-store",
-  "version": "1.3.0+codex.20260822030928",
-  "description": "One secure connection for every Shopify store. Compare, report, query, and make guarded updates from Codex.",
+  "version": "1.4.0+codex.20260822034204",
+  "description": "Connect every Shopify store to Codex. Search products, compare catalogs, find stock and fulfillment gaps, and make guarded updates.",
   "author": {
     "name": "Alex Brecher"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Shopify Multi Store",
     "shortDescription": "One secure connection for every Shopify store.",
-    "longDescription": "Keep multiple Shopify Admin stores active in one Codex task. Run parallel queries, compare inventory and catalogs, create operating reports, and make guarded updates with separate secure credentials.",
+    "longDescription": "Keep multiple Shopify Admin stores active in one Codex task. Search products across stores, find catalog and stock gaps, report fulfillment SLA breaches, and make guarded updates with separate credentials.",
     "developerName": "Alex Brecher",
     "category": "Business & Operations",
     "capabilities": [
@@ -19,6 +19,8 @@
     "defaultPrompt": [
       "List my connected Shopify stores.",
       "Give me a portfolio snapshot across my Shopify stores.",
+      "Find this SKU across every Shopify store.",
+      "Show catalog gaps and stock transfer opportunities.",
       "Compare products across my Shopify stores.",
       "Run the same inventory query across several stores.",
       "Run an Admin GraphQL query on a named store."

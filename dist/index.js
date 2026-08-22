@@ -3,11 +3,11 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod/v4";
 import { findStore, loadStores } from "./config.js";
-import { catalogHealth, compareCatalog, compareCollections, compareInventory, comparePrices, customerGrowth, duplicateSkuReport, listUnfulfilledOrders, lowStockReport, orderSummary, portfolioSnapshot, recentProductChanges, storeLocations } from "./reports.js";
-import { adminGraphql, requireMutation, requireQuery } from "./shopify.js";
+import { catalogHealth, catalogGapReport, compareCatalog, compareCollections, compareInventory, comparePrices, customerGrowth, duplicateSkuReport, fulfillmentSlaReport, getProductEverywhere, listUnfulfilledOrders, lowStockReport, orderSummary, portfolioSnapshot, recentProductChanges, searchProductsMany, storeLocations } from "./reports.js";
+import { adminGraphql, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
 const server = new McpServer({
     name: "shopify-multi-store-mcp-server",
-    version: "1.3.0"
+    version: PACKAGE_VERSION
 });
 const StoreAliasSchema = z.string().min(1).max(64).describe("Configured store alias, such as main-store or wholesale-store");
 const StoreAliasesSchema = z.array(StoreAliasSchema).min(1).max(10).describe("One to ten configured store aliases");
@@ -190,6 +190,40 @@ server.registerTool("shopify_compare_inventory", {
         return failure(error);
     }
 });
+server.registerTool("shopify_get_product_everywhere", {
+    title: "Find a Product Across Shopify Stores",
+    description: "Find one exact SKU or product handle across selected stores and return a normalized product, price, status, and inventory matrix.",
+    inputSchema: z.object({
+        stores: StoreAliasesSchema,
+        identifier: z.string().trim().min(1).max(255).describe("Exact SKU or product handle to find."),
+        matchBy: z.enum(["sku", "handle"]).describe("Whether the identifier is an exact SKU or exact product handle.")
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+}, async ({ stores, identifier, matchBy }) => {
+    try {
+        return success(await getProductEverywhere(stores, identifier, matchBy));
+    }
+    catch (error) {
+        return failure(error);
+    }
+});
+server.registerTool("shopify_search_products_many", {
+    title: "Search Products Across Shopify Stores",
+    description: "Search products across selected stores using plain terms or Shopify product-search syntax. Returns bounded per-store results and completeness indicators.",
+    inputSchema: z.object({
+        stores: StoreAliasesSchema,
+        query: z.string().trim().min(1).max(1_000).describe("Product search terms or Shopify product-search syntax."),
+        first: z.number().int().min(1).max(100).default(25).describe("Maximum products returned per store.")
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+}, async ({ stores, query, first }) => {
+    try {
+        return success(await searchProductsMany(stores, query, first));
+    }
+    catch (error) {
+        return failure(error);
+    }
+});
 server.registerTool("shopify_list_unfulfilled_orders", {
     title: "List Unfulfilled Orders Across Stores",
     description: "List recent open, unfulfilled orders across multiple Shopify stores with independent per-store results.",
@@ -207,6 +241,24 @@ server.registerTool("shopify_list_unfulfilled_orders", {
         return failure(error);
     }
 });
+server.registerTool("shopify_fulfillment_sla_report", {
+    title: "Report Shopify Fulfillment SLA Breaches",
+    description: "Group open unfulfilled orders into age buckets and identify orders older than a configurable fulfillment SLA across selected stores.",
+    inputSchema: z.object({
+        stores: StoreAliasesSchema,
+        lookbackDays: z.number().int().min(1).max(365).default(90).describe("How far back to search for open unfulfilled orders."),
+        slaDays: z.number().int().min(1).max(90).default(2).describe("Order age in days after which the fulfillment SLA is breached."),
+        first: z.number().int().min(1).max(250).default(100).describe("Maximum orders returned per store, oldest first.")
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+}, async ({ stores, lookbackDays, slaDays, first }) => {
+    try {
+        return success(await fulfillmentSlaReport(stores, lookbackDays, slaDays, first));
+    }
+    catch (error) {
+        return failure(error);
+    }
+});
 server.registerTool("shopify_compare_catalog", {
     title: "Compare Shopify Catalogs",
     description: "Compare product titles, status, vendor, product type, and inventory for exact handles across multiple Shopify stores.",
@@ -218,6 +270,22 @@ server.registerTool("shopify_compare_catalog", {
 }, async ({ stores, handles }) => {
     try {
         return success(await compareCatalog(stores, handles));
+    }
+    catch (error) {
+        return failure(error);
+    }
+});
+server.registerTool("shopify_catalog_gap_report", {
+    title: "Find Catalog Gaps Across Shopify Stores",
+    description: "Discover products that are missing or have different publication statuses across selected stores. Bounded scans are labeled as potential rather than definitive gaps.",
+    inputSchema: z.object({
+        stores: StoreAliasesSchema,
+        first: z.number().int().min(1).max(250).default(250).describe("Maximum products scanned per store in title order.")
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+}, async ({ stores, first }) => {
+    try {
+        return success(await catalogGapReport(stores, first));
     }
     catch (error) {
         return failure(error);

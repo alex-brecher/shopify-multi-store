@@ -39,9 +39,11 @@ Use these small workflows instead of importing a large single-store skill collec
 1. Get the exact SKU list from the user or an approved business source.
 2. Call `shopify_compare_inventory` for the selected stores.
 3. Call `shopify_low_stock_report` when the task covers the full active catalog.
-4. Call `shopify_duplicate_sku_report` before catalog consolidation or migration work.
-5. Report missing SKUs separately from zero inventory.
-6. Do not recommend a reorder quantity without demand, lead-time, and safety-stock data.
+4. Examine the transfer opportunities when one store has no stock.
+5. Do not assume that inventory can move between stores, locations, or companies.
+6. Call `shopify_duplicate_sku_report` before catalog consolidation or migration work.
+7. Report missing SKUs separately from zero inventory.
+8. Do not recommend a reorder quantity without demand, lead-time, and safety-stock data.
 
 ### Pricing review
 
@@ -56,8 +58,12 @@ Use these small workflows instead of importing a large single-store skill collec
 2. Read each store's completeness flag.
 3. Call `shopify_recent_product_changes` when recent edits define the scope.
 4. Call `shopify_compare_catalog` for exact product handles.
-5. Call `shopify_compare_collections` for exact collection handles.
-6. Treat detected gaps as review items, not authorization to change products.
+5. Call `shopify_get_product_everywhere` for one exact SKU or handle.
+6. Call `shopify_search_products_many` when the user does not know the exact handle.
+7. Call `shopify_catalog_gap_report` to find missing products and status differences.
+8. Treat an incomplete scan as a list of potential gaps.
+9. Call `shopify_compare_collections` for exact collection handles.
+10. Treat detected gaps as review items, not authorization to change products.
 
 ### Customer and location review
 
@@ -70,7 +76,8 @@ Use these small workflows instead of importing a large single-store skill collec
 
 1. Start with `shopify_portfolio_snapshot`.
 2. Use `shopify_order_summary`, `shopify_customer_growth`, and the necessary catalog or inventory report.
-3. Use a validated custom query only when the report needs returns, conversion, or other analytics.
-4. Make sure that each store has the necessary scope before you compare results.
-5. Show the period, currency, row limit, and incomplete pagination.
-6. Do not combine estimates with exact Shopify values without a label.
+3. Use `shopify_fulfillment_sla_report` to show late open orders.
+4. Use a validated custom query only when the report needs returns, conversion, or other analytics.
+5. Make sure that each store has the necessary scope before you compare results.
+6. Show the period, currency, row limit, and incomplete pagination.
+7. Do not combine estimates with exact Shopify values without a label.

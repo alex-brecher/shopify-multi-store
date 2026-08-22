@@ -14,8 +14,12 @@ export type MultiStoreReport = {
 };
 export declare function portfolioSnapshot(aliases?: string[]): Promise<MultiStoreReport>;
 export declare function compareInventory(aliases: string[], skus: string[]): Promise<MultiStoreReport>;
+export declare function getProductEverywhere(aliases: string[], identifier: string, matchBy: "sku" | "handle"): Promise<MultiStoreReport>;
+export declare function searchProductsMany(aliases: string[], query: string, first: number): Promise<MultiStoreReport>;
 export declare function listUnfulfilledOrders(aliases: string[], days: number, first: number): Promise<MultiStoreReport>;
+export declare function fulfillmentSlaReport(aliases: string[], lookbackDays: number, slaDays: number, first: number): Promise<MultiStoreReport>;
 export declare function compareCatalog(aliases: string[], handles: string[]): Promise<MultiStoreReport>;
+export declare function catalogGapReport(aliases: string[], first: number): Promise<MultiStoreReport>;
 export declare function orderSummary(aliases: string[], days: number, first: number): Promise<MultiStoreReport>;
 export declare function lowStockReport(aliases: string[], threshold: number): Promise<MultiStoreReport>;
 export declare function catalogHealth(aliases: string[], first: number): Promise<MultiStoreReport>;

@@ -1,4 +1,5 @@
 import type { StoreConfig } from "./config.js";
+export declare const PACKAGE_VERSION: string;
 export interface GraphqlEnvelope {
     store: string;
     shop: string;
