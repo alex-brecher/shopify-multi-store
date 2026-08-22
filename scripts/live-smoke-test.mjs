@@ -57,7 +57,16 @@ try {
       ["portfolio-snapshot", "shopify_portfolio_snapshot", { stores: comparisonStores }],
       ["inventory-report", "shopify_compare_inventory", { stores: comparisonStores.slice(0, 2), skus: ["__codex_missing_sku__"] }],
       ["unfulfilled-orders", "shopify_list_unfulfilled_orders", { stores: comparisonStores.slice(0, 2), days: 1, first: 1 }],
-      ["catalog-report", "shopify_compare_catalog", { stores: comparisonStores.slice(0, 2), handles: ["codex-missing-product"] }]
+      ["catalog-report", "shopify_compare_catalog", { stores: comparisonStores.slice(0, 2), handles: ["codex-missing-product"] }],
+      ["order-summary", "shopify_order_summary", { stores: comparisonStores.slice(0, 2), days: 1, first: 1 }],
+      ["low-stock", "shopify_low_stock_report", { stores: comparisonStores.slice(0, 2), threshold: -999 }],
+      ["catalog-health", "shopify_catalog_health", { stores: comparisonStores.slice(0, 2), first: 1 }],
+      ["recent-product-changes", "shopify_recent_product_changes", { stores: comparisonStores.slice(0, 2), days: 1, first: 1 }],
+      ["customer-growth", "shopify_customer_growth", { stores: comparisonStores.slice(0, 2), days: 1 }],
+      ["collection-comparison", "shopify_compare_collections", { stores: comparisonStores.slice(0, 2), handles: ["codex-missing-collection"] }],
+      ["store-locations", "shopify_store_locations", { stores: comparisonStores.slice(0, 2) }],
+      ["duplicate-skus", "shopify_duplicate_sku_report", { stores: comparisonStores.slice(0, 2), first: 1 }],
+      ["price-comparison", "shopify_compare_prices", { stores: comparisonStores.slice(0, 2), skus: ["__codex_missing_sku__"] }]
     ];
     for (const [label, name, argumentsValue] of reportChecks) {
       const report = await client.callTool({ name, arguments: argumentsValue });

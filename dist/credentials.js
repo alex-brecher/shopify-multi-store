@@ -8,7 +8,6 @@ const SECURE_BACKENDS = new Set([
     "native-linux",
     "secret-service"
 ]);
-const credentialCache = new Map();
 let backendPromise;
 export function accessTokenAccount(alias) {
     return alias;
@@ -34,21 +33,13 @@ export async function credentialBackend() {
 export async function storeCredential(account, value) {
     await credentialBackend();
     await setPassword(CREDENTIAL_SERVICE, account, value);
-    credentialCache.set(account, value);
 }
 export async function readCredential(account) {
-    const cached = credentialCache.get(account);
-    if (cached)
-        return cached;
     await credentialBackend();
-    const value = await getPassword(CREDENTIAL_SERVICE, account);
-    if (value)
-        credentialCache.set(account, value);
-    return value;
+    return getPassword(CREDENTIAL_SERVICE, account);
 }
 export async function removeCredential(account) {
     await credentialBackend();
-    credentialCache.delete(account);
     try {
         await deletePassword(CREDENTIAL_SERVICE, account);
     }

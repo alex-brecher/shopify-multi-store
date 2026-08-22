@@ -7,7 +7,7 @@
 Query, compare, report, and make guarded updates across Shopify stores from Claude, Codex, Cursor, VS Code, and other MCP clients.
 
 [![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
-[![npm v1.2.1](https://img.shields.io/badge/npm-v1.2.1-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
+[![npm v1.3.0](https://img.shields.io/badge/npm-v1.3.0-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](package.json)
 [![MCP ready](https://img.shields.io/badge/MCP-ready-7C3AED)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4C430)](LICENSE)
@@ -50,16 +50,29 @@ Each store gets a permanent alias and a separate secure credential. Every store 
 | Tool | Purpose |
 | --- | --- |
 | `shopify_portfolio_snapshot` | Summarize products, orders, customers, currency, plan, and store identity. |
+| `shopify_order_summary` | Summarize order values, discounts, tax, shipping, cancellations, and statuses. |
+| `shopify_customer_growth` | Compare new-customer counts across equal periods. |
 | `shopify_compare_inventory` | Compare inventory quantities for selected SKUs across stores. |
+| `shopify_low_stock_report` | Find low, zero, and negative inventory. |
+| `shopify_compare_prices` | Highlight price and compare-at-price differences for exact SKUs. |
+| `shopify_duplicate_sku_report` | Find repeated SKUs inside stores and shared SKUs across stores. |
 | `shopify_list_unfulfilled_orders` | List open fulfillment work across selected stores. |
 | `shopify_compare_catalog` | Compare products by handle, status, vendor, type, and variants. |
+| `shopify_catalog_health` | Find missing merchandising, SEO, media, alt text, and inventory data. |
+| `shopify_recent_product_changes` | List products updated during a selected period. |
+| `shopify_compare_collections` | Compare collection content and configuration by handle. |
+| `shopify_store_locations` | Review location, fulfillment, inventory, and address coverage. |
 
 Try prompts like these:
 
 - “Give me a portfolio snapshot for every connected store.”
+- “Summarize orders and current order values for the last 30 days. Keep currencies separate.”
+- “Show low, zero, and negative inventory across retail and wholesale.”
+- “Find price differences and duplicate SKUs across these stores.”
 - “Compare inventory for SKU A123 and B456 across retail and wholesale.”
 - “List unfulfilled orders from the last seven days in three stores.”
-- “Compare the active catalog across these stores and show missing handles.”
+- “Audit catalog health and show the products with missing SEO or media data.”
+- “Compare the active catalog and featured collections across these stores.”
 
 ## 🔌 Connect an AI client
 
@@ -169,9 +182,18 @@ The import copies credentials into the operating system credential store and pre
 | `shopify_list_stores` | List configured store aliases. |
 | `shopify_get_shop_info` | Read one store's identity. |
 | `shopify_portfolio_snapshot` | Create a cross-store summary. |
+| `shopify_order_summary` | Summarize recent orders and monetary totals by currency. |
+| `shopify_customer_growth` | Compare new-customer counts across equal periods. |
 | `shopify_compare_inventory` | Compare SKU inventory. |
+| `shopify_low_stock_report` | Find low, zero, and negative inventory. |
+| `shopify_compare_prices` | Compare exact SKU prices. |
+| `shopify_duplicate_sku_report` | Find duplicate and shared SKUs. |
 | `shopify_list_unfulfilled_orders` | Report fulfillment work. |
 | `shopify_compare_catalog` | Compare product catalogs. |
+| `shopify_catalog_health` | Audit product merchandising and SEO data. |
+| `shopify_recent_product_changes` | List recently updated products. |
+| `shopify_compare_collections` | Compare collections by handle. |
+| `shopify_store_locations` | Review store location coverage. |
 | `shopify_graphql_query` | Run a read-only Admin GraphQL query. |
 | `shopify_graphql_query_many` | Run one query across up to ten stores. |
 | `shopify_graphql_mutation` | Change one store after exact authorization. |
