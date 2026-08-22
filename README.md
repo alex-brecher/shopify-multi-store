@@ -6,17 +6,19 @@
 
 Query, compare, report, and make guarded updates across Shopify stores from Claude, Codex, Cursor, VS Code, and other MCP clients.
 
+<img src="docs/assets/shopify-multi-store-hero.png" alt="One MCP server connected to multiple ecommerce stores" width="1200">
+
 [![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
 [![npm v1.4.0](https://img.shields.io/badge/npm-v1.4.0-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](package.json)
 [![MCP ready](https://img.shields.io/badge/MCP-ready-7C3AED)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4C430)](LICENSE)
 
-[Quick start](#-quick-start) · [Reports](#-ready-made-reports) · [AI clients](#-connect-an-ai-client) · [Security](#-security-model)
+[Quick start](#quick-start) · [Reports](#ready-made-reports) · [AI clients](#connect-an-ai-client) · [Security](#security-model)
 
 </div>
 
-## 🚀 Quick start
+## Quick start
 
 Install the server, connect your stores, and run the health check:
 
@@ -34,7 +36,7 @@ claude mcp add shopify-multi-store -- npx -y shopify-multi-store-mcp-server star
 
 Each store gets a permanent alias and a separate secure credential. Every store operation requires that alias.
 
-## ✨ What you get
+## What you get
 
 | Capability | Result |
 | --- | --- |
@@ -45,7 +47,7 @@ Each store gets a permanent alias and a separate secure credential. Every store 
 | Secure credentials | Use macOS Keychain, Windows Credential Manager, or Linux Secret Service. |
 | Portable skills | Guide Claude, Codex, Cursor, and other compatible agents. |
 
-## 📊 Ready-made reports
+## Ready-made reports
 
 | Tool | Purpose |
 | --- | --- |
@@ -83,7 +85,7 @@ Try prompts like these:
 - “Audit catalog health and show the products with missing SEO or media data.”
 - “Compare the active catalog and featured collections across these stores.”
 
-## 🔌 Connect an AI client
+## Connect an AI client
 
 The server works in clients that support local stdio MCP servers. Agent Skills improve tool selection when the client supports them.
 
@@ -153,7 +155,7 @@ Copy `skills/shopify-multi-store/SKILL.md` into the client's skills directory wh
 
 </details>
 
-## 🔑 Store authentication
+## Store authentication
 
 | Method | Command | Best fit |
 | --- | --- | --- |
@@ -184,7 +186,7 @@ The import copies credentials into the operating system credential store and pre
 
 </details>
 
-## 🧰 MCP tools
+## MCP tools
 
 | Tool | Action |
 | --- | --- |
@@ -213,7 +215,7 @@ The import copies credentials into the operating system credential store and pre
 
 Read-only operations can run in parallel. Mutations stay isolated to one selected store.
 
-## 🧩 Shopify companion skills
+## Shopify companion skills
 
 Install Shopify's official Admin GraphQL and ShopifyQL skills:
 
@@ -231,7 +233,7 @@ Set `OPT_OUT_INSTRUMENTATION=true` to turn off that telemetry.
 
 This integration uses the official [Shopify AI Toolkit](https://github.com/Shopify/Shopify-AI-Toolkit). It also reflects useful patterns from [Shopify Admin Skills](https://github.com/40rty-ai/shopify-admin-skills).
 
-## 🔐 Security model
+## Security model
 
 Secrets never enter the main configuration file.
 
@@ -252,7 +254,7 @@ Set `SHOPIFY_MULTI_STORE_CONFIG` to use another configuration path.
 
 Linux credential storage requires a Secret Service provider, such as GNOME Keyring or KWallet.
 
-## 📦 Other installation options
+## Other installation options
 
 Run a health check without a global install:
 
@@ -266,7 +268,7 @@ Install directly from GitHub:
 npm install --global github:alex-brecher/shopify-multi-store
 ```
 
-## 🛠 Development
+## Development
 
 ```bash
 git clone https://github.com/alex-brecher/shopify-multi-store.git
