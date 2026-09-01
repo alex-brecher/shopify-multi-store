@@ -6,12 +6,12 @@
     "url": "https://github.com/alex-brecher/shopify-multi-store",
     "source": "github"
   },
-  "version": "1.5.0",
+  "version": "1.5.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "shopify-multi-store-mcp-server",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "transport": {
         "type": "stdio"
       }
