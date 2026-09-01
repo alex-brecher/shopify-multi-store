@@ -13,7 +13,7 @@ export function accessTokenAccount(alias) {
     return alias;
 }
 export function clientSecretAccount(alias) {
-    return `${alias}:client-secret`;
+    return `${alias}-client-secret`;
 }
 export async function credentialBackend() {
     backendPromise ??= (async () => {

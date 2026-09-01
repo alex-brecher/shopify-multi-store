@@ -2,10 +2,18 @@
 
 This file records notable changes to Shopify Multi-Store MCP.
 
-## Unreleased
+## [1.5.1] - 2026-09-01
 
 ### Fixed
 
+- Use a Keychain-safe account name for OAuth client secrets. The previous
+  `<alias>:client-secret` account was rejected by the macOS backend, which allows
+  only alphanumerics, dots, underscores, `@` and hyphens, so every store using
+  `client_credentials` auth failed on macOS with "account contains invalid
+  characters" when reading or writing its secret. The account is now
+  `<alias>-client-secret`. No migration is needed: the old name could never be
+  written successfully on macOS, so re-run `shopify-multi-store oauth` to store
+  the secret for any affected store.
 - Reject Shopify retry delays longer than 60 seconds instead of leaving an MCP request stalled.
 - Keep successful-store counts accurate when a large result must be omitted.
 - Fail explicitly when error payloads alone exceed the combined response limit.

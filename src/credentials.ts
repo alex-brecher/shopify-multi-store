@@ -18,7 +18,7 @@ export function accessTokenAccount(alias: string): string {
 }
 
 export function clientSecretAccount(alias: string): string {
-  return `${alias}:client-secret`;
+  return `${alias}-client-secret`;
 }
 
 export async function credentialBackend(): Promise<{ id: string; name: string }> {

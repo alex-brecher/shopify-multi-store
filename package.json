@@ -1,6 +1,6 @@
 {
   "name": "shopify-multi-store-mcp-server",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Multi-store Shopify Admin MCP server for Claude, Codex, Cursor, and VS Code. Search products, compare inventory and catalogs, run reports, and make guarded updates.",
   "mcpName": "io.github.alex-brecher/shopify-multi-store",
   "license": "MIT",

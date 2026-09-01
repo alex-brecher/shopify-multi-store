@@ -9,7 +9,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { PasswordDeleteError } from "cross-keychain";
 import { getAccessToken } from "../dist/config.js";
-import { isMissingCredentialError } from "../dist/credentials.js";
+import { clientSecretAccount, isMissingCredentialError } from "../dist/credentials.js";
 import { fitMultiStoreResults } from "../dist/result-limits.js";
 import { collectHiddenInput, exchangeAuthorizationCode, importStoresWithRollback, parseLegacyStores, verifyAccessToken } from "../scripts/config-helpers.mjs";
 
@@ -523,6 +523,11 @@ test("classifies only a missing credential as safe to ignore", () => {
   assert.equal(isMissingCredentialError(new PasswordDeleteError("Password not found")), true);
   assert.equal(isMissingCredentialError(new PasswordDeleteError("Keychain operation failed with code 36")), false);
   assert.equal(isMissingCredentialError(new Error("Password not found")), false);
+});
+
+test("uses a macOS-compatible Keychain account for client secrets", () => {
+  assert.equal(clientSecretAccount("inspire-protein"), "inspire-protein-client-secret");
+  assert.match(clientSecretAccount("inspire-protein"), /^[a-z0-9._@-]+$/);
 });
 
 test("parses array and Hermes object legacy store formats", () => {
