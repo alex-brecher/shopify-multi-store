@@ -137,6 +137,7 @@ async function paginatedConnection(
   let firstConnection: ConnectionData | undefined;
   const nodes: Array<Record<string, unknown>> = [];
   let serializedSize = 2;
+  const seenCursors = new Set<string>();
 
   do {
     const envelope = await adminGraphql(store, document, { ...variables, after: after ?? null });
@@ -152,6 +153,10 @@ async function paginatedConnection(
     }
     const previous = after;
     after = nextCursor(connection, store, connectionName, previous);
+    if (after && seenCursors.has(after)) {
+      throw new Error(`Shopify returned an invalid pagination cursor cycle for ${connectionName} on ${store.alias}.`);
+    }
+    if (after) seenCursors.add(after);
   } while (after);
 
   if (!firstEnvelope || !firstConnection) throw new Error(`Shopify returned no ${connectionName} data for ${store.alias}.`);
@@ -191,7 +196,10 @@ async function completeCatalogVariants(store: StoreConfig, envelope: GraphqlEnve
     const variantNodes = [...initialNodes];
     let serializedSize = addSerializedItems(2, initialNodes);
 
+    const seenCursors = new Set<string>();
     while (after) {
+      if (seenCursors.has(after)) throw new Error(`Shopify returned an invalid pagination cursor cycle for product variants on ${store.alias}.`);
+      seenCursors.add(after);
       const page = await adminGraphql(store, `query CatalogVariantsPage($productId: ID!, $after: String) {
         product(id: $productId) {
           variants(first: 250, after: $after) {

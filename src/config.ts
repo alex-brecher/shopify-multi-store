@@ -134,6 +134,7 @@ async function requestClientCredentialsToken(store: StoreConfig, clientSecret: s
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   let response: Response;
+  let responseText: string;
   try {
     response = await fetch(`https://${store.shop}/admin/oauth/access_token`, {
       method: "POST",
@@ -145,6 +146,7 @@ async function requestClientCredentialsToken(store: StoreConfig, clientSecret: s
       }),
       signal: controller.signal
     });
+    responseText = await response.text();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`Shopify OAuth did not respond within 30 seconds for ${store.alias}.`);
@@ -154,7 +156,6 @@ async function requestClientCredentialsToken(store: StoreConfig, clientSecret: s
     clearTimeout(timeout);
   }
 
-  const responseText = await response.text();
   let payload: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(responseText);

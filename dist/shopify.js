@@ -35,6 +35,7 @@ async function graphqlRequest(store, document, variables, token) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     let response;
+    let responseText;
     try {
         response = await fetch(graphqlEndpoint(store), {
             method: "POST",
@@ -47,6 +48,7 @@ async function graphqlRequest(store, document, variables, token) {
             body: JSON.stringify({ query: document, variables }),
             signal: controller.signal
         });
+        responseText = await response.text();
     }
     catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
@@ -58,7 +60,6 @@ async function graphqlRequest(store, document, variables, token) {
         clearTimeout(timeout);
     }
     const requestId = response.headers.get("x-request-id");
-    const responseText = await response.text();
     let payload;
     try {
         payload = JSON.parse(responseText);
@@ -128,5 +129,9 @@ export function requireMutation(document) {
     if (!/^mutation\b/i.test(normalized)) {
         throw new Error("The mutation document must start with mutation.");
     }
+}
+/** Keep partial data available while marking GraphQL failures for MCP callers. */
+export function hasGraphqlErrors(result) {
+    return Array.isArray(result.errors) && result.errors.length > 0;
 }
 //# sourceMappingURL=shopify.js.map

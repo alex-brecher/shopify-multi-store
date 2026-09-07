@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { PasswordDeleteError } from "cross-keychain";
+import { adminGraphql } from "../dist/shopify.js";
 import { getAccessToken } from "../dist/config.js";
 import { clientSecretAccount, isMissingCredentialError } from "../dist/credentials.js";
 import { fitMultiStoreResults } from "../dist/result-limits.js";
@@ -67,7 +68,12 @@ test("lists two stores and routes a shop query to the selected store", async () 
         return;
       }
       response.writeHead(200, { "content-type": "application/json", "x-request-id": "mock-request" });
-      if (parsedBody.query.includes("AlwaysGraphqlThrottled")) {
+      if (parsedBody.query.includes("AccessDeniedFixture")) {
+        response.end(JSON.stringify({ data: { shop: null }, errors: [{ message: "Access denied", extensions: { code: "ACCESS_DENIED" } }] }));
+      } else if (JSON.stringify(parsedBody.variables).includes("CycleFixture")) {
+        const cursor = parsedBody.variables.after;
+        response.end(JSON.stringify({ data: { productVariants: { nodes: [], pageInfo: { hasNextPage: true, endCursor: cursor === "a" ? "b" : "a" } } } }));
+      } else if (parsedBody.query.includes("AlwaysGraphqlThrottled")) {
         persistentGraphqlThrottleAttempts += 1;
         response.end(JSON.stringify({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }));
       } else if (parsedBody.query.includes("GraphqlBudgetRetry")) {
@@ -500,6 +506,30 @@ test("lists two stores and routes a shop query to the selected store", async () 
       assert.equal(failedReport.structuredContent.summaries[0].complete, false);
     }
 
+    for (const [name, args] of [
+      ["shopify_graphql_query", { store: "first-store", query: "query AccessDeniedFixture { shop { name } }" }],
+      ["shopify_graphql_mutation", { store: "first-store", mutation: "mutation AccessDeniedFixture { productDelete(input: {}) { deletedProductId } }", confirm: true }]
+    ]) {
+      const denied = await client.callTool({ name, arguments: args });
+      assert.equal(denied.isError, true);
+      assert.equal(denied.structuredContent.errors[0].message, "Access denied");
+      assert.deepEqual(denied.structuredContent.data, { shop: null });
+    }
+    const deniedMany = await client.callTool({ name: "shopify_graphql_query_many", arguments: {
+      stores: ["first-store", "second-store"], query: "query AccessDeniedFixture { shop { name } }"
+    } });
+    assert.equal(deniedMany.structuredContent.succeeded, 0);
+    assert.equal(deniedMany.structuredContent.failed, 2);
+    assert.equal(deniedMany.structuredContent.results[0].result.errors[0].message, "Access denied");
+
+    const cycleStart = requests.length;
+    const cycle = await client.callTool({ name: "shopify_compare_inventory", arguments: {
+      stores: ["first-store"], skus: ["CycleFixture"]
+    } });
+    assert.equal(cycle.structuredContent.failed, 1);
+    assert.match(cycle.structuredContent.results[0].error, /cursor cycle/i);
+    assert.equal(requests.length - cycleStart, 3);
+
     const missingCatalog = await client.callTool({
       name: "shopify_compare_catalog",
       arguments: { stores: ["first-store", "second-store"], handles: ["absent"] }
@@ -710,4 +740,35 @@ test("setup token verification rejects a token for another store", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+
+test("all HTTP helpers abort a stalled body after headers arrive", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const tokenBefore = process.env.SHOPIFY_TOKEN_BODY_TIMEOUT;
+  const secretBefore = process.env.SHOPIFY_CLIENT_SECRET_BODY_TIMEOUT;
+  process.env.SHOPIFY_TOKEN_BODY_TIMEOUT = "fixture-token";
+  process.env.SHOPIFY_CLIENT_SECRET_BODY_TIMEOUT = "fixture-secret";
+  globalThis.setTimeout = (fn, delay, ...args) => originalSetTimeout(fn, delay === 30_000 ? 10 : delay, ...args);
+  globalThis.fetch = async (_url, options) => ({
+    status: 200, ok: true, headers: new Headers(),
+    text: () => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    })
+  });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    if (tokenBefore === undefined) delete process.env.SHOPIFY_TOKEN_BODY_TIMEOUT;
+    else process.env.SHOPIFY_TOKEN_BODY_TIMEOUT = tokenBefore;
+    if (secretBefore === undefined) delete process.env.SHOPIFY_CLIENT_SECRET_BODY_TIMEOUT;
+    else process.env.SHOPIFY_CLIENT_SECRET_BODY_TIMEOUT = secretBefore;
+  });
+  const store = { alias: "body-timeout", shop: "fixture.myshopify.com", apiVersion: "2026-07", auth: { type: "access_token" } };
+  await assert.rejects(adminGraphql(store, "{ shop { name } }", {}), /did not respond within/);
+  delete process.env.SHOPIFY_TOKEN_BODY_TIMEOUT;
+  await assert.rejects(getAccessToken({ ...store, auth: { type: "client_credentials", clientId: "fixture" } }), /OAuth did not respond within/);
+  await assert.rejects(exchangeAuthorizationCode({ shop: store.shop, clientId: "fixture", clientSecret: "fixture", code: "fixture" }), /did not respond within/);
+  await assert.rejects(verifyAccessToken({ shop: store.shop, apiVersion: store.apiVersion, token: "fixture" }), /did not respond within/);
 });

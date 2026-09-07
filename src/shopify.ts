@@ -49,6 +49,7 @@ async function graphqlRequest(store: StoreConfig, document: string, variables: R
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response: Response;
+  let responseText: string;
   try {
     response = await fetch(graphqlEndpoint(store), {
       method: "POST",
@@ -61,6 +62,7 @@ async function graphqlRequest(store: StoreConfig, document: string, variables: R
       body: JSON.stringify({ query: document, variables }),
       signal: controller.signal
     });
+    responseText = await response.text();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`Shopify did not respond within ${REQUEST_TIMEOUT_MS / 1000} seconds for ${store.alias}.`);
@@ -71,7 +73,6 @@ async function graphqlRequest(store: StoreConfig, document: string, variables: R
   }
 
   const requestId = response.headers.get("x-request-id");
-  const responseText = await response.text();
   let payload: unknown;
   try {
     payload = JSON.parse(responseText);
@@ -148,4 +149,9 @@ export function requireMutation(document: string): void {
   if (!/^mutation\b/i.test(normalized)) {
     throw new Error("The mutation document must start with mutation.");
   }
+}
+
+/** Keep partial data available while marking GraphQL failures for MCP callers. */
+export function hasGraphqlErrors(result: GraphqlEnvelope): boolean {
+  return Array.isArray(result.errors) && result.errors.length > 0;
 }

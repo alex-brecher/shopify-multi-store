@@ -68,6 +68,7 @@ export async function exchangeAuthorizationCode({ shop, clientId, clientSecret, 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response;
+  let responseText;
   try {
     response = await fetch(`https://${shop}/admin/oauth/access_token`, {
       method: "POST",
@@ -75,6 +76,7 @@ export async function exchangeAuthorizationCode({ shop, clientId, clientSecret, 
       body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
       signal: controller.signal
     });
+    responseText = await response.text();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`Shopify token exchange did not respond within ${timeoutMs / 1_000} seconds.`);
@@ -84,7 +86,6 @@ export async function exchangeAuthorizationCode({ shop, clientId, clientSecret, 
     clearTimeout(timeout);
   }
 
-  const responseText = await response.text();
   let payload;
   try {
     payload = JSON.parse(responseText);
@@ -203,6 +204,7 @@ export async function verifyAccessToken({ shop, apiVersion, token }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   let response;
+  let responseText;
   try {
     response = await fetch(`https://${shop}/admin/api/${apiVersion}/graphql.json`, {
       method: "POST",
@@ -215,6 +217,7 @@ export async function verifyAccessToken({ shop, apiVersion, token }) {
       body: JSON.stringify({ query: "query VerifyStoreAccess { shop { name myshopifyDomain } }", variables: {} }),
       signal: controller.signal
     });
+    responseText = await response.text();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw new Error(`Shopify did not respond within 30 seconds for ${shop}.`);
     throw new Error(`Shopify connection failed for ${shop}: ${error instanceof Error ? error.message : String(error)}`);
@@ -222,10 +225,9 @@ export async function verifyAccessToken({ shop, apiVersion, token }) {
     clearTimeout(timeout);
   }
 
-  const text = await response.text();
   let payload;
   try {
-    payload = JSON.parse(text);
+    payload = JSON.parse(responseText);
   } catch {
     throw new Error(`Shopify returned a non-JSON response for ${shop}. HTTP ${response.status}.`);
   }

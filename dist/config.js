@@ -123,6 +123,7 @@ async function requestClientCredentialsToken(store, clientSecret, cacheKey) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
     let response;
+    let responseText;
     try {
         response = await fetch(`https://${store.shop}/admin/oauth/access_token`, {
             method: "POST",
@@ -134,6 +135,7 @@ async function requestClientCredentialsToken(store, clientSecret, cacheKey) {
             }),
             signal: controller.signal
         });
+        responseText = await response.text();
     }
     catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
@@ -144,7 +146,6 @@ async function requestClientCredentialsToken(store, clientSecret, cacheKey) {
     finally {
         clearTimeout(timeout);
     }
-    const responseText = await response.text();
     let payload;
     try {
         const parsed = JSON.parse(responseText);

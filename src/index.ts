@@ -22,7 +22,7 @@ import {
   searchProductsMany,
   storeLocations
 } from "./reports.js";
-import { adminGraphql, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
+import { adminGraphql, hasGraphqlErrors, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
 import { fitMultiStoreResults } from "./result-limits.js";
 
 const server = new McpServer({
@@ -96,7 +96,7 @@ server.registerTool(
           timezoneAbbreviation
         }
       }`, {});
-      return success(result as unknown as Record<string, unknown>);
+      return { ...success(result as unknown as Record<string, unknown>), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };
     } catch (error) {
       return failure(error);
     }
@@ -120,7 +120,7 @@ server.registerTool(
       requireQuery(query);
       const selected = await findStore(store);
       const result = await adminGraphql(selected, query, variables);
-      return success(result as unknown as Record<string, unknown>);
+      return { ...success(result as unknown as Record<string, unknown>), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };
     } catch (error) {
       return failure(error);
     }
@@ -152,7 +152,8 @@ server.registerTool(
             throw new Error(`Unknown store "${store}". Available stores: ${configuredStores.map((configured) => configured.alias).join(", ")}`);
           }
           const result = await adminGraphql(selected, query, variables);
-          return { store: selected.alias, ok: true as const, result };
+          return { store: selected.alias, ok: !hasGraphqlErrors(result), result,
+            ...(hasGraphqlErrors(result) ? { error: "Shopify returned GraphQL errors. See result.errors." } : {}) };
         } catch (error) {
           return {
             store,
@@ -187,7 +188,7 @@ server.registerTool(
       requireMutation(mutation);
       const selected = await findStore(store);
       const result = await adminGraphql(selected, mutation, variables);
-      return success(result as unknown as Record<string, unknown>);
+      return { ...success(result as unknown as Record<string, unknown>), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };
     } catch (error) {
       return failure(error);
     }

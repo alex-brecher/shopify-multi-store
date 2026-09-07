@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod/v4";
 import { findStore, loadStores } from "./config.js";
 import { catalogHealth, catalogGapReport, compareCatalog, compareCollections, compareInventory, comparePrices, customerGrowth, duplicateSkuReport, fulfillmentSlaReport, getProductEverywhere, listUnfulfilledOrders, lowStockReport, orderSummary, portfolioSnapshot, recentProductChanges, searchProductsMany, storeLocations } from "./reports.js";
-import { adminGraphql, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
+import { adminGraphql, hasGraphqlErrors, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
 import { fitMultiStoreResults } from "./result-limits.js";
 const server = new McpServer({
     name: "shopify-multi-store-mcp-server",
@@ -66,7 +66,7 @@ server.registerTool("shopify_get_shop_info", {
           timezoneAbbreviation
         }
       }`, {});
-        return success(result);
+        return { ...success(result), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };
     }
     catch (error) {
         return failure(error);
@@ -86,7 +86,7 @@ server.registerTool("shopify_graphql_query", {
         requireQuery(query);
         const selected = await findStore(store);
         const result = await adminGraphql(selected, query, variables);
-        return success(result);
+        return { ...success(result), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };
     }
     catch (error) {
         return failure(error);
@@ -114,7 +114,8 @@ server.registerTool("shopify_graphql_query_many", {
                     throw new Error(`Unknown store "${store}". Available stores: ${configuredStores.map((configured) => configured.alias).join(", ")}`);
                 }
                 const result = await adminGraphql(selected, query, variables);
-                return { store: selected.alias, ok: true, result };
+                return { store: selected.alias, ok: !hasGraphqlErrors(result), result,
+                    ...(hasGraphqlErrors(result) ? { error: "Shopify returned GraphQL errors. See result.errors." } : {}) };
             }
             catch (error) {
                 return {
@@ -146,7 +147,7 @@ server.registerTool("shopify_graphql_mutation", {
         requireMutation(mutation);
         const selected = await findStore(store);
         const result = await adminGraphql(selected, mutation, variables);
-        return success(result);
+        return { ...success(result), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };
     }
     catch (error) {
         return failure(error);
