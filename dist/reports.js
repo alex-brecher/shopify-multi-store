@@ -1,3 +1,4 @@
+import { mapConcurrent } from "./concurrency.js";
 import { loadStores } from "./config.js";
 import { adminGraphql } from "./shopify.js";
 const REPORT_CHARACTER_LIMIT = 150_000;
@@ -25,7 +26,7 @@ async function selectedStores(aliases) {
 }
 async function runReport(aliases, operation) {
     const selected = await selectedStores(aliases);
-    const results = await Promise.all(selected.map(async ({ requestedAlias, store, error }) => {
+    const results = await mapConcurrent(selected, async ({ requestedAlias, store, error }) => {
         if (!store)
             return { store: requestedAlias, ok: false, error: error ?? "Unknown store." };
         try {
@@ -41,7 +42,7 @@ async function runReport(aliases, operation) {
         catch (caught) {
             return { store: store.alias, ok: false, error: caught instanceof Error ? caught.message : String(caught) };
         }
-    }));
+    });
     return {
         count: results.length,
         succeeded: results.filter((result) => result.ok).length,

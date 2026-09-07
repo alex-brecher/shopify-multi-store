@@ -1,3 +1,4 @@
+import { mapConcurrent } from "./concurrency.js";
 import { loadStores, type StoreConfig } from "./config.js";
 import { adminGraphql, type GraphqlEnvelope } from "./shopify.js";
 
@@ -54,7 +55,7 @@ async function runReport(
   operation: (store: StoreConfig) => Promise<GraphqlEnvelope>
 ): Promise<MultiStoreReport> {
   const selected = await selectedStores(aliases);
-  const results = await Promise.all(selected.map(async ({ requestedAlias, store, error }) => {
+  const results = await mapConcurrent(selected, async ({ requestedAlias, store, error }) => {
     if (!store) return { store: requestedAlias, ok: false, error: error ?? "Unknown store." };
     try {
       const result = await operation(store);
@@ -68,7 +69,7 @@ async function runReport(
     } catch (caught) {
       return { store: store.alias, ok: false, error: caught instanceof Error ? caught.message : String(caught) };
     }
-  }));
+  });
   return {
     count: results.length,
     succeeded: results.filter((result) => result.ok).length,

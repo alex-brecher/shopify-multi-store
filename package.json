@@ -1,6 +1,6 @@
 {
   "name": "shopify-multi-store-mcp-server",
-  "version": "1.5.1",
+  "version": "1.6.0-beta.1",
   "description": "Multi-store Shopify Admin MCP server for Claude, Codex, Cursor, and VS Code. Search products, compare inventory and catalogs, run reports, and make guarded updates.",
   "mcpName": "io.github.alex-brecher/shopify-multi-store",
   "license": "MIT",
@@ -57,30 +57,45 @@
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
-    "LICENSE"
+    "LICENSE",
+    "schemas/",
+    "docs/PARITY.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-ui.mjs",
     "start": "node dist/index.js",
     "configure": "node scripts/configure-store.mjs",
     "import-legacy": "node scripts/import-legacy-stores.mjs",
     "skills:install": "node scripts/install-shopify-skills.mjs",
     "sync:skills": "node scripts/sync-skills.mjs",
-    "test": "npm run build && node --test tests/integration.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "test:live": "npm run build && node scripts/live-smoke-test.mjs",
-    "prepack": "npm run sync:skills && npm test"
+    "prepack": "npm run sync:skills && npm test",
+    "codegen": "tsc && node scripts/codegen.mjs",
+    "typecheck": "tsc --noEmit --skipLibCheck false"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
+    "@shopify/admin-api-client": "^2.0.0",
     "cross-keychain": "^1.1.0",
+    "graphql": "^16.14.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@graphql-codegen/cli": "^7.4.0",
+    "@graphql-codegen/typescript": "^5.0.10",
     "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@shopify/api-codegen-preset": "^3.0.0",
     "@types/node": "^24.10.1",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "lodash": "^4.18.1"
   }
 }

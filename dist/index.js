@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import { registerAdminTools } from "./admin-tools.js";
+import { registerUI } from "./ui.js";
+import { mapConcurrent } from "./concurrency.js";
+import { registerDiscoveryTools } from "./discovery-tools.js";
+import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod/v4";
@@ -10,15 +15,18 @@ const server = new McpServer({
     name: "shopify-multi-store-mcp-server",
     version: PACKAGE_VERSION
 });
+registerUI(server);
+registerAdminTools(server);
+registerDiscoveryTools(server);
 const StoreAliasSchema = z.string().min(1).max(64).describe("Configured store alias, such as main-store or wholesale-store");
-const StoreAliasesSchema = z.array(StoreAliasSchema).min(1).max(10).describe("One to ten configured store aliases");
+const StoreAliasesSchema = z.array(StoreAliasSchema).min(1).max(100).describe("One to one hundred configured store aliases");
 const SkuSchema = z.string().trim().min(1).max(255);
 const HandleSchema = z.string().trim().min(1).max(255).regex(/^[a-z0-9][a-z0-9-]*$/i);
 const VariablesSchema = z.record(z.string(), z.unknown()).default({}).describe("GraphQL variables as a JSON object");
 const MULTI_STORE_CHARACTER_LIMIT = 100_000;
 function success(value) {
     return {
-        content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(value) }],
         structuredContent: value
     };
 }
@@ -56,16 +64,7 @@ server.registerTool("shopify_get_shop_info", {
 }, async ({ store }) => {
     try {
         const selected = await findStore(store);
-        const result = await adminGraphql(selected, `query MultiStoreShopInfo {
-        shop {
-          id
-          name
-          myshopifyDomain
-          email
-          currencyCode
-          timezoneAbbreviation
-        }
-      }`, {});
+        const result = await adminGraphql(selected, DOCS.shop, {});
         return { ...success(result), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };
     }
     catch (error) {
@@ -107,7 +106,7 @@ server.registerTool("shopify_graphql_query_many", {
         const requestedStores = stores.filter((store, index) => stores.findIndex((candidate) => candidate.toLowerCase() === store.toLowerCase()) === index);
         const configuredStores = await loadStores();
         const storesByAlias = new Map(configuredStores.map((store) => [store.alias.toLowerCase(), store]));
-        const results = await Promise.all(requestedStores.map(async (store) => {
+        const results = await mapConcurrent(requestedStores, async (store) => {
             try {
                 const selected = storesByAlias.get(store.toLowerCase());
                 if (!selected) {
@@ -124,7 +123,7 @@ server.registerTool("shopify_graphql_query_many", {
                     error: error instanceof Error ? error.message : String(error)
                 };
             }
-        }));
+        });
         const value = fitMultiStoreResults(results, MULTI_STORE_CHARACTER_LIMIT);
         return success(value);
     }

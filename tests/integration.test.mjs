@@ -169,7 +169,14 @@ test("lists two stores and routes a shop query to the selected store", async () 
   try {
     await client.connect(transport);
     const listed = await client.listTools();
-    assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
+    const resources = await client.listResources();
+    assert.ok(resources.resources.some(r => r.uri === 'ui://shopify-multi-store/results'));
+    const ui = await client.readResource({ uri: 'ui://shopify-multi-store/results' });
+    assert.equal(ui.contents[0].mimeType, 'text/html;profile=mcp-app');
+    assert.match(ui.contents[0].text, /Shopify Multi Store/);
+    assert.ok(listed.tools.find(t => t.name === 'shopify_create_product')._meta.ui.resourceUri);
+    assert.ok(listed.tools.length > 45);
+    const originalTools = [
       "shopify_catalog_gap_report",
       "shopify_catalog_health",
       "shopify_compare_catalog",
@@ -192,7 +199,8 @@ test("lists two stores and routes a shop query to the selected store", async () 
       "shopify_recent_product_changes",
       "shopify_search_products_many",
       "shopify_store_locations"
-    ]);
+    ];
+    for (const name of originalTools) assert.ok(listed.tools.some(t => t.name === name), name);
 
     const stores = await client.callTool({ name: "shopify_list_stores", arguments: {} });
     assert.equal(stores.isError, undefined);
@@ -203,7 +211,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
     assert.equal(info.structuredContent.store, "first-store");
     assert.equal(requests.length, 1);
     assert.equal(requests[0].token, "test-first-token");
-    assert.match(requests[0].userAgent, /^shopify-multi-store-mcp-server\/\d+\.\d+\.\d+$/);
+    assert.match(requests[0].userAgent, /^shopify-multi-store-mcp-server\/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
     assert.match(requests[0].url, /\/admin\/api\/2026-07\/graphql\.json$/);
 
     const rejected = await client.callTool({

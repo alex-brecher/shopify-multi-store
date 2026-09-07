@@ -19,6 +19,12 @@ Query, compare, report, and make guarded updates across Shopify stores from Clau
 
 </div>
 
+## Development branch: 1.6.0-beta.1
+
+This branch adds guided Admin workflows, ShopifyQL charts, schema validation, sample-product cards, and resumable bulk exports.
+The beta is local and unreleased. See [feature coverage and acceptance requirements](docs/PARITY.md).
+Full Shopify ChatGPT parity is not yet verified.
+
 ## See it work
 
 <img src="docs/assets/multi-store-demo.gif" alt="Terminal demonstration of a multi-store Shopify health check and product search" width="1200">
