@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { registerPreviewDesignTools } from "./preview-designs.js";
+import { registerPreviewTools } from "./previews.js";
 import { registerAdminTools } from "./admin-tools.js";
 import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
@@ -17,6 +19,8 @@ const server = new McpServer({
 });
 registerUI(server);
 registerAdminTools(server);
+registerPreviewTools(server);
+registerPreviewDesignTools(server);
 registerDiscoveryTools(server);
 const StoreAliasSchema = z.string().min(1).max(64).describe("Configured store alias, such as main-store or wholesale-store");
 const StoreAliasesSchema = z.array(StoreAliasSchema).min(1).max(100).describe("One to one hundred configured store aliases");

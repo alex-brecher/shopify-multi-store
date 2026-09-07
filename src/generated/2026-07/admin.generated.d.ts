@@ -164,6 +164,17 @@ export type ProductInventoryQuery = { product?: AdminTypes.Maybe<(
       )>, pageInfo: Pick<AdminTypes.PageInfo, 'hasNextPage' | 'endCursor'> } }
   )> };
 
+export type SetInventoryMutationVariables = AdminTypes.Exact<{
+  input: AdminTypes.InventorySetQuantitiesInput;
+  idempotencyKey: AdminTypes.Scalars['String']['input'];
+}>;
+
+
+export type SetInventoryMutation = { inventorySetQuantities?: AdminTypes.Maybe<{ inventoryAdjustmentGroup?: AdminTypes.Maybe<(
+      Pick<AdminTypes.InventoryAdjustmentGroup, 'createdAt'>
+      & { changes: Array<Pick<AdminTypes.InventoryChange, 'name' | 'delta' | 'quantityAfterChange'>> }
+    )>, userErrors: Array<Pick<AdminTypes.InventorySetQuantitiesUserError, 'field' | 'message' | 'code'>> }> };
+
 export type UpdateProductMutationVariables = AdminTypes.Exact<{
   input: AdminTypes.ProductUpdateInput;
   media?: AdminTypes.InputMaybe<Array<AdminTypes.CreateMediaInput> | AdminTypes.CreateMediaInput>;
@@ -185,16 +196,6 @@ export type StartBulkQueryMutationVariables = AdminTypes.Exact<{
 
 
 export type StartBulkQueryMutation = { bulkOperationRunQuery?: AdminTypes.Maybe<{ bulkOperation?: AdminTypes.Maybe<Pick<AdminTypes.BulkOperation, 'id' | 'status'>>, userErrors: Array<Pick<AdminTypes.BulkOperationUserError, 'field' | 'message'>> }> };
-
-export type SetInventoryMutationVariables = AdminTypes.Exact<{
-  input: AdminTypes.InventorySetQuantitiesInput;
-}>;
-
-
-export type SetInventoryMutation = { inventorySetQuantities?: AdminTypes.Maybe<{ inventoryAdjustmentGroup?: AdminTypes.Maybe<(
-      Pick<AdminTypes.InventoryAdjustmentGroup, 'createdAt'>
-      & { changes: Array<Pick<AdminTypes.InventoryChange, 'name' | 'delta' | 'quantityAfterChange'>> }
-    )>, userErrors: Array<Pick<AdminTypes.InventorySetQuantitiesUserError, 'field' | 'message' | 'code'>> }> };
 
 export type GetProductQueryVariables = AdminTypes.Exact<{
   id: AdminTypes.Scalars['ID']['input'];
@@ -395,9 +396,9 @@ interface GeneratedMutationTypes {
   "mutation StageFile($input: [StagedUploadInput!]!) {\n  stagedUploadsCreate(input: $input) {\n    stagedTargets {\n      url\n      resourceUrl\n      parameters {\n        name\n        value\n      }\n    }\n    userErrors {\n      field\n      message\n    }\n  }\n}": {return: StageFileMutation, variables: StageFileMutationVariables},
   "mutation CreateDiscount($input: DiscountCodeBasicInput!) {\n  discountCodeBasicCreate(basicCodeDiscount: $input) {\n    codeDiscountNode {\n      id\n    }\n    userErrors {\n      field\n      message\n      code\n    }\n  }\n}": {return: CreateDiscountMutation, variables: CreateDiscountMutationVariables},
   "mutation PublishResource($id: ID!, $input: [PublicationInput!]!) {\n  publishablePublish(id: $id, input: $input) {\n    userErrors {\n      field\n      message\n    }\n  }\n}": {return: PublishResourceMutation, variables: PublishResourceMutationVariables},
+  "mutation SetInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {\n  inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {\n    inventoryAdjustmentGroup {\n      createdAt\n      changes {\n        name\n        delta\n        quantityAfterChange\n      }\n    }\n    userErrors {\n      field\n      message\n      code\n    }\n  }\n}": {return: SetInventoryMutation, variables: SetInventoryMutationVariables},
   "mutation UpdateProduct($input: ProductUpdateInput!, $media: [CreateMediaInput!]) {\n  productUpdate(product: $input, media: $media) {\n    product {\n      id\n      title\n      status\n    }\n    userErrors {\n      field\n      message\n    }\n  }\n}": {return: UpdateProductMutation, variables: UpdateProductMutationVariables},
   "mutation StartBulkQuery($query: String!) {\n  bulkOperationRunQuery(query: $query) {\n    bulkOperation {\n      id\n      status\n    }\n    userErrors {\n      field\n      message\n    }\n  }\n}": {return: StartBulkQueryMutation, variables: StartBulkQueryMutationVariables},
-  "mutation SetInventory($input: InventorySetQuantitiesInput!) {\n  inventorySetQuantities(input: $input) {\n    inventoryAdjustmentGroup {\n      createdAt\n      changes {\n        name\n        delta\n        quantityAfterChange\n      }\n    }\n    userErrors {\n      field\n      message\n      code\n    }\n  }\n}": {return: SetInventoryMutation, variables: SetInventoryMutationVariables},
   "mutation UpdateVariants($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {\n  productVariantsBulkUpdate(productId: $productId, variants: $variants) {\n    productVariants {\n      id\n      title\n      price\n    }\n    userErrors {\n      field\n      message\n    }\n  }\n}": {return: UpdateVariantsMutation, variables: UpdateVariantsMutationVariables},
   "mutation CreateVariants($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {\n  productVariantsBulkCreate(\n    productId: $productId\n    variants: $variants\n    strategy: REMOVE_STANDALONE_VARIANT\n  ) {\n    productVariants {\n      id\n      title\n      price\n    }\n    userErrors {\n      field\n      message\n    }\n  }\n}": {return: CreateVariantsMutation, variables: CreateVariantsMutationVariables},
   "mutation CreateFile($files: [FileCreateInput!]!) {\n  fileCreate(files: $files) {\n    files {\n      id\n      fileStatus\n    }\n    userErrors {\n      field\n      message\n      code\n    }\n  }\n}": {return: CreateFileMutation, variables: CreateFileMutationVariables},

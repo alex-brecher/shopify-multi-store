@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { UI_META } from "./ui.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
@@ -642,6 +643,7 @@ export function registerAdminTools(server: McpServer) {
       locationId: gid("Location"),
       quantity: z.number().int().min(0).max(1000000000),
       compareQuantity: z.number().int(),
+      idempotencyKey: z.string().uuid().optional(),
       reason: z.string().min(1).default("correction"),
     },
     true,
@@ -662,7 +664,9 @@ export function registerAdminTools(server: McpServer) {
           "Inventory changed since the read. No write sent.",
           { expected: a.compareQuantity, actual: current },
         );
+      const idempotencyKey = a.idempotencyKey ?? randomUUID();
       await w.run(DOCS.setInventory, {
+        idempotencyKey,
         input: {
           name: "available",
           reason: a.reason,
@@ -676,10 +680,21 @@ export function registerAdminTools(server: McpServer) {
           ],
         },
       });
+      const after = (await w.run(DOCS.inventoryAt, variables)).inventoryItem;
+      if (
+        after?.inventoryLevel?.quantities?.find(
+          (q: Data) => q.name === "available",
+        )?.quantity !== a.quantity
+      )
+        throw new WorkflowError(
+          "Inventory readback did not match the requested quantity.",
+          { idempotencyKey, after, completedSteps: w.completed },
+        );
       return {
+        idempotencyKey,
         requestedQuantity: a.quantity,
         before: before.inventoryItem,
-        after: (await w.run(DOCS.inventoryAt, variables)).inventoryItem,
+        after,
         completedSteps: w.completed,
       };
     },

@@ -571,6 +571,11 @@ test("inventory uses server-side compare-and-set and refuses a stale read", asyn
   const r = await call("set_inventory", args);
   assert.equal(r.isError, undefined, JSON.stringify(r));
   assert.equal(state.quantity, 9);
+  const mutation = state.requests.find((r) =>
+    r.query.includes("mutation SetInventory"),
+  );
+  assert.match(mutation.query, /@idempotent/);
+  assert.match(mutation.variables.idempotencyKey, /^[0-9a-f-]{36}$/);
   const count = state.requests.filter((r) =>
     r.query.includes("mutation"),
   ).length;

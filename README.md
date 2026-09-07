@@ -21,7 +21,7 @@ Query, compare, report, and make guarded updates across Shopify stores from Clau
 
 ## Development branch: 1.6.0-beta.1
 
-This branch adds guided Admin workflows, ShopifyQL charts, schema validation, sample-product cards, and resumable bulk exports.
+This branch adds guided Admin workflows, ShopifyQL charts, schema validation, sample-product cards, resumable bulk exports, and real preview stores with claim links.
 The beta is local and unreleased. See [feature coverage and acceptance requirements](docs/PARITY.md).
 Full Shopify ChatGPT parity is not yet verified.
 

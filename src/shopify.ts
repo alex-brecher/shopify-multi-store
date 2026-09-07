@@ -1,3 +1,4 @@
+import {cliJson} from "./cli-bridge.js";
 import { createHash } from "node:crypto";
 import { serializeStore } from "./concurrency.js";
 import { operation, mutationErrors } from "./operations.js";
@@ -97,6 +98,12 @@ async function graphqlRequest(store: StoreConfig, document: string, variables: R
 }
 
 export async function adminGraphql(store: StoreConfig, document: string, variables: Record<string, unknown>): Promise<GraphqlEnvelope> {
+  if(store.auth?.type==='shopify_cli') return serializeStore(`${store.shop}\0cli`,async()=>{
+    const start=Date.now(); const writing=operation(document).selected.operation==='mutation';
+    const data=await cliJson(['store','execute','--store',store.shop,'--query',document,'--variables',JSON.stringify(variables),'--version',store.apiVersion,'--json',...(writing?['--allow-mutations']:[])]);
+    const errors=mutationErrors(document,data);
+    return {store:store.alias,shop:store.shop,apiVersion:store.apiVersion,elapsedMs:Date.now()-start,retryCount:0,data,...(errors.length?{userErrors:errors}:{})};
+  });
   const token = await getAccessToken(store);
   const key = `${store.shop}\0${createHash("sha256").update(token).digest("hex")}`;
   return serializeStore(key, () => adminGraphqlWithToken(store, document, variables, token));

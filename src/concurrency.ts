@@ -34,3 +34,32 @@ export async function serializeStore<T>(
     if (queues.get(key) === current) queues.delete(key);
   }
 }
+
+/** Cross-process exclusion for durable creation receipts. Stale locks require inspection. */
+export async function withFileLock<T>(
+  path: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const { open, mkdir, unlink } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  await mkdir(dirname(path), { recursive: true });
+  let handle;
+  try {
+    handle = await open(path, "wx", 0o600);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST")
+      throw Error(
+        "A preview workflow holds this lock, or an interrupted workflow needs inspection before recovery.",
+      );
+    throw e;
+  }
+  try {
+    await handle.writeFile(
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+    );
+    return await run();
+  } finally {
+    await handle.close();
+    await unlink(path);
+  }
+}

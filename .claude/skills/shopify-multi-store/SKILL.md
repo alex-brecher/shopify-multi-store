@@ -36,3 +36,17 @@ description: Connect, query, compare, report on, and manage multiple Shopify Adm
 29. Preserve Shopify GraphQL user errors and per-store partial failures in the response.
 
 Do not call the official Shopify `switch_shop` tool for a multi-store task. That tool revokes the current store token.
+
+## Preview stores and product concepts
+
+For a new-store request, use `shopify_get_new_store_previews` with the user's product, audience, and style brief.
+Generate one to three concrete design specifications and relevant demo product concepts from that brief.
+Supply a stable UUID requestId. Reuse it after an interruption.
+The tool creates separate temporary Shopify stores, publishes each design, and returns preview and claim links.
+Do not use it to restyle an existing store. Do not claim a store or start a subscription without the user's instruction.
+Use the returned preview aliases with the ordinary product, collection, inventory, and image tools.
+
+For product inspiration, use `shopify_find_sample_product` to search the published Shopify category catalogs.
+If the catalog lacks suitable examples, generate original concepts and pass them as generatedCandidates.
+Keep sample products clearly identified as concepts. Do not imply that a supplier, price, claim, or certification is verified.
+Only supply relevant available image URLs. Keep images absent when no suitable image exists.

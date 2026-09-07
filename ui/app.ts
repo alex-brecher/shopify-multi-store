@@ -1,6 +1,9 @@
 import { App } from "@modelcontextprotocol/ext-apps";
 import { render } from "./render.js";
-const app = new App({ name: "Shopify Multi Store", version: "1.6.0-beta.1" }, {});
+const app = new App(
+  { name: "Shopify Multi Store", version: "1.6.0-beta.1" },
+  {},
+);
 const root = document.getElementById("app")!;
 const show = (result: any) =>
   render(
@@ -25,4 +28,17 @@ app.onhostcontextchanged = (context) => {
 };
 app.connect().catch((error) => {
   root.textContent = `Could not connect to the host: ${error.message}`;
+});
+
+root.addEventListener("click", (event) => {
+  const target =
+    event.target instanceof Element ? event.target.closest("a") : null;
+  if (target instanceof HTMLAnchorElement) {
+    event.preventDefault();
+    app.openLink({ url: target.href }).catch(() => {
+      root.append(
+        document.createTextNode("The host could not open this link."),
+      );
+    });
+  }
 });

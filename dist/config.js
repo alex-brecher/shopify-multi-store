@@ -1,3 +1,4 @@
+import { previewStores } from "./previews.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -12,7 +13,7 @@ const ClientCredentialsAuthSchema = z.object({
     type: z.literal("client_credentials"),
     clientId: z.string().min(1)
 }).strict();
-const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema]);
+const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema, z.object({ type: z.literal("shopify_cli") }).strict()]);
 const StoreConfigSchema = z.object({
     alias: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/),
     shop: z.string().min(1),
@@ -38,12 +39,16 @@ export async function loadStores() {
     catch (error) {
         const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
         if (code === "ENOENT") {
+            const previews = await previewStores();
+            if (previews.length)
+                return previews;
             throw new Error(`No Shopify stores are configured. Run \"npm run configure -- add\" in the plugin directory. Config path: ${configPath()}`);
         }
         throw error;
     }
     const parsed = JSON.parse(raw);
     const config = ConfigSchema.parse(parsed);
+    config.stores.push(...await previewStores());
     const aliases = new Set();
     for (const store of config.stores) {
         if (aliases.has(store.alias)) {

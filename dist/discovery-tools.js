@@ -1,3 +1,4 @@
+import { sampleProducts } from "./samples.js";
 import { UI_META } from "./ui.js";
 import { z } from "zod/v4";
 import { textResult, toolError } from "./admin-workflows.js";
@@ -43,11 +44,26 @@ export function registerDiscoveryTools(server) {
     });
     server.registerTool("shopify_find_sample_product", {
         _meta: UI_META,
-        description: "Browse sample products from Shopify mock.shop. These are demo products, not verified supplier offers. Use create_product to add a selected sample as a draft.",
+        description: "Find sample products across published Shopify demo catalogs. For categories without suitable samples, generate original product concepts from the user query and pass generatedCandidates to display draft-creation cards. Label concepts as examples, never supplier offers or verified products. Images are optional; use only available relevant image URLs.",
         inputSchema: z
             .object({
             query: z.string().min(1).max(500),
             limit: z.number().int().min(1).max(10).default(5),
+            generatedCandidates: z
+                .array(z
+                .object({
+                title: z.string().min(1).max(255),
+                description: z.string().max(2000),
+                imageUrl: z
+                    .url()
+                    .startsWith("https://cdn.shopify.com/")
+                    .optional(),
+                imageAlt: z.string().max(1000).optional(),
+            })
+                .strict())
+                .min(1)
+                .max(10)
+                .optional(),
         })
             .strict(),
         annotations: {
@@ -58,38 +74,30 @@ export function registerDiscoveryTools(server) {
         },
     }, async (a) => {
         try {
-            const response = await fetch("https://mock.shop/api", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    query: "query Samples($query:String!,$first:Int!){products(first:$first,query:$query){nodes{id title description featuredImage{url altText} priceRange{minVariantPrice{amount currencyCode}}}}}",
-                    variables: { query: a.query, first: 100 },
-                }),
-                signal: AbortSignal.timeout(30000),
-                redirect: "error",
-            });
-            const result = (await response.json());
-            if (!response.ok ||
-                result.errors ||
-                !Array.isArray(result.data?.products?.nodes))
-                throw Error("Shopify sample product search failed.");
-            const terms = a.query.toLowerCase().split(/\s+/).filter(Boolean);
-            const candidates = result.data.products.nodes;
-            const matching = candidates.filter((p) => terms.every((term) => `${p.title ?? ""} ${p.description ?? ""}`
-                .toLowerCase()
-                .includes(term)));
-            return textResult({
-                query: a.query,
-                sampleProducts: matching.slice(0, a.limit),
-                sampleData: true,
-                source: "https://mock.shop/api",
-                catalogOnly: true,
-                ...(!matching.length
-                    ? {
-                        notice: "No matching products exist in the public demo catalog. This endpoint does not generate new sample products.",
-                    }
-                    : {}),
-            });
+            if (a.generatedCandidates)
+                return textResult({
+                    query: a.query,
+                    sampleData: true,
+                    generatedConcepts: true,
+                    catalogOnly: false,
+                    notice: "AI-generated product concepts. Review details and prices before use.",
+                    sampleProducts: a.generatedCandidates
+                        .slice(0, a.limit)
+                        .map((p, i) => ({
+                        id: `concept-${i + 1}`,
+                        title: p.title,
+                        description: p.description,
+                        ...(p.imageUrl
+                            ? {
+                                featuredImage: {
+                                    url: p.imageUrl,
+                                    altText: p.imageAlt ?? p.title,
+                                },
+                            }
+                            : {}),
+                    })),
+                });
+            return textResult(await sampleProducts(a.query, a.limit));
         }
         catch (e) {
             return toolError(e);

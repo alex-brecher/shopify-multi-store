@@ -62,6 +62,7 @@ export function render(
     ),
   );
   root.append(header);
+  if (data.notice) root.append(element("p", data.notice));
   if (data.error) {
     root.append(element("p", data.error));
     const details = element("pre", JSON.stringify(data, null, 2));
@@ -75,6 +76,42 @@ export function render(
     );
     note.className = "notice";
     root.append(note);
+  }
+  if (data.storefrontPreviews || data.previewUrl) {
+    const previews = data.storefrontPreviews ?? [data];
+    for (const p of previews) {
+      const card = element("article");
+      card.append(element("h2", p.name ?? p.shop ?? "New store preview"));
+      for (const [label, url] of [
+        ["Open preview", p.previewUrl],
+        ["Claim this store", p.claimUrl],
+      ]) {
+        if (!url) continue;
+        try {
+          const u = new URL(url);
+          if (
+            u.protocol !== "https:" ||
+            !/(^|\.)(shopify\.com|myshopify\.com|shopifypreview\.com)$/.test(
+              u.hostname,
+            )
+          )
+            continue;
+          const link = element("a", label);
+          link.href = url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          card.append(link, element("span", " "));
+        } catch {}
+      }
+      root.append(card);
+    }
+    root.append(
+      element(
+        "p",
+        data.notice ?? "Temporary Shopify store. Claim it to keep it.",
+      ),
+    );
+    return;
   }
   if (data.columns && Array.isArray(data.rows)) {
     const names = data.columns.map((c: Data) => c.name);
@@ -259,7 +296,10 @@ export function render(
                   store: select.value,
                   confirm: true,
                   title: p.title,
-                  descriptionHtml: p.description ?? "",
+                  descriptionHtml: (p.description ?? "")
+                    .replaceAll("&", "&amp;")
+                    .replaceAll("<", "&lt;")
+                    .replaceAll(">", "&gt;"),
                   price: price.value,
                   status: "DRAFT",
                   ...(u
