@@ -10,7 +10,11 @@ export interface GraphqlEnvelope {
     data?: unknown;
     errors?: unknown;
     extensions?: unknown;
+    userErrors?: unknown[];
 }
+export declare function retryDelay(response: Response | undefined, attempt: number, payload?: unknown): number;
 export declare function adminGraphql(store: StoreConfig, document: string, variables: Record<string, unknown>): Promise<GraphqlEnvelope>;
 export declare function requireQuery(document: string): void;
 export declare function requireMutation(document: string): void;
+/** Keep partial data available while marking GraphQL failures for MCP callers. */
+export declare function hasGraphqlErrors(result: GraphqlEnvelope): boolean;

@@ -1,0 +1,33 @@
+{
+  "observedAt": "2026-09-07",
+  "source": "Official Shopify connector tool declarations available in Codex",
+  "tools": [
+    "shopify_add_to_collection",
+    "shopify_bulk_update_product_status",
+    "shopify_create_collection",
+    "shopify_create_discount",
+    "shopify_create_product",
+    "shopify_find_sample_product",
+    "shopify_get_collection",
+    "shopify_get_inventory_levels",
+    "shopify_get_new_store_previews",
+    "shopify_get_order",
+    "shopify_get_product",
+    "shopify_get_shop_info",
+    "shopify_graphql_mutation",
+    "shopify_graphql_query",
+    "shopify_graphql_schema",
+    "shopify_list_customers",
+    "shopify_list_orders",
+    "shopify_run_analytics_query",
+    "shopify_search_collections",
+    "shopify_search_docs_chunks",
+    "shopify_search_products",
+    "shopify_set_inventory",
+    "shopify_switch_shop",
+    "shopify_update_collection",
+    "shopify_update_product",
+    "shopify_upload_image",
+    "shopify_validate_graphql_codeblocks"
+  ]
+}

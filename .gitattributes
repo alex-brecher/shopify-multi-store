@@ -1,0 +1,7 @@
+src/generated/** linguist-generated=true
+schemas/** linguist-generated=true
+dist/** linguist-generated=true
+
+# Bundled dependency templates preserve their own whitespace.
+dist/ui/app.html -whitespace
+tests/fixtures/** linguist-generated=true

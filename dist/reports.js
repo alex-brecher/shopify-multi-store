@@ -1,3 +1,4 @@
+import { mapConcurrent } from "./concurrency.js";
 import { loadStores } from "./config.js";
 import { adminGraphql } from "./shopify.js";
 const REPORT_CHARACTER_LIMIT = 150_000;
@@ -25,7 +26,7 @@ async function selectedStores(aliases) {
 }
 async function runReport(aliases, operation) {
     const selected = await selectedStores(aliases);
-    const results = await Promise.all(selected.map(async ({ requestedAlias, store, error }) => {
+    const results = await mapConcurrent(selected, async ({ requestedAlias, store, error }) => {
         if (!store)
             return { store: requestedAlias, ok: false, error: error ?? "Unknown store." };
         try {
@@ -41,7 +42,7 @@ async function runReport(aliases, operation) {
         catch (caught) {
             return { store: store.alias, ok: false, error: caught instanceof Error ? caught.message : String(caught) };
         }
-    }));
+    });
     return {
         count: results.length,
         succeeded: results.filter((result) => result.ok).length,
@@ -105,6 +106,7 @@ async function paginatedConnection(store, document, variables, connectionName) {
     let firstConnection;
     const nodes = [];
     let serializedSize = 2;
+    const seenCursors = new Set();
     do {
         const envelope = await adminGraphql(store, document, { ...variables, after: after ?? null });
         firstEnvelope ??= envelope;
@@ -121,6 +123,11 @@ async function paginatedConnection(store, document, variables, connectionName) {
         }
         const previous = after;
         after = nextCursor(connection, store, connectionName, previous);
+        if (after && seenCursors.has(after)) {
+            throw new Error(`Shopify returned an invalid pagination cursor cycle for ${connectionName} on ${store.alias}.`);
+        }
+        if (after)
+            seenCursors.add(after);
     } while (after);
     if (!firstEnvelope || !firstConnection)
         throw new Error(`Shopify returned no ${connectionName} data for ${store.alias}.`);
@@ -158,7 +165,11 @@ async function completeCatalogVariants(store, envelope) {
         let after = initialPage.hasNextPage === true && typeof initialPage.endCursor === "string" ? initialPage.endCursor : undefined;
         const variantNodes = [...initialNodes];
         let serializedSize = addSerializedItems(2, initialNodes);
+        const seenCursors = new Set();
         while (after) {
+            if (seenCursors.has(after))
+                throw new Error(`Shopify returned an invalid pagination cursor cycle for product variants on ${store.alias}.`);
+            seenCursors.add(after);
             const page = await adminGraphql(store, `query CatalogVariantsPage($productId: ID!, $after: String) {
         product(id: $productId) {
           variants(first: 250, after: $after) {

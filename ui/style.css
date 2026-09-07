@@ -1,0 +1,156 @@
+:root {
+  font:
+    15px/1.5 system-ui,
+    sans-serif;
+  color: #172a22;
+  background: #f7faf8;
+  color-scheme: light dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  padding: 20px;
+}
+header {
+  border-bottom: 1px solid #cbd8cf;
+  margin-bottom: 20px;
+}
+h1 {
+  font-size: 23px;
+  margin: 0;
+}
+h2 {
+  font-size: 17px;
+  margin: 10px 0;
+}
+p {
+  margin: 8px 0 16px;
+}
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 18px;
+}
+article {
+  background: #fff;
+  border: 1px solid #cbd8cf;
+  border-radius: 10px;
+  padding: 16px;
+  min-width: 0;
+}
+article img {
+  width: 100%;
+  height: 150px;
+  object-fit: contain;
+}
+.table-wrap {
+  overflow: auto;
+  margin-top: 16px;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+th,
+td {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid #cbd8cf;
+  white-space: nowrap;
+}
+th {
+  font-weight: 600;
+}
+button,
+select {
+  font: inherit;
+  background: #fff;
+  border: 1px solid #486c5c;
+  border-radius: 5px;
+  padding: 9px 12px;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+}
+button:focus-visible,
+select:focus-visible {
+  outline: 3px solid #428aef;
+  outline-offset: 2px;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.notice {
+  padding: 12px;
+  background: #fff4cc;
+  color: #5c4800;
+}
+.chart {
+  padding: 20px 0;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) 3fr minmax(60px, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin: 12px 0;
+}
+.meter {
+  background: #e2eae5;
+  height: 20px;
+}
+.meter > div {
+  background: #287958;
+  height: 100%;
+  min-width: 1px;
+}
+.meter > .negative {
+  background: #ab453b;
+}
+details {
+  margin-top: 20px;
+}
+html[data-theme="dark"] {
+  background: #142019;
+  color: #eef8f0;
+}
+html[data-theme="dark"] article,
+html[data-theme="dark"] button,
+html[data-theme="dark"] select {
+  background: #213629;
+}
+@media (max-width: 420px) {
+  body {
+    padding: 12px;
+  }
+  .bar-row {
+    gap: 6px;
+    font-size: 12px;
+  }
+  .cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+input {
+  font: inherit;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #486c5c;
+  border-radius: 5px;
+}
+svg {
+  width: 100%;
+  max-height: 260px;
+}

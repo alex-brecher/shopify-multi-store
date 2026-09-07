@@ -8,6 +8,8 @@ declare const StoreConfigSchema: z.ZodObject<{
     }, z.core.$strict>, z.ZodObject<{
         type: z.ZodLiteral<"client_credentials">;
         clientId: z.ZodString;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"shopify_cli">;
     }, z.core.$strict>], "type">>;
     tokenEnv: z.ZodOptional<z.ZodString>;
     baseUrl: z.ZodOptional<z.ZodString>;

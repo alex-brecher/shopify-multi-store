@@ -2,6 +2,17 @@
 
 This file records notable changes to Shopify Multi-Store MCP.
 
+## [1.6.0] - 2026-09-07
+
+- Add guided Admin workflows for products, variants, collections, inventory, discounts, media, publication, analytics, and bulk exports.
+- Add interactive product cards, tables, charts, and preview status.
+- Add temporary Shopify storefronts with custom Dawn designs, sample products, and claim links.
+- Add category-specific sample catalogs and agent-generated product concepts.
+- Fix GraphQL error reporting, mutation guards, response timeouts, cursor cycles, and inventory idempotency.
+- Prevent duplicate preview requests and partial reads of preview status files.
+- Support Shopify CLI execution on Windows without a shell.
+- Use Shopify's Admin client, schema code generation, and a pinned Dawn source.
+
 ## [1.5.1] - 2026-09-01
 
 ### Fixed

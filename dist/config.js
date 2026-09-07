@@ -1,3 +1,4 @@
+import { previewStores } from "./previews.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -12,7 +13,7 @@ const ClientCredentialsAuthSchema = z.object({
     type: z.literal("client_credentials"),
     clientId: z.string().min(1)
 }).strict();
-const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema]);
+const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema, z.object({ type: z.literal("shopify_cli") }).strict()]);
 const StoreConfigSchema = z.object({
     alias: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/),
     shop: z.string().min(1),
@@ -38,12 +39,16 @@ export async function loadStores() {
     catch (error) {
         const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
         if (code === "ENOENT") {
+            const previews = await previewStores();
+            if (previews.length)
+                return previews;
             throw new Error(`No Shopify stores are configured. Run \"npm run configure -- add\" in the plugin directory. Config path: ${configPath()}`);
         }
         throw error;
     }
     const parsed = JSON.parse(raw);
     const config = ConfigSchema.parse(parsed);
+    config.stores.push(...await previewStores());
     const aliases = new Set();
     for (const store of config.stores) {
         if (aliases.has(store.alias)) {
@@ -123,6 +128,7 @@ async function requestClientCredentialsToken(store, clientSecret, cacheKey) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
     let response;
+    let responseText;
     try {
         response = await fetch(`https://${store.shop}/admin/oauth/access_token`, {
             method: "POST",
@@ -134,6 +140,7 @@ async function requestClientCredentialsToken(store, clientSecret, cacheKey) {
             }),
             signal: controller.signal
         });
+        responseText = await response.text();
     }
     catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
@@ -144,7 +151,6 @@ async function requestClientCredentialsToken(store, clientSecret, cacheKey) {
     finally {
         clearTimeout(timeout);
     }
-    const responseText = await response.text();
     let payload;
     try {
         const parsed = JSON.parse(responseText);
