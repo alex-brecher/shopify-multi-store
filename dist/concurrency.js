@@ -59,8 +59,21 @@ export async function atomicJson(path, value, exclusive = false) {
         await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
         if (exclusive)
             await link(temp, path);
-        else
-            await rename(temp, path);
+        else {
+            for (let attempt = 0;; attempt++) {
+                try {
+                    await rename(temp, path);
+                    break;
+                }
+                catch (e) {
+                    const code = e.code;
+                    if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "") || attempt >= 50)
+                        throw e;
+                    // Windows readers and antivirus can briefly hold a destination handle.
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            }
+        }
     }
     finally {
         await rm(temp, { force: true });

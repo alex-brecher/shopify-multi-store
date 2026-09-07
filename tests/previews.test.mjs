@@ -179,10 +179,12 @@ test("receipt readers never observe partial JSON during replacement", async (t) 
     }
     finished = true;
   })();
-  while (!finished) {
-    const receipt = JSON.parse(await readFile(file, "utf8"));
-    assert.equal(typeof receipt.revision, "number");
-  }
-  await writer;
+  await Promise.all([writer, (async () => {
+    while (!finished) {
+      const receipt = JSON.parse(await readFile(file, "utf8"));
+      assert.equal(typeof receipt.revision, "number");
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  })()]);
   assert.equal(JSON.parse(await readFile(file, "utf8")).revision, 30);
 });
