@@ -51,7 +51,7 @@ export async function withFileLock(path, run) {
     }
 }
 /** Replace a JSON receipt without exposing a truncated file to concurrent readers. */
-export async function atomicJson(path, value, exclusive = false) {
+async function replaceJson(path, value, exclusive = false) {
     const { writeFile, rename, rm, link } = await import("node:fs/promises");
     const { randomUUID } = await import("node:crypto");
     const temp = `${path}.${randomUUID()}.tmp`;
@@ -78,5 +78,39 @@ export async function atomicJson(path, value, exclusive = false) {
     finally {
         await rm(temp, { force: true });
     }
+}
+// Receipt readers use the same short lock as writers. This also avoids Windows
+// delete-sharing conflicts between a polling reader and an atomic replacement.
+async function receiptLock(path, run) {
+    const { open, unlink } = await import("node:fs/promises");
+    const lock = path + ".io.lock";
+    let handle;
+    for (let attempt = 0;; attempt++) {
+        try {
+            handle = await open(lock, "wx", 0o600);
+            break;
+        }
+        catch (e) {
+            if (e.code !== "EEXIST" || attempt >= 100)
+                throw e;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+    }
+    try {
+        return await run();
+    }
+    finally {
+        await handle.close();
+        await unlink(lock);
+    }
+}
+export async function atomicJson(path, value, exclusive = false) {
+    return receiptLock(path, () => replaceJson(path, value, exclusive));
+}
+export async function readJson(path) {
+    return receiptLock(path, async () => {
+        const { readFile } = await import("node:fs/promises");
+        return JSON.parse(await readFile(path, "utf8"));
+    });
 }
 //# sourceMappingURL=concurrency.js.map

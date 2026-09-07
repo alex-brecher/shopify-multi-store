@@ -169,7 +169,7 @@ test("preview creation returns pending immediately and exposes background failur
 
 test("receipt readers never observe partial JSON during replacement", async (t) => {
   const dir = await config(t);
-  const { atomicJson } = await import("../dist/concurrency.js");
+  const { atomicJson, readJson } = await import("../dist/concurrency.js");
   const file = join(dir, "receipt.json");
   await atomicJson(file, { revision: 0 });
   let finished = false;
@@ -181,10 +181,10 @@ test("receipt readers never observe partial JSON during replacement", async (t) 
   })();
   await Promise.all([writer, (async () => {
     while (!finished) {
-      const receipt = JSON.parse(await readFile(file, "utf8"));
+      const receipt = await readJson(file);
       assert.equal(typeof receipt.revision, "number");
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
   })()]);
-  assert.equal(JSON.parse(await readFile(file, "utf8")).revision, 30);
+  assert.equal((await readJson(file)).revision, 30);
 });

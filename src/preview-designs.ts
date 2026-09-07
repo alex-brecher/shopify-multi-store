@@ -11,7 +11,7 @@ import { createPreview, previewInfo } from "./previews.js";
 import { cliJson } from "./cli-bridge.js";
 import { configPath } from "./config.js";
 import { workflow, textResult, toolError } from "./admin-workflows.js";
-import { serializeStore, withFileLock, atomicJson } from "./concurrency.js";
+import { serializeStore, withFileLock, atomicJson, readJson } from "./concurrency.js";
 import { UI_META } from "./ui.js";
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 export const Design = z
@@ -200,14 +200,9 @@ export function registerAsyncPreview(
         "Storefront previews are being built. Check status with shopify_get_new_store_preview_status.",
     });
   const readStatus = async (id: string) => {
-    const status = JSON.parse(await readFile(statusPath(id), "utf8"));
+    const status = await readJson(statusPath(id));
     if (status.state === "complete") {
-      const job = JSON.parse(
-        await readFile(
-          join(dirname(configPath()), `preview-design-${id}.json`),
-          "utf8",
-        ),
-      );
+      const job = await readJson(join(dirname(configPath()), `preview-design-${id}.json`));
       return textResult(await resultLinks(job));
     }
     if (status.state === "failed") return textResult(status.error, true);
@@ -229,9 +224,7 @@ export function registerAsyncPreview(
         .update(JSON.stringify(a))
         .digest("hex");
       try {
-        const existing = JSON.parse(
-          await readFile(statusPath(a.requestId), "utf8"),
-        );
+        const existing = await readJson(statusPath(a.requestId));
         if (existing.fingerprint !== fingerprint)
           throw Error("requestId belongs to another preview request.");
         return await readStatus(a.requestId);
@@ -351,7 +344,7 @@ export function registerPreviewDesignTools(server: McpServer) {
           try {
             let job: any;
             try {
-              job = JSON.parse(await readFile(file, "utf8"));
+              job = await readJson(file);
             } catch (e) {
               if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
             }
