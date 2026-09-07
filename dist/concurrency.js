@@ -50,4 +50,20 @@ export async function withFileLock(path, run) {
         await unlink(path);
     }
 }
+/** Replace a JSON receipt without exposing a truncated file to concurrent readers. */
+export async function atomicJson(path, value, exclusive = false) {
+    const { writeFile, rename, rm, link } = await import("node:fs/promises");
+    const { randomUUID } = await import("node:crypto");
+    const temp = `${path}.${randomUUID()}.tmp`;
+    try {
+        await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
+        if (exclusive)
+            await link(temp, path);
+        else
+            await rename(temp, path);
+    }
+    finally {
+        await rm(temp, { force: true });
+    }
+}
 //# sourceMappingURL=concurrency.js.map

@@ -166,3 +166,23 @@ test("preview creation returns pending immediately and exposes background failur
   }
   assert.equal(result.structuredContent.error, "Fixture failure");
 });
+
+test("receipt readers never observe partial JSON during replacement", async (t) => {
+  const dir = await config(t);
+  const { atomicJson } = await import("../dist/concurrency.js");
+  const file = join(dir, "receipt.json");
+  await atomicJson(file, { revision: 0 });
+  let finished = false;
+  const writer = (async () => {
+    for (let revision = 1; revision <= 30; revision++) {
+      await atomicJson(file, { revision, payload: "x".repeat(100000) });
+    }
+    finished = true;
+  })();
+  while (!finished) {
+    const receipt = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(typeof receipt.revision, "number");
+  }
+  await writer;
+  assert.equal(JSON.parse(await readFile(file, "utf8")).revision, 30);
+});

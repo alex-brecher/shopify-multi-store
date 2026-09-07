@@ -9,7 +9,7 @@ import { createPreview, previewInfo } from "./previews.js";
 import { cliJson } from "./cli-bridge.js";
 import { configPath } from "./config.js";
 import { workflow, textResult, toolError } from "./admin-workflows.js";
-import { serializeStore, withFileLock } from "./concurrency.js";
+import { serializeStore, withFileLock, atomicJson } from "./concurrency.js";
 import { UI_META } from "./ui.js";
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 export const Design = z
@@ -204,11 +204,11 @@ export function registerAsyncPreview(server, name, definition, handler) {
                     throw e;
             }
             await mkdir(dirname(statusPath(a.requestId)), { recursive: true });
-            await writeFile(statusPath(a.requestId), JSON.stringify({ state: "pending", fingerprint }), { flag: "wx", mode: 0o600 });
+            await atomicJson(statusPath(a.requestId), { state: "pending", fingerprint }, true);
             active.add(a.requestId);
             void handler(a)
                 .then(async (result) => {
-                await writeFile(statusPath(a.requestId), JSON.stringify({
+                await atomicJson(statusPath(a.requestId), {
                     state: result.isError ? "failed" : "complete",
                     fingerprint,
                     ...(result.isError
@@ -218,16 +218,16 @@ export function registerAsyncPreview(server, name, definition, handler) {
                             },
                         }
                         : {}),
-                }), { mode: 0o600 });
+                });
             })
                 .catch(async () => {
-                await writeFile(statusPath(a.requestId), JSON.stringify({
+                await atomicJson(statusPath(a.requestId), {
                     state: "failed",
                     fingerprint,
                     error: {
                         error: "Preview generation failed. Inspect the creation receipts before retrying.",
                     },
-                }), { mode: 0o600 }).catch(() => { });
+                }).catch(() => { });
             })
                 .finally(() => active.delete(a.requestId));
             return pending(a.requestId);
@@ -317,7 +317,7 @@ export function registerPreviewDesignTools(server) {
                     themes: [],
                 };
                 await mkdir(dirname(file), { recursive: true });
-                await writeFile(file, JSON.stringify(job), { mode: 0o600 });
+                await atomicJson(file, job);
                 for (const [i, design] of a.designs.entries()) {
                     const hash = createHash("sha256")
                         .update(a.requestId + ":" + i)
@@ -336,7 +336,7 @@ export function registerPreviewDesignTools(server) {
                         ...(job.products ?? {}),
                         [target.alias]: productIds,
                     };
-                    await writeFile(file, JSON.stringify(job), { mode: 0o600 });
+                    await atomicJson(file, job);
                     const directory = await buildDesign(design);
                     const r = await cliJson([
                         "theme",
@@ -363,10 +363,10 @@ export function registerPreviewDesignTools(server) {
                         shop: target.shop,
                         store: target.alias,
                     });
-                    await writeFile(file, JSON.stringify(job), { mode: 0o600 });
+                    await atomicJson(file, job);
                 }
                 job.state = "complete";
-                await writeFile(file, JSON.stringify(job), { mode: 0o600 });
+                await atomicJson(file, job);
                 return textResult(await resultLinks(job));
             }
             catch (e) {

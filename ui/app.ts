@@ -1,7 +1,7 @@
 import { App } from "@modelcontextprotocol/ext-apps";
 import { render } from "./render.js";
 const app = new App(
-  { name: "Shopify Multi Store", version: "1.6.0-beta.1" },
+  { name: "Shopify Multi Store", version: "1.6.0" },
   {},
 );
 const root = document.getElementById("app")!;

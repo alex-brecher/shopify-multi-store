@@ -1,13 +1,13 @@
 # Shopify feature coverage
 
-Date: 2026-09-07. Candidate: `1.6.0-beta.1`.
+Date: 2026-09-07. Version: `1.6.0`.
 Branch: `codex/review-parity-20260907`.
 
 ## Release state
 
-The local candidate adds guided workflows for the standard Shopify Admin features in the observed ChatGPT connector.
+Version 1.6.0 adds guided workflows for the standard Shopify Admin features in the observed ChatGPT connector.
 It retains the existing multi-store reports and explicit store routing.
-It is not installed, published, or accepted for production use.
+GitHub releases identify the published package version. Installed clients can use an older version until their next update.
 Live acceptance now includes writes to three isolated temporary preview stores. Existing brand stores received read-only checks.
 
 The candidate exposes 55 tools through MCP.

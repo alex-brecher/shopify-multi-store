@@ -46,7 +46,7 @@ export async function cliJson(
       maxBuffer: 1_000_000,
       env: {
         ...process.env,
-        SHOPIFY_CLI_AGENT_INFO: "n:shopify-multi-store|v:1.6.0-beta.1|p:openai",
+        SHOPIFY_CLI_AGENT_INFO: "n:shopify-multi-store|v:1.6.0|p:openai",
         SHOPIFY_CLI_AGENT_IDS: "r:preview-workflow",
         CI: "1",
         SHOPIFY_FLAG_VERBOSE: "0",
