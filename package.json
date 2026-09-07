@@ -69,7 +69,7 @@
     "import-legacy": "node scripts/import-legacy-stores.mjs",
     "skills:install": "node scripts/install-shopify-skills.mjs",
     "sync:skills": "node scripts/sync-skills.mjs",
-    "test": "npm run build && node --test tests/*.test.mjs",
+    "test": "npm run build && node scripts/run-tests.mjs",
     "test:live": "npm run build && node scripts/live-smoke-test.mjs",
     "prepack": "npm run sync:skills && npm test",
     "codegen": "tsc && node scripts/codegen.mjs",

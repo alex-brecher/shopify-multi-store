@@ -183,12 +183,136 @@ async function resultLinks(job: any) {
       "Each design is a separate temporary Shopify store. Claim the design you want to keep.",
   };
 }
-export function registerPreviewDesignTools(server: McpServer) {
+export function registerAsyncPreview(
+  server: McpServer,
+  name: string,
+  definition: any,
+  handler: (a: any) => Promise<any>,
+) {
+  const active = new Set<string>();
+  const statusPath = (id: string) =>
+    join(dirname(configPath()), `preview-design-${id}.status.json`);
+  const pending = (id: string) =>
+    textResult({
+      status: "pending",
+      requestId: id,
+      notice:
+        "Storefront previews are being built. Check status with shopify_get_new_store_preview_status.",
+    });
+  const readStatus = async (id: string) => {
+    const status = JSON.parse(await readFile(statusPath(id), "utf8"));
+    if (status.state === "complete") {
+      const job = JSON.parse(
+        await readFile(
+          join(dirname(configPath()), `preview-design-${id}.json`),
+          "utf8",
+        ),
+      );
+      return textResult(await resultLinks(job));
+    }
+    if (status.state === "failed") return textResult(status.error, true);
+    return active.has(id)
+      ? pending(id)
+      : textResult(
+          {
+            error:
+              "Preview generation was interrupted. Inspect the creation receipts before recovery.",
+            requestId: id,
+          },
+          true,
+        );
+  };
+  server.registerTool(name, definition, async (args) => {
+    const a = args as any;
+    try {
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify(a))
+        .digest("hex");
+      try {
+        const existing = JSON.parse(
+          await readFile(statusPath(a.requestId), "utf8"),
+        );
+        if (existing.fingerprint !== fingerprint)
+          throw Error("requestId belongs to another preview request.");
+        return await readStatus(a.requestId);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      await mkdir(dirname(statusPath(a.requestId)), { recursive: true });
+      await writeFile(
+        statusPath(a.requestId),
+        JSON.stringify({ state: "pending", fingerprint }),
+        { flag: "wx", mode: 0o600 },
+      );
+      active.add(a.requestId);
+      void handler(a)
+        .then(async (result) => {
+          await writeFile(
+            statusPath(a.requestId),
+            JSON.stringify({
+              state: result.isError ? "failed" : "complete",
+              fingerprint,
+              ...(result.isError
+                ? {
+                    error: result.structuredContent ?? {
+                      error: "Preview generation failed.",
+                    },
+                  }
+                : {}),
+            }),
+            { mode: 0o600 },
+          );
+        })
+        .catch(async () => {
+          await writeFile(
+            statusPath(a.requestId),
+            JSON.stringify({
+              state: "failed",
+              fingerprint,
+              error: {
+                error:
+                  "Preview generation failed. Inspect the creation receipts before retrying.",
+              },
+            }),
+            { mode: 0o600 },
+          ).catch(() => {});
+        })
+        .finally(() => active.delete(a.requestId));
+      return pending(a.requestId);
+    } catch (e) {
+      return toolError(e);
+    }
+  });
   server.registerTool(
+    "shopify_get_new_store_preview_status",
+    {
+      description:
+        "Check an asynchronous storefront preview request and retrieve fresh preview and claim links.",
+      _meta: UI_META,
+      inputSchema: z.object({ requestId: z.string().uuid() }).strict(),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (a) => {
+      try {
+        return await readStatus(a.requestId);
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+}
+export function registerPreviewDesignTools(server: McpServer) {
+  registerAsyncPreview(
+    server,
     "shopify_get_new_store_previews",
     {
       description:
-        "Build 1–3 designed storefront previews on separate NEW temporary Shopify stores, with a real claim link. Generate concrete design specifications from the user brief. Uses Shopify Dawn; does not alter an existing store. Reuse requestId after interruption. Generate demo products and designs from the brief. Products, pricing, and storefront copy remain editable after claiming.",
+        "Start an asynchronous build of 1–3 designed storefront previews on separate NEW temporary Shopify stores, with a real claim link. Generate concrete design specifications from the user brief. Uses Shopify Dawn; does not alter an existing store. Reuse requestId after interruption. Generate demo products and designs from the brief. Products, pricing, and storefront copy remain editable after claiming.",
       _meta: UI_META,
       inputSchema: z
         .object({

@@ -42,7 +42,8 @@ Do not call the official Shopify `switch_shop` tool for a multi-store task. That
 For a new-store request, use `shopify_get_new_store_previews` with the user's product, audience, and style brief.
 Generate one to three concrete design specifications and relevant demo product concepts from that brief.
 Supply a stable UUID requestId. Reuse it after an interruption.
-The tool creates separate temporary Shopify stores, publishes each design, and returns preview and claim links.
+The tool returns a pending job ID. Poll `shopify_get_new_store_preview_status` until it completes or reports a failure.
+The completed job contains separate temporary Shopify stores, published designs, and preview and claim links.
 Do not use it to restyle an existing store. Do not claim a store or start a subscription without the user's instruction.
 Use the returned preview aliases with the ordinary product, collection, inventory, and image tools.
 

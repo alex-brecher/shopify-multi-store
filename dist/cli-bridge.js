@@ -1,9 +1,32 @@
+import { access } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 const exec = promisify(execFile);
+export async function cliCommand(platform = process.platform, env = process.env) {
+    const configured = env.SHOPIFY_MULTI_STORE_CLI;
+    if (configured && /\.[mc]?js$/i.test(configured))
+        return { command: process.execPath, prefix: [configured] };
+    if (platform !== "win32" || configured?.toLowerCase().endsWith(".exe"))
+        return { command: configured ?? "shopify", prefix: [] };
+    // npm's Windows .cmd shim needs a shell. Run its JavaScript entry directly instead.
+    const dirs = configured
+        ? [dirname(configured)]
+        : (env.PATH ?? env.Path ?? "").split(";");
+    for (const dir of dirs) {
+        const script = join(dir, "node_modules", "@shopify", "cli", "bin", "run.js");
+        try {
+            await access(script);
+            return { command: process.execPath, prefix: [script] };
+        }
+        catch { }
+    }
+    throw Error("Shopify CLI was not found. Install @shopify/cli or set SHOPIFY_MULTI_STORE_CLI to its bin/run.js file.");
+}
 export async function cliJson(args, timeout = 60_000) {
+    const launch = await cliCommand();
     try {
-        const { stdout } = await exec(process.env.SHOPIFY_MULTI_STORE_CLI ?? "shopify", args, {
+        const { stdout } = await exec(launch.command, [...launch.prefix, ...args], {
             timeout,
             maxBuffer: 1_000_000,
             env: {

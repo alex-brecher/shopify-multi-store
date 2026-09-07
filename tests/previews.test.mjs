@@ -1,3 +1,4 @@
+import { cliCommand } from "../dist/cli-bridge.js";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createPreview, previewStores } from "../dist/previews.js";
-import { buildDesign } from "../dist/preview-designs.js";
+import { registerAsyncPreview, buildDesign } from "../dist/preview-designs.js";
 import { catalogs } from "../dist/samples.js";
 import { registerDiscoveryTools } from "../dist/discovery-tools.js";
 async function config(t) {
@@ -115,4 +116,53 @@ test("agent-generated concepts support arbitrary categories without a catalog re
   assert.equal(r.structuredContent.generatedConcepts, true);
   assert.equal(r.structuredContent.sampleProducts[0].title, "Cat sun hat");
   assert.equal(r.structuredContent.catalogOnly, false);
+});
+
+test("Windows CLI launches the npm JavaScript entry without a shell", async (t) => {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const dir = await mkdtemp(join(tmpdir(), "cli-path-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const script = join(dir, "node_modules", "@shopify", "cli", "bin", "run.js");
+  await mkdir(join(dir, "node_modules", "@shopify", "cli", "bin"), {
+    recursive: true,
+  });
+  await writeFile(script, "");
+  const r = await cliCommand("win32", { PATH: dir });
+  assert.equal(r.command, process.execPath);
+  assert.deepEqual(r.prefix, [script]);
+});
+
+test("preview creation returns pending immediately and exposes background failures", async (t) => {
+  await config(t);
+  const { z } = await import("zod/v4");
+  const tools = new Map();
+  let finish;
+  const deferred = new Promise((resolve) => {
+    finish = resolve;
+  });
+  registerAsyncPreview(
+    { registerTool: (n, d, c) => tools.set(n, { d, c }) },
+    "start",
+    { inputSchema: z.object({ requestId: z.string().uuid() }) },
+    async () => {
+      await deferred;
+      return { isError: true, structuredContent: { error: "Fixture failure" } };
+    },
+  );
+  const id = randomUUID();
+  const first = await tools.get("start").c({ requestId: id });
+  assert.equal(first.structuredContent.status, "pending");
+  const check = tools.get("shopify_get_new_store_preview_status").c;
+  assert.equal(
+    (await check({ requestId: id })).structuredContent.status,
+    "pending",
+  );
+  finish();
+  let result;
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+    result = await check({ requestId: id });
+    if (result.isError) break;
+  }
+  assert.equal(result.structuredContent.error, "Fixture failure");
 });

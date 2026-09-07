@@ -77,6 +77,26 @@ export function render(
     note.className = "notice";
     root.append(note);
   }
+  if (data.status === "pending" && data.requestId && call) {
+    const button = element("button", "Check preview status");
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        render(
+          await call("shopify_get_new_store_preview_status", {
+            requestId: data.requestId,
+          }),
+          root,
+          call,
+        );
+      } catch (e) {
+        root.append(element("p", String(e)));
+        button.disabled = false;
+      }
+    };
+    root.append(button);
+    return;
+  }
   if (data.storefrontPreviews || data.previewUrl) {
     const previews = data.storefrontPreviews ?? [data];
     for (const p of previews) {

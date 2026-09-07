@@ -24,5 +24,6 @@ declare const PreviewProduct: z.ZodObject<{
 export declare function seedPreviewProducts(alias: string, products: z.infer<typeof PreviewProduct>[]): Promise<string[]>;
 type DesignInput = z.infer<typeof Design>;
 export declare function buildDesign(design: DesignInput, sourceDirectory?: string): Promise<string>;
+export declare function registerAsyncPreview(server: McpServer, name: string, definition: any, handler: (a: any) => Promise<any>): void;
 export declare function registerPreviewDesignTools(server: McpServer): void;
 export {};
