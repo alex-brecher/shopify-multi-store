@@ -488,10 +488,49 @@ test("shopify_graphql_mutation judges each root the same way", async (t) => {
   assert.deepEqual(result.rejected, ["b"]);
   assert.equal(result.userErrors.length, 1);
   assert.equal(result.data.b.smsUserErrors_userErrors, undefined);
-  // A document that does not validate is sent unchanged, as before, and says it was not analyzed.
+  // A document that does not validate is sent unchanged and judged structurally: never applied without evidence.
   const invalid = await sendMutationWithOutcome(store, "mutation { tagsAdd(id: 1) { node { id } } }", {});
-  assert.equal(invalid.outcome, undefined);
-  assert.match(invalid.outcomeNotice, /not analyzed/);
+  assert.equal(invalid.outcome, "unknown");
+  assert.match(invalid.outcomeNotice, /without the Admin schema/);
+});
+
+test("without the Admin schema, aliased userErrors are still found per root and nothing is assumed applied", async (t) => {
+  let respond;
+  await fixture(t, (request) => {
+    if (/shopify\.dev/.test(request.url)) return { errors: [{ message: "schema unavailable" }] };
+    return respond?.(request);
+  });
+  const store = { ...(await findStore("main")), apiVersion: "2025-01" };
+  const document = `mutation {
+    good: productUpdate(product: { id: "gid://shopify/Product/1", title: "x" }) { product { id } problems: userErrors { field message } }
+    bad: tagsAdd(id: "gid://shopify/Product/2", tags: ["x"]) { node { id } oops: userErrors { field message } }
+    blind: tagsRemove(id: "gid://shopify/Product/3", tags: ["x"]) { node { id } }
+  }`;
+  respond = () => ({ data: {
+    good: { product: { id: "gid://shopify/Product/1" }, problems: [] },
+    bad: { node: null, oops: [{ field: ["tags"], message: "Too many tags" }] },
+    blind: { node: { id: "gid://shopify/Product/3" } },
+  } });
+  const result = await sendMutationWithOutcome(store, document, {});
+  assert.match(result.outcomeNotice, /without the Admin schema \(Could not load Shopify Admin schema 2025-01/);
+  const byKey = Object.fromEntries(result.roots.map((root) => [root.key, root]));
+  assert.equal(byKey.bad.outcome, "rejected", "an aliased userErrors list is detected by shape");
+  assert.equal(byKey.bad.mutation, "tagsAdd");
+  assert.equal(byKey.blind.outcome, "unknown", "no visible error list means unknown, not applied");
+  assert.equal(byKey.good.outcome, "unknown", "an empty list under a non-errors alias proves nothing");
+  assert.equal(result.outcome, "unknown");
+  assert.deepEqual(result.rejected, ["bad"]);
+  assert.equal(result.userErrors.length, 1);
+
+  // An empty error list under an *errors key is evidence the root applied.
+  respond = () => ({ data: { tagsAdd: { node: { id: "gid://shopify/Product/2" }, userErrors: [] } } });
+  const clean = await sendMutationWithOutcome(store, `mutation { tagsAdd(id: "gid://shopify/Product/2", tags: ["x"]) { node { id } userErrors { message } } }`, {});
+  assert.equal(clean.outcome, "applied");
+
+  // Nothing to go on at all: unknown, never applied.
+  respond = () => ({ data: {} });
+  const empty = await sendMutationWithOutcome(store, `mutation { tagsAdd(id: "gid://shopify/Product/2", tags: ["x"]) { node { id } } }`, {});
+  assert.equal(empty.outcome, "unknown");
 });
 
 // ---------- Dry-run completeness ----------

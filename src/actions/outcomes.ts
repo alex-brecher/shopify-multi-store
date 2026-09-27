@@ -15,6 +15,8 @@ import {
   type GraphQLField,
   type GraphQLSchema,
   type SelectionNode,
+  parse,
+  type SelectionSetNode,
 } from "graphql";
 import type { GraphqlEnvelope } from "../shopify.js";
 
@@ -247,4 +249,102 @@ function adviceFor(outcome: StoreOutcome, applied: string[], rejected: string[],
   if (unknown.length) parts.push(`Read the affected records for ${list(unknown)} first; ${unknown.length === 1 ? "it" : "they"} might have applied.`);
   if (rejected.length) parts.push(`Retry only ${list(rejected)}, in a new document, after fixing ${rejected.length === 1 ? "its" : "their"} user errors.`);
   return parts.join(" ");
+}
+
+/** Every list of objects that all have a "message" key, anywhere under a payload. */
+function messageLists(value: unknown, depth = 0, out: unknown[] = []): unknown[] {
+  if (depth > 8 || !value || typeof value !== "object") return out;
+  if (Array.isArray(value)) {
+    if (value.length && value.every((item) => item && typeof item === "object" && !Array.isArray(item) && "message" in (item as Data))) {
+      out.push(...value);
+      return out;
+    }
+    for (const item of value) messageLists(item, depth + 1, out);
+    return out;
+  }
+  for (const child of Object.values(value as Data)) messageLists(child, depth + 1, out);
+  return out;
+}
+
+/** Top-level response keys and mutation names of a document, fragments included. */
+function documentRoots(document: string): Array<{ key: string; mutation: string }> | undefined {
+  try {
+    const ast = parse(document, { noLocation: true, maxTokens: 50_000 });
+    const operations = ast.definitions.filter((definition) => definition.kind === Kind.OPERATION_DEFINITION);
+    if (operations.length !== 1 || operations[0]!.kind !== Kind.OPERATION_DEFINITION) return undefined;
+    const fragments = new Map(ast.definitions.flatMap((definition) => definition.kind === Kind.FRAGMENT_DEFINITION ? [[definition.name.value, definition] as const] : []));
+    const roots = new Map<string, string>();
+    const walk = (set: SelectionSetNode, seen: Set<string>) => {
+      for (const selection of set.selections) {
+        if (selection.kind === Kind.FIELD) roots.set(selection.alias?.value ?? selection.name.value, selection.name.value);
+        else if (selection.kind === Kind.INLINE_FRAGMENT) walk(selection.selectionSet, seen);
+        else if (!seen.has(selection.name.value)) {
+          const fragment = fragments.get(selection.name.value);
+          if (fragment) walk(fragment.selectionSet, new Set([...seen, selection.name.value]));
+        }
+      }
+    };
+    walk(operations[0]!.selectionSet, new Set());
+    return [...roots].map(([key, mutation]) => ({ key, mutation }));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Judge a mutation response without the Admin schema (it could not be loaded, or the document
+ * or variables did not validate, so no error lists were injected). The check is structural and
+ * alias-agnostic: under each top-level response key, any list of objects that have a "message"
+ * key is that root's user errors, whatever it was aliased to. A root is:
+ * - rejected when such a list is non-empty (or access was denied);
+ * - applied only when its payload is present, it has no errors on its path, and it holds an
+ *   empty list under a key ending in "errors", so an error list was selected and came back empty;
+ * - unknown otherwise: nothing shows whether it applied. It is never reported as applied.
+ */
+export function evaluateOutcomeStructural(document: string, envelope: Pick<GraphqlEnvelope, "data" | "errors">): OutcomeReport {
+  const data = envelope.data && typeof envelope.data === "object" ? envelope.data as Data : undefined;
+  const errors = Array.isArray(envelope.errors) ? envelope.errors : [];
+  const pathless = errors.filter((error) => !errorPath(error)?.length);
+  const roots = documentRoots(document) ?? Object.keys(data ?? {}).map((key) => ({ key, mutation: key }));
+  const allUserErrors: Array<{ path: string[]; error: unknown }> = [];
+  const results: RootResult[] = roots.map((root) => {
+    const value = data?.[root.key];
+    const own = errors.filter((error) => errorPath(error)?.[0] === root.key);
+    if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+      const denied = (own.length > 0 && own.every((error) => errorCode(error) === "ACCESS_DENIED"))
+        || (own.length === 0 && pathless.length > 0 && pathless.every((error) => errorCode(error) === "ACCESS_DENIED"));
+      if (denied) return { key: root.key, mutation: root.mutation, outcome: "rejected", reason: "access denied", errors: own.length ? own : pathless };
+      return {
+        key: root.key,
+        mutation: root.mutation,
+        outcome: "unknown",
+        reason: own.length ? "Shopify returned an error for this field and no result." : value === null ? "Shopify returned no result for this field." : "The response has no entry for this field.",
+        ...(own.length || pathless.length ? { errors: own.length ? own : pathless } : {}),
+      };
+    }
+    const userErrors = messageLists(value);
+    for (const error of userErrors) allUserErrors.push({ path: [root.key], error });
+    if (userErrors.length) return { key: root.key, mutation: root.mutation, outcome: "rejected", userErrors, ...(own.length ? { errors: own } : {}) };
+    const emptyErrorList = Object.entries(value as Data).some(([key, child]) => /errors$/i.test(key) && Array.isArray(child) && child.length === 0);
+    if (emptyErrorList && !own.length && !pathless.length) return { key: root.key, mutation: root.mutation, outcome: "applied" };
+    return {
+      key: root.key,
+      mutation: root.mutation,
+      outcome: "unknown",
+      reason: "The Admin schema was not available, and the response shows no error list for this field, so whether it applied is unknown.",
+      ...(own.length || pathless.length ? { errors: own.length ? own : pathless } : {}),
+    };
+  });
+  const keys = (outcome: RootOutcome) => results.filter((result) => result.outcome === outcome).map((result) => result.key);
+  const applied = keys("applied");
+  const rejected = keys("rejected");
+  const unknown = keys("unknown");
+  const outcome: StoreOutcome = !results.length
+    ? "unknown"
+    : applied.length === results.length ? "applied"
+      : rejected.length === results.length ? "rejected"
+        : applied.length ? "partial"
+          : "unknown";
+  const advice = adviceFor(outcome, applied, rejected, unknown);
+  return { outcome, roots: results, userErrors: allUserErrors, data: envelope.data, applied, rejected, unknown, ...(advice ? { advice } : {}) };
 }

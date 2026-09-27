@@ -61,4 +61,15 @@ export declare function included(node: FieldNode, variables: Data): boolean;
 export declare function instrumentMutation(schema: GraphQLSchema, ast: DocumentNode, variables?: Data): InstrumentedMutation;
 /** Judge each root of an instrumented mutation from Shopify's response, then the store as a whole. */
 export declare function evaluateOutcome(roots: MutationRoot[], envelope: Pick<GraphqlEnvelope, "data" | "errors">): OutcomeReport;
+/**
+ * Judge a mutation response without the Admin schema (it could not be loaded, or the document
+ * or variables did not validate, so no error lists were injected). The check is structural and
+ * alias-agnostic: under each top-level response key, any list of objects that have a "message"
+ * key is that root's user errors, whatever it was aliased to. A root is:
+ * - rejected when such a list is non-empty (or access was denied);
+ * - applied only when its payload is present, it has no errors on its path, and it holds an
+ *   empty list under a key ending in "errors", so an error list was selected and came back empty;
+ * - unknown otherwise: nothing shows whether it applied. It is never reported as applied.
+ */
+export declare function evaluateOutcomeStructural(document: string, envelope: Pick<GraphqlEnvelope, "data" | "errors">): OutcomeReport;
 export {};

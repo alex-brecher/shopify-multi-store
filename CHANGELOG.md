@@ -55,6 +55,11 @@ person to their own staff permissions.
 - Mutations are never resent after Shopify throttles them; the result says the
   change was not applied and is safe to retry.
 - Docs: add `docs/ACTIONS.md`.
+- `shopify_graphql_mutation` no longer falls back to the non-alias-aware
+  userErrors check when the Admin schema cannot be loaded (or the document does
+  not validate). It scans each top-level response key for lists of objects
+  with a `message`, reports per root, and says `unknown` rather than `applied`
+  when nothing shows the outcome.
 - `shopify_run_action` resolves every record ID again (variables and inline)
   with `nodes(ids:)` per store right before applying. An ID that does not
   resolve, or a failed lookup, refuses the apply unless

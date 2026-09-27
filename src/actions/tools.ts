@@ -36,7 +36,7 @@ import {
   searchCatalog,
 } from "./catalog.js";
 import { literalGids, nonEnumerableReasons } from "./preview.js";
-import { evaluateOutcome, instrumentMutation, RESERVED_ALIAS_PREFIX, type MutationRoot } from "./outcomes.js";
+import { evaluateOutcome, evaluateOutcomeStructural, instrumentMutation, RESERVED_ALIAS_PREFIX, type MutationRoot } from "./outcomes.js";
 
 const StoreAlias = z.string().min(1).max(64);
 const ApiVersion = z.string().regex(/^\d{4}-(01|04|07|10)$/).describe("Admin API version, such as 2026-04. Defaults to the store's version, or the server default.");
@@ -209,10 +209,9 @@ export async function sendMutationWithOutcome(store: StoreConfig, document: stri
     skipped = message;
   }
   const envelope = await adminGraphql(store, instrumented?.document ?? document, variables);
-  if (!instrumented) {
-    return { ...(envelope as unknown as Data), outcomeNotice: `Per-field outcome not analyzed: ${skipped}`.slice(0, 500) };
-  }
-  const report = evaluateOutcome(instrumented.roots, envelope);
+  // Without instrumentation (no schema, or the document or variables did not validate), judge
+  // each root structurally instead: alias-agnostic, and never "applied" without evidence.
+  const report = instrumented ? evaluateOutcome(instrumented.roots, envelope) : evaluateOutcomeStructural(document, envelope);
   const { userErrors: _ignored, ...rest } = envelope;
   void _ignored;
   return {
@@ -223,6 +222,7 @@ export async function sendMutationWithOutcome(store: StoreConfig, document: stri
     roots: report.roots,
     ...(report.outcome === "partial" || report.outcome === "unknown" ? { applied: report.applied, rejected: report.rejected, unknown: report.unknown } : {}),
     ...(report.advice ? { advice: report.advice } : {}),
+    ...(instrumented ? {} : { outcomeNotice: `Judged without the Admin schema (${skipped}): error lists were found by shape, and a field with no visible error list is unknown.`.slice(0, 500) }),
   };
 }
 

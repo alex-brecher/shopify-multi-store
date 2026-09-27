@@ -175,7 +175,9 @@ export function createServer(options = {}) {
             const selected = await findStore(store);
             // Each root field is judged on its own (applied, rejected, unknown); see docs/ACTIONS.md.
             const result = await sendMutationWithOutcome(selected, mutation, variables);
-            const failed = result.outcome ? result.outcome !== "applied" : hasGraphqlErrors(result);
+            // Every result carries a per-root outcome, even when the schema could not be loaded; only
+            // "applied" is success.
+            const failed = result.outcome !== "applied";
             return { ...success(result), ...(failed ? { isError: true } : {}) };
         }
         catch (error) {
