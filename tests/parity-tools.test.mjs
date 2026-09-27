@@ -901,3 +901,21 @@ test("every parity document validates against the pinned API version", async () 
     assert.deepEqual(await validateDocument(document, PARITY_API_VERSION), [], name);
   }
 });
+
+test("guided tools run on the default API version (the one a Worker bundles); only legacy ruleSet writes do not", async () => {
+  const { DOCS } = await import("../dist/admin-documents.js");
+  const { PARITY_API_VERSION, COLLECTION_API_VERSION, LEGACY_COLLECTION_API_VERSION } = await import("../dist/api-versions.js");
+  const { DEFAULT_API_VERSION } = await import("../dist/constants.js");
+  const { validateDocument } = await import("../dist/schema.js");
+  assert.equal(PARITY_API_VERSION, DEFAULT_API_VERSION);
+  assert.equal(COLLECTION_API_VERSION, DEFAULT_API_VERSION);
+  const legacy = new Set(["collectionCreateLegacy", "collectionUpdateLegacy"]);
+  for (const [name, document] of Object.entries(DOCS)) {
+    if (typeof document !== "string") continue;
+    if (legacy.has(name)) {
+      assert.deepEqual(await validateDocument(document, LEGACY_COLLECTION_API_VERSION), [], name);
+      continue;
+    }
+    assert.deepEqual(await validateDocument(document, DEFAULT_API_VERSION), [], name);
+  }
+});

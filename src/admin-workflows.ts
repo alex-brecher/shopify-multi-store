@@ -1,4 +1,4 @@
-import { getVariableValues } from "graphql/execution/values.js";
+import { getVariableValues } from "graphql";
 import { findStore, type StoreConfig } from "./config.js";
 import { adminGraphql, hasGraphqlErrors } from "./shopify.js";
 import { adminSchema, validateDocument } from "./schema.js";

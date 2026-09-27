@@ -7,6 +7,10 @@
 export interface SchemaSource {
   /** The introspection result JSON text for a quarterly version, or undefined when not available here. */
   load(version: string): Promise<string | undefined>;
+  /** The versions this source holds, when it knows them up front (the Worker's bundle). */
+  readonly versions?: readonly string[];
+  /** false: never fetch a missing version from Shopify's schema proxy. Default true. */
+  readonly remote?: boolean;
 }
 
 let current: SchemaSource | undefined;
@@ -24,11 +28,30 @@ export function schemaSource(): SchemaSource {
  * A source holding exactly one gzipped schema version, for example a file bundled into a
  * Worker. It is inflated once, on first use, with the web-standard DecompressionStream, and
  * the text is not kept: schema.ts caches the parsed schema.
+ *
+ * With remote: false (the Worker), schema.ts never fetches another version from shopify.dev:
+ * a second 6 MB download parsed next to the bundled one would crowd the 128 MB isolate, so an
+ * unbundled version fails at once with an error naming the bundled one.
  */
-export function gzipSchemaSource(version: string, gzipped: ArrayBuffer | Uint8Array | (() => Promise<ArrayBuffer | Uint8Array>)): SchemaSource {
+/**
+ * Whether a schema for this version can be loaded here without a network fetch being refused:
+ * true unless the source is offline-only (remote: false) and does not bundle the version.
+ */
+export function schemaAvailable(version: string): boolean {
+  const source = schemaSource();
+  return source.remote !== false || Boolean(source.versions?.includes(version));
+}
+
+export function gzipSchemaSource(
+  version: string,
+  gzipped: ArrayBuffer | Uint8Array | (() => Promise<ArrayBuffer | Uint8Array>) | undefined,
+  options: { remote?: boolean } = {}
+): SchemaSource {
   return {
+    versions: gzipped ? [version] : [],
+    remote: options.remote ?? true,
     async load(requested) {
-      if (requested !== version) return undefined;
+      if (requested !== version || !gzipped) return undefined;
       const bytes = typeof gzipped === "function" ? await gzipped() : gzipped;
       return gunzipText(bytes);
     }

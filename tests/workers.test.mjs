@@ -184,6 +184,12 @@ test("the Worker signs in with Shopify, keeps OAuth state in the Durable Object,
   // The bundled schema is inflated on first use.
   const schema = await mcp.callTool({ name: "shopify_graphql_schema", arguments: { store: "main", type_name: "Product" } });
   assert.notEqual(schema.isError, true, JSON.stringify(schema).slice(0, 500));
+  // The legacy smart-collection write needs 2026-04, which the Worker does not bundle or download.
+  const before = admin.requests.length;
+  const ruleSet = await mcp.callTool({ name: "shopify_update_collection", arguments: { store: "main", id: "gid://shopify/Collection/1", ruleSet: { appliedDisjunctively: false, rules: [{ column: "TAG", relation: "EQUALS", condition: "x" }] } } });
+  assert.equal(ruleSet.isError, true);
+  assert.match(ruleSet.content[0].text, /bundles only the default API schema\. Use shopify_run_action with collectionCreate or collectionUpdate/);
+  assert.equal(admin.requests.length, before, "refused before any Shopify call, dry run included");
 
   // Refresh rotation and reuse detection through the Durable Object.
   const refresh = (token) => call("/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: token, client_id: client.client_id }) });
@@ -269,6 +275,15 @@ test("wrangler.jsonc: nodejs_compat, the Durable Object and D1 bindings, one bun
   const entry = await readFile(new URL("../src/workers/index.ts", import.meta.url), "utf8");
   const bundled = [...entry.matchAll(/schemas\/admin-(\d{4}-\d{2})\.json\.gz/g)].map((m) => m[1]);
   assert.deepEqual(bundled, [DEFAULT_API_VERSION], "exactly one schema, the default API version");
+});
+
+test("graphql is imported from its package root only, so a bundle never holds two copies", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const files = (await readdir(new URL("../src/", import.meta.url), { recursive: true })).filter((name) => name.endsWith(".ts"));
+  for (const file of files) {
+    const source = await readFile(new URL(`../src/${file}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /from "graphql\//, `${file} imports a graphql subpath`);
+  }
 });
 
 test("the Worker's fetch shim turns redirect: \"error\" into manual plus a refusal, and leaves other requests alone", async () => {

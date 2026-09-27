@@ -8,7 +8,7 @@ import { hostedOptionsFromEnv } from "../dist/hosted/config.js";
 import { fetchMetadataDocumentWithFetch } from "../dist/platform/cimd-fetch.js";
 import { constantTimeEqual, hmacSha256Hex } from "../dist/platform/crypto.js";
 import { isForbiddenAddress } from "../dist/platform/ip.js";
-import { gzipSchemaSource, setSchemaSource } from "../dist/platform/schema-source.js";
+import { gzipSchemaSource, schemaAvailable, setSchemaSource } from "../dist/platform/schema-source.js";
 import { adminSchema } from "../dist/schema.js";
 import { loadStores } from "../dist/config.js";
 import { enableHostedMode, runtimeEnv } from "../dist/runtime.js";
@@ -103,6 +103,28 @@ test("a gzipped schema source inflates one version lazily with DecompressionStre
   assert.equal(reads, 1);
   await adminSchema("2026-07");
   assert.equal(reads, 1, "the parsed schema is cached");
+});
+
+test("an offline schema source (the Worker's) never downloads a schema: an unbundled version fails at once", async (t) => {
+  const gz = await readFile(new URL("../schemas/admin-2026-07.json.gz", import.meta.url));
+  const original = globalThis.fetch;
+  const fetched = [];
+  globalThis.fetch = async (input) => { fetched.push(String(input)); throw new Error("no network in this test"); };
+  t.after(() => { globalThis.fetch = original; setSchemaSource(undefined); });
+  setSchemaSource(gzipSchemaSource("2026-07", gz, { remote: false }));
+  assert.equal(schemaAvailable("2026-07"), true);
+  assert.equal(schemaAvailable("2025-10"), false);
+  const started = Date.now();
+  await assert.rejects(adminSchema("2025-10"), /2025-10 is not available on this deployment: it bundles only 2026-07 and does not download schemas at run time/);
+  assert.ok(Date.now() - started < 1_000, "fails fast");
+  assert.deepEqual(fetched, [], "shopify.dev is never called");
+  assert.ok((await adminSchema("2026-07")).getType("Product"), "the bundled version still loads");
+  // With no bundled schema at all (a Worker built without one), the error says so.
+  setSchemaSource(gzipSchemaSource("2026-07", undefined, { remote: false }));
+  await assert.rejects(adminSchema("2025-07"), /bundles no Admin API schema/);
+  // The default (Node) source may still use the proxy for versions it does not ship.
+  setSchemaSource(undefined);
+  assert.equal(schemaAvailable("2025-10"), true);
 });
 
 test("hosted settings come from an env object, and store config follows the hosted env", async (t) => {

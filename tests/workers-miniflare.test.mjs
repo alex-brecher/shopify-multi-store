@@ -27,6 +27,27 @@ function signed(params) {
   return search;
 }
 
+const MEASURE = process.env.SMS_MEASURE_HEAP === "1";
+
+/**
+ * V8 heap of the Worker isolate (used and reserved), read through workerd's inspector. Opt in
+ * with SMS_MEASURE_HEAP=1; docs/DEPLOY-CLOUDFLARE.md quotes the numbers this prints. workerd's
+ * inspector does not answer HeapProfiler.collectGarbage, so these include uncollected garbage.
+ */
+async function isolateHeap(port) {
+  const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+  const target = targets.find((item) => item.id.startsWith("core:user:"));
+  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+  const usage = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("inspector did not answer")), 10_000);
+    socket.onmessage = (event) => { const message = JSON.parse(event.data); if (message.id === 1) { clearTimeout(timer); resolve(message.result); } };
+    socket.send(JSON.stringify({ id: 1, method: "Runtime.getHeapUsage" }));
+  });
+  socket.close();
+  return { usedMB: +(usage.usedSize / 1048576).toFixed(1), totalMB: +(usage.totalSize / 1048576).toFixed(1) };
+}
+
 function cookieOf(response, prefix) {
   return response.headers.getSetCookie().find((value) => value.startsWith(prefix))?.split(";")[0];
 }
@@ -42,13 +63,35 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
   assert.ok(script < 4 * 1024 * 1024, `script is ${script} bytes`);
 
   const { Miniflare, convertV4MiniflareOptions } = await import("miniflare");
-  const upstream = { exchanges: [], admin: [] };
+  const upstream = { exchanges: [], admin: [], other: [] };
+  // A small Admin API: answers each operation by name, keeping one variant's price.
+  const variant = { id: "gid://shopify/ProductVariant/1", sku: "SKU-1", price: "10.00", compareAtPrice: null, product: { id: "gid://shopify/Product/1", title: "Workerd product" }, inventoryItem: { id: "gid://shopify/InventoryItem/1", sku: "SKU-1", unitCost: null } };
+  const scopes = ["read_products", "write_products", "read_online_store_navigation"];
+  const adminAnswer = (name, variables) => {
+    switch (name) {
+      case "StoreCapabilities":
+      case "ParityCapabilities":
+        return { shop: { id: "gid://shopify/Shop/1", name: "Workerd Shop", myshopifyDomain: "main.myshopify.com" }, currentAppInstallation: { id: "gid://shopify/AppInstallation/1", accessScopes: scopes.map((handle) => ({ handle })) } };
+      case "FindVariantsBySku":
+        return { productVariants: { nodes: variables.query.includes("SKU-1") ? [{ id: variant.id, sku: variant.sku }] : [], pageInfo: { hasNextPage: false, endCursor: null } } };
+      case "VariantsForPricing":
+        return { nodes: variables.ids.map((id) => (id === variant.id ? variant : null)) };
+      case "UpdatePricesBulk":
+        for (const input of variables.variants) if (input.id === variant.id && input.price) variant.price = input.price;
+        return { productVariantsBulkUpdate: { productVariants: [variant], userErrors: [] } };
+      case "ListRedirects":
+        return { urlRedirects: { nodes: [{ id: "gid://shopify/UrlRedirect/1", path: "/old", target: "/new" }], pageInfo: { hasNextPage: false, endCursor: null } } };
+      default:
+        return { shop: { name: "Workerd Shop", myshopifyDomain: "main.myshopify.com" } };
+    }
+  };
   const mf = new Miniflare(convertV4MiniflareOptions({
     name: "shopify-multi-store-mcp",
     modules: [{ type: "ESModule", path: join(outdir, "index.js") }, ...schemaFiles.map((name) => ({ type: "Data", path: join(outdir, name) }))],
     modulesRoot: outdir,
     compatibilityDate: "2026-09-01",
     compatibilityFlags: ["nodejs_compat"],
+    ...(MEASURE ? { inspectorPort: 9239 } : {}),
     durableObjects: { OAUTH_STORE: { className: "OAuthStoreObject", useSQLite: true } },
     d1Databases: ["AUDIT_DB"],
     bindings: {
@@ -57,7 +100,7 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
       SHOPIFY_APP_CLIENT_ID: "workerd-client",
       SHOPIFY_APP_CLIENT_SECRET: SECRET,
       SHOPIFY_TOKEN_ENCRYPTION_KEYS: `k1:${randomBytes(32).toString("base64")}`,
-      SHOPIFY_APP_SCOPES: "read_products"
+      SHOPIFY_APP_SCOPES: scopes.join(",")
     },
     outboundService: async (request) => {
       const url = new URL(request.url);
@@ -65,12 +108,16 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
         const body = await request.json();
         upstream.exchanges.push(body);
         const [email, token] = body.code.split("|");
-        return Response.json({ access_token: token, scope: "read_products", expires_in: 86399, associated_user_scope: "read_products", associated_user: { id: 9, email, email_verified: true } });
+        return Response.json({ access_token: token, scope: scopes.join(","), expires_in: 86399, associated_user_scope: scopes.join(","), associated_user: { id: 9, email, email_verified: true } });
       }
-      if (/^\/admin\/api\/[\d-]+\/graphql\.json$/.test(url.pathname)) {
-        upstream.admin.push({ host: url.host, token: request.headers.get("x-shopify-access-token") });
-        return Response.json({ data: { shop: { name: "Workerd Shop", myshopifyDomain: "main.myshopify.com" } } });
+      const admin = /^\/admin\/api\/([\d-]+)\/graphql\.json$/.exec(url.pathname);
+      if (admin) {
+        const body = await request.json();
+        const name = /^\s*(?:query|mutation)\s+(\w+)/.exec(body.query)?.[1];
+        upstream.admin.push({ host: url.host, token: request.headers.get("x-shopify-access-token"), version: admin[1], name, variables: body.variables });
+        return Response.json({ data: adminAnswer(name, body.variables ?? {}) });
       }
+      upstream.other.push(request.url);
       return new Response("unexpected outbound request", { status: 599 });
     }
   }));
@@ -112,6 +159,7 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
     const data = text.startsWith("{") ? text : text.split("\n").find((line) => line.startsWith("data: ")).slice(6);
     return JSON.parse(data);
   };
+  const heapBefore = MEASURE ? await isolateHeap(9239) : undefined;
   const initialized = await rpc(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "workerd-test", version: "1" } });
   assert.equal(initialized.result.serverInfo.name, "shopify-multi-store-mcp-server");
   const listed = await rpc(2, "tools/list", {});
@@ -120,12 +168,45 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
   assert.ok(!names.includes("shopify_create_preview_store"));
   const info = await rpc(3, "tools/call", { name: "shopify_get_shop_info", arguments: { store: "main" } });
   assert.notEqual(info.result.isError, true, JSON.stringify(info));
-  assert.deepEqual(upstream.admin.at(-1), { host: "main.myshopify.com", token: "workerd-online-token" });
+  const { host, token } = upstream.admin.at(-1);
+  assert.deepEqual({ host, token }, { host: "main.myshopify.com", token: "workerd-online-token" });
   // The one bundled schema inflates inside workerd (DecompressionStream) within the memory limit.
   const schema = await rpc(4, "tools/call", { name: "shopify_graphql_schema", arguments: { store: "main", type_name: "Product" } });
   assert.notEqual(schema.result.isError, true, JSON.stringify(schema).slice(0, 400));
   const valid = await rpc(5, "tools/call", { name: "shopify_validate_graphql_codeblocks", arguments: { store: "main", codeblocks: [{ content: "{ shop { name } }" }] } });
   assert.equal(valid.result.structuredContent?.valid ?? JSON.parse(valid.result.content[0].text).valid, true, JSON.stringify(valid).slice(0, 400));
+
+  // A guided write (dry run, then apply) and a pinned read run on the bundled version inside
+  // workerd: no schema download, every Admin call on 2026-07.
+  const body = (result) => result.result.structuredContent ?? JSON.parse(result.result.content[0].text);
+  const preview = await rpc(10, "tools/call", { name: "shopify_update_prices", arguments: { store: "main", skus: [{ sku: "SKU-1", price: "12.00" }] } });
+  assert.notEqual(preview.result.isError, true, JSON.stringify(preview).slice(0, 600));
+  assert.equal(body(preview).dryRun, true);
+  assert.equal(body(preview).wouldApply[0].requested.price, "12.00");
+  assert.ok(!upstream.admin.some((request) => request.name === "UpdatePricesBulk"), "a dry run writes nothing");
+  const applied = await rpc(11, "tools/call", { name: "shopify_update_prices", arguments: { store: "main", skus: [{ sku: "SKU-1", price: "12.00" }], dryRun: false } });
+  assert.notEqual(applied.result.isError, true, JSON.stringify(applied).slice(0, 600));
+  assert.equal(body(applied).results[0].outcome, "applied");
+  assert.equal(body(applied).results[0].verification, "verified");
+  assert.equal(variant.price, "12.00");
+  const redirects = await rpc(12, "tools/call", { name: "shopify_search", arguments: { store: "main", resource: "redirects" } });
+  assert.notEqual(redirects.result.isError, true, JSON.stringify(redirects).slice(0, 600));
+  assert.equal(body(redirects).urlRedirects.nodes[0].path, "/old");
+  assert.equal(body(redirects).apiVersion, "2026-07");
+  const versions = new Set(upstream.admin.filter((request) => request.name).map((request) => request.version));
+  assert.deepEqual([...versions], ["2026-07"], "guided tools call Shopify on the bundled version");
+  assert.deepEqual(upstream.other, [], "no request left for shopify.dev or anywhere else");
+  if (MEASURE) t.diagnostic(`isolate heap before the first tool call ${JSON.stringify(heapBefore)}, after a guided write and a pinned read ${JSON.stringify(await isolateHeap(9239))}`);
+  // A call on an unbundled version fails at once instead of downloading a schema.
+  const started = Date.now();
+  const other = await rpc(13, "tools/call", { name: "shopify_describe_action", arguments: { mutation: "collectionCreate", apiVersion: "2026-04" } });
+  assert.equal(other.result.isError, true);
+  assert.match(JSON.stringify(other.result.content), /2026-04 is not available on this deployment/);
+  assert.ok(Date.now() - started < 5_000, "no 30 s schema fetch");
+  assert.deepEqual(upstream.other, [], "still no schema download");
+  const ruleSet = await rpc(14, "tools/call", { name: "shopify_create_collection", arguments: { store: "main", title: "Smart", ruleSet: { appliedDisjunctively: false, rules: [{ column: "TAG", relation: "EQUALS", condition: "x" }] } } });
+  assert.equal(ruleSet.result.isError, true);
+  assert.match(JSON.stringify(ruleSet.result.content), /shopify_run_action/);
 
   const ui = await rpc(6, "resources/read", { uri: "ui://shopify-multi-store/results" });
   t.diagnostic(`ui resource on workerd: ${JSON.stringify(ui).slice(0, 300)}`);

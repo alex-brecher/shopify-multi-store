@@ -1,5 +1,4 @@
-import { getNamedType, isEnumType, isObjectType, isScalarType, Kind, parse, validate, valueFromASTUntyped, } from "graphql";
-import { getVariableValues } from "graphql/execution/values.js";
+import { getNamedType, getVariableValues, isEnumType, isObjectType, isScalarType, Kind, parse, validate, valueFromASTUntyped, } from "graphql";
 import { z } from "zod/v4";
 import { mapConcurrent } from "../concurrency.js";
 import { findStore, resolveStoreTargets } from "../config.js";
@@ -13,7 +12,7 @@ import { actionCatalog, buildDocument, CATEGORIES, describeAction, denylist, fin
 import { literalGids, nonEnumerableReasons } from "./preview.js";
 import { evaluateOutcome, evaluateOutcomeStructural, instrumentMutation, RESERVED_ALIAS_PREFIX } from "./outcomes.js";
 const StoreAlias = z.string().min(1).max(64);
-const ApiVersion = z.string().regex(/^\d{4}-(01|04|07|10)$/).describe("Admin API version, such as 2026-04. Defaults to the store's version, or the server default.");
+const ApiVersion = z.string().regex(/^\d{4}-(01|04|07|10)$/).describe("Admin API version, such as 2026-07. Defaults to the store's version, or the server default.");
 const Variables = z.record(z.string(), z.unknown());
 const RUN_CONCURRENCY = 4;
 const RESULT_CHARACTER_LIMIT = 100_000;

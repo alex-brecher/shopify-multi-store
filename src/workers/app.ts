@@ -38,7 +38,8 @@ export function createWorker(options: WorkerOptions = {}) {
     const settings = settingsFrom(env);
     const withOrigin: HostedEnv = settings.MCP_PUBLIC_URL?.trim() ? settings : { ...settings, MCP_PUBLIC_URL: origin };
     enableHostedMode(withOrigin);
-    if (options.schemaGzip) setSchemaSource(gzipSchemaSource(DEFAULT_API_VERSION, options.schemaGzip));
+    // Offline: the Worker never downloads a schema at run time (see gzipSchemaSource).
+    setSchemaSource(gzipSchemaSource(DEFAULT_API_VERSION, options.schemaGzip, { remote: false }));
     const hosted = await hostedOptionsFromEnv(withOrigin, { loadStores });
     return createHostedApp({ ...hosted, store: new DurableObjectStore(env.OAUTH_STORE), audit: new D1AuditLog(env.AUDIT_DB) });
   }

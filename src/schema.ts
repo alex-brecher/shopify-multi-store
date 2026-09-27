@@ -20,8 +20,15 @@ export function adminSchema(version: string): Promise<GraphQLSchema> {
   if (!pending) {
     pending = (async () => {
       // The bundled schema (files on Node, one bundled version on Workers), else Shopify's proxy.
-      const bundled = await schemaSource().load(version);
+      const source = schemaSource();
+      const bundled = await source.load(version);
       if (bundled !== undefined) return buildClientSchema(JSON.parse(bundled));
+      if (source.remote === false)
+        throw new Error(
+          source.versions?.length
+            ? `Admin API ${version} is not available on this deployment: it bundles only ${source.versions.join(", ")} and does not download schemas at run time. Use ${source.versions[0]} (set the store's apiVersion to it, or omit apiVersion).`
+            : `Admin API ${version} is not available on this deployment: it bundles no Admin API schema and does not download schemas at run time. Rebuild the Worker with its bundled schema (see docs/DEPLOY-CLOUDFLARE.md).`,
+        );
       const response = await fetch(
         `https://shopify.dev/admin-graphql-direct-proxy/${version}`,
         {

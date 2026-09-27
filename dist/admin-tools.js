@@ -4,6 +4,18 @@ import { DOCS } from "./admin-documents.js";
 import { workflow, textResult, toolError, WorkflowError, applyTagChanges, checkTagArgs, tagPreview, } from "./admin-workflows.js";
 import { inspectType, validateDocument } from "./schema.js";
 import { uploadImage } from "./media.js";
+import { LEGACY_COLLECTION_API_VERSION } from "./api-versions.js";
+import { schemaAvailable } from "./platform/schema-source.js";
+/**
+ * Smart-collection ruleSet writes use the legacy input on LEGACY_COLLECTION_API_VERSION. Where
+ * that schema is not bundled and schemas are never downloaded (a Cloudflare Worker), refuse
+ * up front, dry run included, instead of failing halfway.
+ */
+function checkLegacyRuleSetAvailable() {
+    if (schemaAvailable(LEGACY_COLLECTION_API_VERSION))
+        return;
+    throw Error(`Smart-collection rules (ruleSet) are written with the Admin API ${LEGACY_COLLECTION_API_VERSION} input, and this deployment (Cloudflare Workers) bundles only the default API schema. Use shopify_run_action with collectionCreate or collectionUpdate and the current \`sources\` input instead (check it first with shopify_describe_action), or run this ruleSet write from a local or \`serve\` install.`);
+}
 const store = z.string().min(1).max(64);
 const gid = (type) => z.string().regex(new RegExp(`^gid://shopify/${type}/[0-9]+$`));
 const first = z.number().int().min(1).max(100).default(25);
@@ -311,6 +323,8 @@ export function registerAdminTools(server) {
     }, true, async (w, a) => {
         if (a.productIds && a.ruleSet)
             throw Error("productIds and ruleSet are mutually exclusive.");
+        if (a.ruleSet)
+            checkLegacyRuleSetAvailable();
         await w.requireScopes([
             "write_products",
             ...(a.publicationIds.length ? ["write_publications"] : []),
@@ -345,6 +359,8 @@ export function registerAdminTools(server) {
             .optional()
             .describe("Products to add to a manual collection. Smart collection membership follows its rules."),
     }, true, async (w, a) => {
+        if (a.ruleSet)
+            checkLegacyRuleSetAvailable();
         await w.requireScopes(["write_products"]);
         const before = await w.collection(a.id, 1);
         const { addProductIds, dryRun: preview, ...fields } = a;

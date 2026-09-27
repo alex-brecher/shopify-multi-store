@@ -4,6 +4,21 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+### Cloudflare Workers review fixes
+
+- Guided tools (prices, metafields, redirects, tags, orders, customers,
+  fulfillment, and the pinned `shopify_search`/`shopify_get` reads) now run on
+  the default API version, 2026-07, the one schema a Worker bundles. Before,
+  they pinned 2026-04, so on Cloudflare the first guided call downloaded a
+  second 6 MB schema from shopify.dev and held two parsed schemas in a 128 MB
+  isolate. Only the legacy smart-collection `ruleSet` write stays on 2026-04;
+  a Worker refuses it and points to `shopify_run_action`.
+- A Worker never downloads a schema at run time: an unbundled API version fails
+  at once with an error naming the bundled one, instead of a 30 second fetch.
+- Guided writes failed on Workers with "Expected String to be a GraphQL
+  nullable type": `graphql/execution/values.js` pulled a second copy of
+  `graphql` into the bundle. Every import now uses the package root.
+
 Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
 ### Review 3: fixes and a smaller tool surface
 

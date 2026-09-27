@@ -1,5 +1,6 @@
-import { TypeInfo, visit, visitWithTypeInfo } from "graphql";
-import { getArgumentValues } from "graphql/execution/values.js";
+// getArgumentValues from the package root, not graphql/execution/values.js: a bundler that
+// picks the ESM build for "graphql" would otherwise load two copies and fail instanceof checks.
+import { getArgumentValues, TypeInfo, visit, visitWithTypeInfo } from "graphql";
 import { included } from "./outcomes.js";
 const SEARCH_ARGUMENTS = new Set(["query", "search", "savedSearchId", "filter", "filters", "where"]);
 /** Mutations whose query argument defines something rather than selecting records to change. */
