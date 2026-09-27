@@ -4,6 +4,95 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+### Review 3: fixes and a smaller tool surface
+
+Breaking: the server now exposes 29 tools instead of 85. Removed tools and their
+replacements are listed below. Guided write tools take `dryRun` (default `true`)
+instead of `confirm`.
+
+Fixes:
+
+- Write results are never dropped for size. Above 150,000 characters a write
+  tool's result is trimmed (per-item `mutationResponse` and `verifiedState` to
+  the changed fields, then one summary line per applied item), always keeping
+  status, counts, and every item that did not apply, with `responseTrimmed`
+  explaining what was cut. Before, `shopify_update_prices` with about 190 or more
+  SKUs applied and verified every price and then reported failure. Variants are
+  also read back 50 at a time, so long product titles cannot push the
+  verification read over the 50,000 character response cap.
+- `shopify_update_product`, `shopify_update_order` and `shopify_update_customer`
+  no longer take `tags` (a silent full replace). `replaceTags` says it replaces
+  all tags and the preview lists the tags it would remove; `addTags` and
+  `removeTags` use `tagsAdd` and `tagsRemove` and leave other tags alone.
+- Every guided write tool defaults to `dryRun: true` and returns a before/after
+  (or would-create) preview; `dryRun: false` applies and reads back.
+- Local `shopify_graphql_mutation` now applies the action denylist and the
+  destructive confirm (confirm set to the mutation name), as hosted mode did.
+- Destructive classification covers argument-driven destruction:
+  `productUpdate` or `productChangeStatus` with status `ARCHIVED` or `DRAFT`,
+  `productVariantsBulkCreate` with `REMOVE_STANDALONE_VARIANT`, and any mutation
+  with `notifyCustomer: true` (one table, `DESTRUCTIVE_ARGUMENT_RULES`), plus
+  always-destructive `publishablePublish`, `productPublish`, `collectionPublish`,
+  discount activation, invoice and notification emails, `giftCardCreate`,
+  `giftCardCredit` and `storeCreditAccountCredit`.
+- `scripts/oauth-connect.mjs` verifies Shopify's OAuth HMAC with Shopify's
+  escaping and array rules and a timestamp check, from the shared
+  `src/shopify-hmac.ts`.
+- Redirect writes report a per-item `outcome` of `applied`, `rejected` or
+  `unknown` and a store `status` (`ok`, `partial`, `failed`, `unknown`), like
+  `shopify_update_prices`; an unknown outcome is no longer flattened to
+  `ok: false`.
+- Pinned Admin API versions live in `src/api-versions.ts`, and a test fails 60
+  days before any pinned version's end of support (12 months after release).
+  Collection writes without a rule set now use the 2026-07
+  `CollectionCreateInput`/`CollectionUpdateInput` (products are added with
+  `collectionAddProducts`); writes with a legacy `ruleSet` stay on 2026-04,
+  because 2026-07 replaced rule sets with typed collection sources.
+
+Removed features: new-store previews, sample products, the MCP Apps UI
+(`ui://` resource and `_meta.ui`), the Shopify CLI bridge and `shopify_cli`
+store auth, and the unused GraphQL code generation (`src/generated`,
+`scripts/codegen.mjs`). The build is plain `tsc`.
+
+Removed or folded tools, with what to use instead:
+
+| Removed tool | Use instead |
+| --- | --- |
+| `shopify_create_preview_store`, `shopify_get_preview_store`, `shopify_get_new_store_previews`, `shopify_get_new_store_preview_status`, `shopify_find_sample_product` | Removed with the feature. |
+| `shopify_switch_shop` | Pass `store` on every call. |
+| `shopify_get_store_capabilities` | `shopify_check_access` (shop identity and granted scopes). |
+| 16 report tools (`shopify_portfolio_snapshot`, `shopify_order_summary`, `shopify_customer_growth`, `shopify_get_product_everywhere`, `shopify_compare_inventory`, `shopify_low_stock_report`, `shopify_compare_prices`, `shopify_duplicate_sku_report`, `shopify_list_unfulfilled_orders`, `shopify_fulfillment_sla_report`, `shopify_compare_catalog`, `shopify_catalog_gap_report`, `shopify_catalog_health`, `shopify_recent_product_changes`, `shopify_compare_collections`, `shopify_store_locations`) | `shopify_report` with `report` set to the old name without `shopify_`, same arguments. |
+| `shopify_run_analytics_query` | `shopify_report` with `report: "analytics"`, `stores` and `query`. |
+| `shopify_search_products`, `shopify_search_collections`, `shopify_list_orders`, `shopify_list_customers`, `shopify_list_publications`, `shopify_list_redirects`, `shopify_list_pages`, `shopify_list_files`, `shopify_list_metaobjects`, `shopify_list_markets`, `shopify_list_themes`, `shopify_list_delivery_profiles` | `shopify_search` with `resource` (`products`, `collections`, `orders`, `customers`, `publications`, `redirects`, `pages`, `files`, `metaobjects` with `type`, `markets`, `themes`, `delivery_profiles`). |
+| `shopify_search_products_many` | `shopify_search` with `resource: "products"` and `stores`. |
+| `shopify_get_product`, `shopify_get_collection`, `shopify_get_order`, `shopify_get_inventory_levels`, `shopify_get_metafields`, `shopify_get_theme_files`, `shopify_list_blog_articles`, `shopify_get_uploaded_image`, `shopify_bulk_export_status` | `shopify_get` with `resource` (`product`, `collection`, `order`, `inventory`, `metafields`, `theme_files`, `blog_articles`, `uploaded_image`, `bulk_operation`) and `id`. |
+| `shopify_update_prices_many` | `shopify_update_prices` with `stores` instead of `store`. |
+| `shopify_set_metafields`, `shopify_delete_metafields` | `shopify_metafields` with `set` and/or `delete`. |
+| `shopify_create_redirects`, `shopify_delete_redirects` | `shopify_redirects` with `create` and/or `delete`. |
+| `shopify_add_to_collection` | `shopify_update_collection` with `addProductIds`. |
+| `shopify_publish_resource` | `shopify_run_action` with `mutation: "publishablePublish"`, `variables: { id, input: [{ publicationId }] }`, `confirm: "publishablePublish"`. |
+| `shopify_bulk_update_product_status` | `shopify_run_action` with a document that aliases one `productUpdate(product: { id, status })` per product (or `mutation: "productChangeStatus"` per product); ARCHIVED and DRAFT need `confirm`. |
+| `shopify_bulk_export_start` | `shopify_run_action` with `mutation: "bulkOperationRunQuery"` and `variables: { query }`; poll with `shopify_get` `resource: "bulk_operation"`. |
+| `shopify_upsert_metaobject` | `shopify_run_action` with `mutation: "metaobjectUpsert"`, `variables: { handle: { type, handle }, metaobject: { handle, fields } }`. |
+| `shopify_update_delivery_rate` | `shopify_run_action` with `mutation: "deliveryProfileUpdate"`. Shopify can accept a rate change and not persist it, so read the rate back with `shopify_search` `resource: "delivery_profiles"` afterwards; the old tool did this automatically. |
+| `shopify_upsert_theme_files` | `shopify_run_action` with `mutation: "themeFilesUpsert"` (destructive: `confirm: "themeFilesUpsert"`). Check the theme's `role` with `shopify_search` `resource: "themes"` first; the old tool refused the live (MAIN) theme unless `allowLiveTheme: true`. |
+| `shopify_delete_files` | `shopify_run_action` with `mutation: "fileDelete"`, `variables: { fileIds }`, `confirm: "fileDelete"`. |
+| `shopify_create_draft_order` | `shopify_run_action` with `mutation: "draftOrderCreate"`, `variables: { input }`. |
+| `shopify_upsert_page` | `shopify_run_action` with `mutation: "pageCreate"` (`variables: { page }`) or `"pageUpdate"` (`variables: { id, page }`). |
+
+The 29 tools (count checked by a test):
+
+| Area | Tools |
+| --- | --- |
+| Stores and access (3) | `shopify_list_stores`, `shopify_get_shop_info`, `shopify_check_access` |
+| Reads (3) | `shopify_report`, `shopify_search`, `shopify_get` |
+| Guided writes (14) | `shopify_update_prices`, `shopify_set_inventory`, `shopify_create_product`, `shopify_update_product`, `shopify_create_collection`, `shopify_update_collection`, `shopify_create_discount`, `shopify_upload_image`, `shopify_metafields`, `shopify_redirects`, `shopify_tags`, `shopify_update_order`, `shopify_update_customer`, `shopify_create_fulfillment` |
+| Any mutation (3) | `shopify_find_actions`, `shopify_describe_action`, `shopify_run_action` |
+| Raw GraphQL (3) | `shopify_graphql_query`, `shopify_graphql_query_many`, `shopify_graphql_mutation` |
+| Schema and docs (3) | `shopify_graphql_schema`, `shopify_validate_graphql_codeblocks`, `shopify_search_docs_chunks` |
+
+### Earlier unreleased changes
+
 Breaking change for `shopify-multi-store serve`: `SHOPIFY_ACCESS_MODE` now
 defaults to `per_user`. An existing deployment that relies on shared app tokens
 must set `SHOPIFY_ACCESS_MODE=app`, or it will refuse to start without

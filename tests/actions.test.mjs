@@ -124,7 +124,7 @@ test("shopify_describe_action expands productVariantsBulkUpdate", async (t) => {
   const described = result.structuredContent;
   assert.equal(described.category, "products");
   assert.equal(described.destructive, false);
-  assert.ok(described.dedicatedTools.includes("shopify_update_prices_many"));
+  assert.ok(described.dedicatedTools.includes("shopify_update_prices"));
   assert.deepEqual(described.scopeHint, ["write_products"]);
   const variants = described.arguments.find((arg) => arg.name === "variants");
   assert.equal(variants.type, "[ProductVariantsBulkInput!]!");

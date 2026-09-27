@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { daysUntilEndOfSupport, endOfSupport, PINNED_API_VERSIONS, releaseDate } from "../dist/api-versions.js";
 import { DEFAULT_API_VERSION } from "../dist/constants.js";
 
@@ -25,3 +26,9 @@ test(`every pinned Admin API version has more than ${WARNING_DAYS} days of Shopi
   }
 });
 
+test("no Admin API version is pinned outside src/api-versions.ts and src/constants.ts", async () => {
+  for (const file of ["../src/parity-tools.ts", "../src/admin-workflows.ts", "../src/read-tools.ts", "../src/admin-tools.ts"]) {
+    const source = await readFile(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /["']20\d\d-(01|04|07|10)["']/, `${file} pins a version literal`);
+  }
+});

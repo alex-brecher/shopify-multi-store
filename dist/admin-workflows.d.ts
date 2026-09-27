@@ -49,3 +49,15 @@ export declare function toolError(error: unknown, write?: boolean): {
     }[];
     structuredContent: Data;
 };
+/** Tag arguments shared by the product, order and customer update tools. */
+export interface TagArgs {
+    replaceTags?: string[];
+    addTags?: string[];
+    removeTags?: string[];
+}
+/** Refuse replaceTags together with addTags or removeTags: the result would depend on order. */
+export declare function checkTagArgs(a: TagArgs): void;
+/** The tag change a preview shows: the full new list for replaceTags, else what is added and removed. */
+export declare function tagPreview(a: TagArgs, currentTags: unknown): Data;
+/** Add and remove tags with tagsAdd and tagsRemove, leaving every other tag alone. */
+export declare function applyTagChanges(w: Workflow, id: string, a: TagArgs): Promise<void>;

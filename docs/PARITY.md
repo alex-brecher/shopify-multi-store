@@ -11,7 +11,7 @@ GitHub releases identify the published package version. Installed clients can us
 Existing brand stores received read-only checks.
 Version 1.7.0 removed the preview-store, sample-product, and MCP Apps UI features and the Shopify CLI bridge; see CHANGELOG.md.
 
-The candidate exposes 55 tools through MCP.
+Version 1.7.0 exposes 29 tools through MCP; reads are grouped under `shopify_report`, `shopify_search`, and `shopify_get` (see CHANGELOG.md).
 The observed connector has 27 tools. Tool count does not prove behavior or visual parity.
 The public Shopify repositories do not establish that the complete ChatGPT service is open source.
 
@@ -26,9 +26,9 @@ The public Shopify repositories do not establish that the complete ChatGPT servi
 | Product search and details | Implemented | Independent cursors for products, variants, and media. |
 | Product creation | Implemented | Options, variants, prices, SKUs, images, and optional collection membership. New products default to draft. |
 | Product updates | Implemented | Fields, variants, images, media removal, and before/after results. |
-| Bulk product status | Implemented | Bounded selections, per-product outcomes, and readback. Maximum 250 products per call. |
+| Bulk product status | Through `shopify_run_action` | One aliased `productUpdate` per product; ARCHIVED and DRAFT need confirm. |
 | Collection search and details | Implemented | Manual and smart collections, products, and pagination. |
-| Collection creation and updates | Implemented | Rules, images, sorting, and explicit channel publication. Legacy collection mutations use API 2026-04. |
+| Collection creation and updates | Implemented | Rules, images, sorting, and explicit channel publication. Writes without a rule set use the 2026-07 input; writes with a legacy rule set use API 2026-04. |
 | Collection membership | Implemented | Manual collections only. Smart collection membership follows its rules. |
 | Inventory reads and changes | Implemented | Exact inventory item and location, compare-and-set control, and readback. |
 | Order lists and details | Implemented | Filters, cursors, fulfillment, and tracking. Shopify order-history access limits apply. |
@@ -87,7 +87,7 @@ A final complete call created `t1kks2-nb.myshopify.com`, seeded its demo product
 Replaying the same request returned the existing store.
 No store was claimed, subscribed, or connected to a payment method.
 ShopifyQL live acceptance remains dependent on reports access. MCP Apps bridge acceptance remains host-specific.
-The 2026-04 collection adapter needs migration before Shopify retires that API version.
+Collection writes with a legacy rule set still use 2026-04; tests/api-versions.test.mjs fails 60 days before that version's end of support.
 
 ## Validation
 

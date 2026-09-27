@@ -82,7 +82,7 @@ The same product has different IDs in each store, so use `variablesByStore`.
 }
 ```
 
-The dry run shows, per store, the document, the variables, and the product and variant records found for those IDs (a missing ID shows `found: false`). Send the same arguments with `"dryRun": false` to apply. For SKU-based price changes, the dedicated `shopify_update_prices_many` tool does the ID lookup for you.
+The dry run shows, per store, the document, the variables, and the product and variant records found for those IDs (a missing ID shows `found: false`). Send the same arguments with `"dryRun": false` to apply. For SKU-based price changes, the dedicated `shopify_update_prices` tool (with `store` or `stores`) does the ID lookup for you.
 
 ### 2. Cancel an order
 

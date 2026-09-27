@@ -1,4 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server";
+import { PARITY_API_VERSION } from "./api-versions.js";
+export { PARITY_API_VERSION };
 /** True when two money values are equal as decimals; null and undefined equal only each other. */
 export declare function sameMoney(a: unknown, b: unknown): boolean;
 /** Derives a store-level status from every item's outcome. See src/parity-tools.ts task 8b. */

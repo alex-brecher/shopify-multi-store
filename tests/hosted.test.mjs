@@ -511,7 +511,7 @@ test("audit log records mutations with an argument hash and hosted mode refuses 
   const result = await client.callTool({ name: "shopify_graphql_mutation", arguments: { store: "main", mutation, variables: { id: "gid://shopify/Product/1", accessToken: "should-not-log" }, confirm: true } });
   assert.notEqual(result.isError, true, JSON.stringify(result));
 
-  const upload = await client.callTool({ name: "shopify_upload_image", arguments: { store: "main", imageFile: "/etc/passwd", confirm: true } });
+  const upload = await client.callTool({ name: "shopify_upload_image", arguments: { store: "main", imageFile: "/etc/passwd", dryRun: false } });
   assert.equal(upload.isError, true);
   assert.match(upload.content[0].text, /not available on the hosted connector/);
 
@@ -596,9 +596,9 @@ test("audit lines never contain customer PII from GraphQL literals, variables, o
     { name: "shopify_graphql_query", arguments: { store: "main", query: readDocument, variables } },
     { name: "shopify_graphql_query_many", arguments: { stores: ["main", "wholesale"], query: readDocument, variables } },
     { name: "shopify_graphql_mutation", arguments: { store: "main", mutation, variables, confirm: true } },
-    { name: "shopify_search_products_many", arguments: { stores: ["main"], query: search, first: 5 } },
-    { name: "shopify_list_customers", arguments: { store: "main", query: search } },
-    { name: "shopify_list_orders", arguments: { store: "main", query: "email:jane.doe@example.com" } }
+    { name: "shopify_search", arguments: { resource: "products", stores: ["main"], query: search, first: 5 } },
+    { name: "shopify_search", arguments: { resource: "customers", store: "main", query: search } },
+    { name: "shopify_search", arguments: { resource: "orders", store: "main", query: "email:jane.doe@example.com" } }
   ];
   for (const request of calls) await client.callTool(request);
 
@@ -622,11 +622,9 @@ test("audit lines never contain customer PII from GraphQL literals, variables, o
   assert.deepEqual(write.args.mutation.graphql.operations, [{ type: "mutation", rootFields: ["customerUpdate"] }]);
   assert.deepEqual(write.args.mutation.graphql.argumentNames, ["input"]);
 
-  const searchEntry = lines.find((line) => line.tool === "shopify_search_products_many");
+  const [searchEntry, customers, orders] = lines.filter((line) => line.tool === "shopify_search");
   assert.match(searchEntry.args.query, /^\[sha256:[0-9a-f]{64}\]$/);
   assert.equal(searchEntry.args.first, 5);
-  const orders = lines.find((line) => line.tool === "shopify_list_orders");
-  const customers = lines.find((line) => line.tool === "shopify_list_customers");
   assert.match(orders.args.query, /^\[sha256:[0-9a-f]{64}\]$/);
   assert.notEqual(orders.args.query, customers.args.query, "different searches hash differently");
 });

@@ -77,25 +77,29 @@ Shopify Dev MCP helps an agent create and examine Shopify code. This server runs
 
 ## Ready-made reports
 
-| Tool | Purpose |
+`shopify_report` runs one read-only report across selected stores. Set `report` to one of these:
+
+| Report | Purpose |
 | --- | --- |
-| `shopify_portfolio_snapshot` | Summarize products, orders, customers, currency, plan, and store identity. |
-| `shopify_order_summary` | Summarize order values, discounts, tax, shipping, cancellations, and statuses. |
-| `shopify_customer_growth` | Compare new-customer counts across equal periods. |
-| `shopify_get_product_everywhere` | Find one exact SKU or handle across stores. |
-| `shopify_search_products_many` | Search products across stores with one query. |
-| `shopify_compare_inventory` | Compare inventory quantities for selected SKUs across stores. |
-| `shopify_low_stock_report` | Find low inventory and cross-store transfer opportunities. |
-| `shopify_compare_prices` | Highlight price and compare-at-price differences for exact SKUs. |
-| `shopify_duplicate_sku_report` | Find repeated SKUs inside stores and shared SKUs across stores. |
-| `shopify_list_unfulfilled_orders` | List open fulfillment work across selected stores. |
-| `shopify_fulfillment_sla_report` | Find late unfulfilled orders and show age buckets. |
-| `shopify_compare_catalog` | Compare products by handle, status, vendor, type, and variants. |
-| `shopify_catalog_gap_report` | Find products that are missing or have different statuses. |
-| `shopify_catalog_health` | Find missing merchandising, SEO, media, alt text, and inventory data. |
-| `shopify_recent_product_changes` | List products updated during a selected period. |
-| `shopify_compare_collections` | Compare collection content and configuration by handle. |
-| `shopify_store_locations` | Review location, fulfillment, inventory, and address coverage. |
+| `portfolio_snapshot` | Summarize products, orders, customers, currency, plan, and store identity. |
+| `order_summary` | Summarize order values, discounts, tax, shipping, cancellations, and statuses. |
+| `customer_growth` | Compare new-customer counts across equal periods. |
+| `get_product_everywhere` | Find one exact SKU or handle across stores. |
+| `compare_inventory` | Compare inventory quantities for selected SKUs across stores. |
+| `low_stock_report` | Find low inventory and cross-store transfer opportunities. |
+| `compare_prices` | Highlight price and compare-at-price differences for exact SKUs. |
+| `duplicate_sku_report` | Find repeated SKUs inside stores and shared SKUs across stores. |
+| `list_unfulfilled_orders` | List open fulfillment work across selected stores. |
+| `fulfillment_sla_report` | Find late unfulfilled orders and show age buckets. |
+| `compare_catalog` | Compare products by handle, status, vendor, type, and variants. |
+| `catalog_gap_report` | Find products that are missing or have different statuses. |
+| `catalog_health` | Find missing merchandising, SEO, media, alt text, and inventory data. |
+| `recent_product_changes` | List products updated during a selected period. |
+| `compare_collections` | Compare collection content and configuration by handle. |
+| `store_locations` | Review location, fulfillment, inventory, and address coverage. |
+| `analytics` | Run one ShopifyQL query on each store, with a chart hint. Needs `read_reports`. |
+
+To search products across stores, use `shopify_search` with `resource: "products"` and `stores`.
 
 Try prompts like these:
 
@@ -222,71 +226,45 @@ The import copies credentials into the operating system credential store and pre
 
 ## MCP tools
 
+The server exposes 29 tools.
+
 | Tool | Action |
 | --- | --- |
 | `shopify_list_stores` | List configured store aliases. |
 | `shopify_get_shop_info` | Read one store's identity. |
-| `shopify_portfolio_snapshot` | Create a cross-store summary. |
-| `shopify_order_summary` | Summarize recent orders and monetary totals by currency. |
-| `shopify_customer_growth` | Compare new-customer counts across equal periods. |
-| `shopify_get_product_everywhere` | Find one exact SKU or handle across stores. |
-| `shopify_search_products_many` | Search products across selected stores. |
-| `shopify_compare_inventory` | Compare SKU inventory. |
-| `shopify_low_stock_report` | Find low inventory and transfer opportunities. |
-| `shopify_compare_prices` | Compare exact SKU prices. |
-| `shopify_duplicate_sku_report` | Find duplicate and shared SKUs. |
-| `shopify_list_unfulfilled_orders` | Report fulfillment work. |
-| `shopify_fulfillment_sla_report` | Report order age and SLA breaches. |
-| `shopify_compare_catalog` | Compare product catalogs. |
-| `shopify_catalog_gap_report` | Find missing products and status differences. |
-| `shopify_catalog_health` | Audit product merchandising and SEO data. |
-| `shopify_recent_product_changes` | List recently updated products. |
-| `shopify_compare_collections` | Compare collections by handle. |
-| `shopify_store_locations` | Review store location coverage. |
-| `shopify_graphql_query` | Run a read-only Admin GraphQL query. |
-| `shopify_graphql_query_many` | Run one query across up to ten stores. |
-| `shopify_graphql_mutation` | Change one store after exact authorization. |
-
-Read-only operations can run in parallel. Mutations stay isolated to one selected store.
-
-## Admin parity tools
-
-These tools round out the single-store admin surface (prices, metafields, metaobjects,
-redirects, delivery rates, themes, files, draft orders, order and customer fields,
-tags, fulfillment, pages, blog articles, and markets). Every write tool defaults to
-`dryRun: true`, which returns a before/after preview without changing anything; pass
-`dryRun: false` to apply the change, and the tool then reads the result back before
-reporting success.
-
-| Tool | Action |
-| --- | --- |
-| `shopify_update_prices` | Set price, compareAtPrice and/or unit cost for up to 250 SKUs on one store. |
-| `shopify_update_prices_many` | Apply the same SKU price update across multiple stores. |
-| `shopify_get_metafields` | Read metafields for any owner GID. |
-| `shopify_set_metafields` | Set up to 25 metafields for any owner GID. |
-| `shopify_delete_metafields` | Delete up to 25 metafields by owner, namespace and key. |
-| `shopify_list_metaobjects` | List metaobjects of one type. |
-| `shopify_upsert_metaobject` | Create or update a metaobject by type and handle. |
-| `shopify_list_redirects` | List URL redirects. |
-| `shopify_create_redirects` | Create up to 100 URL redirects. |
-| `shopify_delete_redirects` | Delete up to 100 URL redirects by ID. |
-| `shopify_list_delivery_profiles` | List delivery profiles, zones, method definitions and rates. |
-| `shopify_update_delivery_rate` | Change one flat delivery rate, with a mandatory readback that catches Shopify's silent-discard behavior. |
-| `shopify_list_themes` | List themes and their role. |
-| `shopify_get_theme_files` | Read theme file contents. |
-| `shopify_upsert_theme_files` | Write theme files; refuses the live (MAIN) theme unless `allowLiveTheme: true`. |
-| `shopify_list_files` | List files (images, videos, generic files). |
-| `shopify_delete_files` | Delete up to 100 files by ID. |
-| `shopify_create_draft_order` | Create a draft order from line items. |
-| `shopify_update_order` | Update order tags, note, email and/or shipping address. |
-| `shopify_tags` | Add and/or remove tags on a product, order, customer or draft order. |
-| `shopify_update_customer` | Update customer tags, note and/or email. |
+| `shopify_check_access` | Show granted scopes and which tools or resources would fail, across one or many stores. |
+| `shopify_report` | Run a cross-store report (see above). |
+| `shopify_search` | List or search products, collections, orders, customers, publications, redirects, pages, files, metaobjects, markets, themes, or delivery profiles on one store or several. |
+| `shopify_get` | Read one product, collection, order, inventory, metafield set, theme files, blog articles, uploaded image, or bulk operation by ID. |
+| `shopify_update_prices` | Set price, compare-at price and unit cost for up to 250 SKUs on one store or several. |
+| `shopify_set_inventory` | Set available inventory with compare-and-set protection. |
+| `shopify_create_product` | Create a product with options, variants, and images. |
+| `shopify_update_product` | Update product fields, variants, media, and tags. |
+| `shopify_create_collection` | Create a manual or smart collection and publish it to chosen channels. |
+| `shopify_update_collection` | Update a collection and add products to a manual collection. |
+| `shopify_create_discount` | Create a percentage discount code. |
+| `shopify_upload_image` | Upload an image to Shopify Files. |
+| `shopify_metafields` | Set and delete metafields for any owner. |
+| `shopify_redirects` | Create and delete URL redirects. |
+| `shopify_tags` | Add and remove tags on a product, order, customer, or draft order. |
+| `shopify_update_order` | Update order note, email, shipping address, and tags. |
+| `shopify_update_customer` | Update customer note, email, and tags. |
 | `shopify_create_fulfillment` | Fulfill an order's open fulfillment orders, with optional tracking. |
-| `shopify_list_pages` | List Online Store pages. |
-| `shopify_upsert_page` | Create or update a page. |
-| `shopify_list_blog_articles` | List a blog's articles. |
-| `shopify_list_markets` | List markets. |
-| `shopify_check_access` | Compare granted access scopes against every tool's requirement, across one or many stores. |
+| `shopify_find_actions` | Search every Admin API mutation. |
+| `shopify_describe_action` | Describe one mutation. |
+| `shopify_run_action` | Run any mutation on one or more stores. |
+| `shopify_graphql_query` | Run a read-only Admin GraphQL query. |
+| `shopify_graphql_query_many` | Run one query across several stores. |
+| `shopify_graphql_mutation` | Change one store after exact authorization. |
+| `shopify_graphql_schema` | Explore the Admin GraphQL schema. |
+| `shopify_validate_graphql_codeblocks` | Validate GraphQL without running it. |
+| `shopify_search_docs_chunks` | Search Shopify documentation. |
+
+Read-only operations can run in parallel. Mutations stay isolated to the selected stores.
+
+Every guided write tool defaults to `dryRun: true`, which returns a before/after (or would-create) preview without changing anything; pass `dryRun: false`, after the user authorizes the exact store and change, to apply it. The tool then reads the result back. Tags on products, orders, and customers change with `addTags` and `removeTags`; `replaceTags` replaces every tag and the preview lists the tags it would remove. Write results are never dropped for size: large results are trimmed, keeping status, counts, and every item that did not apply.
+
+`shopify_graphql_mutation` and `shopify_run_action` refuse denylisted mutations and need `confirm` set to the mutation name for destructive ones, including mutations that are destructive only because of their arguments, such as a product status of `ARCHIVED`.
 
 ## Generic action tools
 

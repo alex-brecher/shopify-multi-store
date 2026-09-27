@@ -1,4 +1,6 @@
 export declare const REQUIRED_SCOPES: Record<string, string[]>;
+/** The tool name of a REQUIRED_SCOPES key ("shopify_search:products" is shopify_search). */
+export declare function toolOfScopeKey(key: string): string;
 /**
  * Tools whose real scope need depends on a caller-supplied GraphQL document or
  * owner GID rather than a fixed resource. Their REQUIRED_SCOPES entry (often [])
