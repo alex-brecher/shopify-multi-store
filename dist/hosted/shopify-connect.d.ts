@@ -3,6 +3,8 @@ import type { UserShopifyAccess } from "../runtime.js";
 import { type AuthorizationServer } from "./oauth.js";
 import type { PolicySource } from "./policy.js";
 import type { OAuthStore } from "./store.js";
+/** Shopify callbacks older than this (or this far in the future) are refused. */
+export declare const CALLBACK_MAX_AGE_SECONDS = 300;
 export interface ShopifyAssociatedUser {
     id: string;
     email?: string;
@@ -56,10 +58,17 @@ export declare function decryptToken(key: Buffer, value: string, binding: {
     shop: string;
 }): string;
 /**
- * Verify the hmac Shopify adds to OAuth redirects: hex HMAC-SHA256, keyed with the app's client
- * secret, over every other query parameter sorted by name and joined as name=value with "&".
+ * The message Shopify signs for an OAuth redirect: every parameter except hmac and signature,
+ * with "%", "&" and "=" escaped in names and "%" and "&" escaped in values, array parameters
+ * (name[]) written as name=["a", "b"], sorted by name, joined as name=value with "&".
  */
-export declare function verifyShopifyHmac(params: URLSearchParams, secret: string): boolean;
+export declare function shopifyHmacMessage(params: URLSearchParams): string | undefined;
+/**
+ * Verify the hmac Shopify adds to OAuth redirects (hex HMAC-SHA256 of shopifyHmacMessage, keyed
+ * with the app's client secret). With nowMs, also require a timestamp no older than
+ * CALLBACK_MAX_AGE_SECONDS (and no more than that in the future).
+ */
+export declare function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): boolean;
 export declare class ShopifyConnections {
     private readonly options;
     private readonly now;
@@ -77,6 +86,12 @@ export declare class ShopifyConnections {
     handleStoresPage(request: Request): Promise<Response>;
     private render;
     private action;
+    /**
+     * GET shows a confirmation button; only a POST with the /stores CSRF token creates the state and
+     * redirects to Shopify, so another site cannot start a Shopify authorization in the user's name.
+     */
     connect(request: Request): Promise<Response>;
+    private connectForm;
+    private connectableStore;
     callback(request: Request): Promise<Response>;
 }

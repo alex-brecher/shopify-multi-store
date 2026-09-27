@@ -9,7 +9,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { createHostedApp } from "../dist/hosted/app.js";
 import { FileAuditLog } from "../dist/hosted/audit.js";
 import { openDomainPolicy, staticPolicy } from "../dist/hosted/policy.js";
-import { decryptToken, encryptToken, parseEncryptionKey, verifyShopifyHmac } from "../dist/hosted/shopify-connect.js";
+import { decryptToken, encryptToken, parseEncryptionKey, shopifyHmacMessage, verifyShopifyHmac } from "../dist/hosted/shopify-connect.js";
 import { MemoryStore } from "../dist/hosted/store.js";
 import { loadStores } from "../dist/config.js";
 import { enableHostedMode } from "../dist/runtime.js";
@@ -117,6 +117,11 @@ function call(app, path, init = {}) {
   return app.fetch(new Request(`${ORIGIN}${path}`, init));
 }
 
+/** Shopify callback timestamp: now, in seconds. */
+function ts(offsetSeconds = 0) {
+  return String(Math.floor(Date.now() / 1000) + offsetSeconds);
+}
+
 function signedCallback(params, secret = SECRET) {
   const search = new URLSearchParams(params);
   const message = [...search.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join("&");
@@ -137,16 +142,30 @@ async function storesSession(app, account) {
   return cookie;
 }
 
-/** Start a Shopify connection and return the state Shopify would echo back. */
+/** The confirm page's CSRF token for a /stores session. */
+async function connectCsrf(app, cookie, alias = "main", chain = false) {
+  const page = await call(app, `/shopify/connect?store=${alias}${chain ? "&chain=1" : ""}`, { headers: { cookie } });
+  assert.equal(page.status, 200, await page.clone().text());
+  const html = await page.text();
+  assert.match(page.headers.get("content-security-policy"), /form-action 'self' https:\/\/\*\.myshopify\.com/);
+  return /name="csrf" value="([^"]+)"/.exec(html)[1];
+}
+
+function postConnect(app, cookie, fields, headers = {}) {
+  return call(app, "/shopify/connect", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie, ...headers }, body: new URLSearchParams(fields) });
+}
+
+/** Start a Shopify connection (confirm page, then POST) and return the state Shopify would echo back. */
 async function startConnect(app, cookie, alias = "main", chain = false) {
-  const response = await call(app, `/shopify/connect?store=${alias}${chain ? "&chain=1" : ""}`, { headers: { cookie } });
+  const csrf = await connectCsrf(app, cookie, alias, chain);
+  const response = await postConnect(app, cookie, { csrf, store: alias, ...(chain ? { chain: "1" } : {}) });
   assert.equal(response.status, 302, await response.clone().text());
   return new URL(response.headers.get("location"));
 }
 
 async function connectStore(app, cookie, { alias = "main", shop = `${alias}.myshopify.com`, shopifyEmail = "pat@bariatricpal.com", token = `online-${alias}-token` } = {}) {
   const authorize = await startConnect(app, cookie, alias);
-  const search = signedCallback({ code: `${shopifyEmail}|${token}`, shop, state: authorize.searchParams.get("state"), timestamp: String(Math.floor(Date.now() / 1000)), host: "abc" });
+  const search = signedCallback({ code: `${shopifyEmail}|${token}`, shop, state: authorize.searchParams.get("state"), timestamp: ts(), host: "abc" });
   return call(app, `/shopify/callback?${search}`, { headers: { cookie } });
 }
 
@@ -179,7 +198,7 @@ async function mcpClient(t, app, accessToken) {
 }
 
 test("Shopify HMAC verification accepts a correct signature and rejects any change", () => {
-  const good = signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: "1700000000" });
+  const good = signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts() });
   assert.equal(verifyShopifyHmac(good, SECRET), true);
   assert.equal(verifyShopifyHmac(good, "other-secret"), false);
   const tampered = new URLSearchParams(good);
@@ -214,6 +233,7 @@ test("connect redirects to Shopify for a per-user grant and the callback stores 
   const before = await (await call(app, "/stores", { headers: { cookie } })).text();
   assert.match(before, /Not connected/);
   assert.match(before, /Connect all 2 unconnected stores/);
+  assert.ok(!before.includes('href="/shopify/connect'), "connect is a form post, not a link");
 
   const authorize = await startConnect(app, cookie);
   assert.equal(authorize.origin, "https://main.myshopify.com");
@@ -224,7 +244,7 @@ test("connect redirects to Shopify for a per-user grant and the callback stores 
   assert.equal(authorize.searchParams.get("grant_options[]"), "per-user");
   assert.match(authorize.searchParams.get("state"), /^[A-Za-z0-9_-]{43}$/);
 
-  const search = signedCallback({ code: "pat@bariatricpal.com|shpua_live", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1700000000" });
+  const search = signedCallback({ code: "pat@bariatricpal.com|shpua_live", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() });
   const done = await call(app, `/shopify/callback?${search}`, { headers: { cookie } });
   assert.equal(done.status, 303, await done.clone().text());
   assert.equal(done.headers.get("location"), "/stores");
@@ -256,36 +276,36 @@ test("callback state is single use, short lived, and bound to the browser sessio
 
   // Replayed state.
   let authorize = await startConnect(app, cookie);
-  let search = signedCallback({ code: "pat@bariatricpal.com|t1", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  let search = signedCallback({ code: "pat@bariatricpal.com|t1", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() });
   assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 303);
   assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 400);
 
   // State finished in another user's browser.
   authorize = await startConnect(app, cookie, "wholesale");
-  search = signedCallback({ code: "pat@bariatricpal.com|t2", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  search = signedCallback({ code: "pat@bariatricpal.com|t2", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() });
   assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie: other } })).status, 400);
   // ...and it is now used up for the right browser too.
   assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 400);
 
   // No session cookie at all.
   authorize = await startConnect(app, cookie, "wholesale");
-  search = signedCallback({ code: "pat@bariatricpal.com|t3", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  search = signedCallback({ code: "pat@bariatricpal.com|t3", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() });
   assert.equal((await call(app, `/shopify/callback?${search}`)).status, 400);
 
   // Expired state.
   authorize = await startConnect(app, cookie, "wholesale");
   advance(11 * 60_000);
-  search = signedCallback({ code: "pat@bariatricpal.com|t4", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  search = signedCallback({ code: "pat@bariatricpal.com|t4", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() });
   assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 400);
 
   // Bad signature, and a shop that does not match the state.
   const fresh = await storesSession(app, "pat|bariatricpal.com");
   authorize = await startConnect(app, fresh, "wholesale");
-  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" }, "wrong-secret");
+  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() }, "wrong-secret");
   assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie: fresh } })).status, 400);
-  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() });
   assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie: fresh } })).status, 400);
-  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "evil.myshopify.com", state: "x", timestamp: "1" });
+  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "evil.myshopify.com", state: "x", timestamp: ts() });
   assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie: fresh } })).status, 400);
 
   const connected = (await store.entries("shopify_token")).map(([, record]) => `${record.email}:${record.alias}`);
@@ -361,12 +381,11 @@ test("connect all chains through every unconnected store", async (t) => {
   const { app, store } = await setup(t);
   const cookie = await storesSession(app, "pat|bariatricpal.com");
   let authorize = await startConnect(app, cookie, "main", true);
-  let done = await call(app, `/shopify/callback?${signedCallback({ code: "pat@bariatricpal.com|a", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" })}`, { headers: { cookie } });
+  let done = await call(app, `/shopify/callback?${signedCallback({ code: "pat@bariatricpal.com|a", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() })}`, { headers: { cookie } });
   assert.equal(done.headers.get("location"), "/shopify/connect?store=wholesale&chain=1");
-  const next = await call(app, done.headers.get("location"), { headers: { cookie } });
-  authorize = new URL(next.headers.get("location"));
+  authorize = await startConnect(app, cookie, "wholesale", true);
   assert.equal(authorize.host, "wholesale.myshopify.com");
-  done = await call(app, `/shopify/callback?${signedCallback({ code: "pat@bariatricpal.com|b", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" })}`, { headers: { cookie } });
+  done = await call(app, `/shopify/callback?${signedCallback({ code: "pat@bariatricpal.com|b", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts() })}`, { headers: { cookie } });
   assert.equal(done.headers.get("location"), "/stores");
   assert.equal((await store.entries("shopify_token")).length, 2);
 });
@@ -502,4 +521,55 @@ test("the raw mutation tool applies run_action's destructive confirm check in pe
   // Non-destructive mutations still take confirm: true.
   const update = await client.callTool({ name: "shopify_graphql_mutation", arguments: { store: "main", mutation: "mutation { productUpdate(product: {id: \"gid://shopify/Product/1\"}) { userErrors { message } } }", variables: {}, confirm: true } });
   assert.notEqual(update.isError, true, JSON.stringify(update));
+});
+
+test("Shopify HMAC escapes names and values, formats array parameters, and rejects stale timestamps", () => {
+  const params = new URLSearchParams();
+  params.append("shop", "main.myshopify.com");
+  params.append("note", "a&b%c=d");
+  params.append("we=ird", "x");
+  params.append("ids[]", "1");
+  params.append("ids[]", "2");
+  params.append("timestamp", ts());
+  const message = shopifyHmacMessage(params);
+  assert.equal(message, `ids=["1", "2"]&note=a%26b%25c=d&shop=main.myshopify.com&timestamp=${params.get("timestamp")}&we%3Dird=x`);
+  params.set("hmac", createHmac("sha256", SECRET).update(message).digest("hex"));
+  assert.equal(verifyShopifyHmac(params, SECRET, Date.now()), true);
+  const repeated = new URLSearchParams(params);
+  repeated.append("shop", "evil.myshopify.com");
+  assert.equal(verifyShopifyHmac(repeated, SECRET), false);
+
+  const stale = signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts(-301) });
+  assert.equal(verifyShopifyHmac(stale, SECRET), true, "signature itself is fine");
+  assert.equal(verifyShopifyHmac(stale, SECRET, Date.now()), false);
+  assert.equal(verifyShopifyHmac(signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts(-200) }), SECRET, Date.now()), true);
+  assert.equal(verifyShopifyHmac(signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts(400) }), SECRET, Date.now()), false);
+});
+
+test("a stale Shopify callback is refused even with a valid state", async (t) => {
+  await shopifyMock(t);
+  const { app, store } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  const authorize = await startConnect(app, cookie);
+  const search = signedCallback({ code: "pat@bariatricpal.com|t", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: ts(-600) });
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 400);
+  assert.equal((await store.entries("shopify_token")).length, 0);
+});
+
+test("/shopify/connect starts Shopify only from a same-origin POST with the CSRF token", async (t) => {
+  await shopifyMock(t);
+  const { app, store } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  const page = await call(app, "/shopify/connect?store=main", { headers: { cookie } });
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Continue to Shopify/);
+  assert.equal((await store.entries("shopify_state")).length, 0, "GET creates no state");
+  const csrf = await connectCsrf(app, cookie);
+  assert.equal((await postConnect(app, cookie, { store: "main" })).status, 403);
+  assert.equal((await postConnect(app, cookie, { csrf: "forged", store: "main" })).status, 403);
+  assert.equal((await postConnect(app, cookie, { csrf, store: "main" }, { origin: "https://evil.example" })).status, 403);
+  assert.equal((await postConnect(app, "__Host-sms_stores=forged", { csrf, store: "main" })).status, 401);
+  assert.equal((await store.entries("shopify_state")).length, 0);
+  assert.equal((await postConnect(app, cookie, { csrf, store: "main" })).status, 302);
+  assert.equal((await store.entries("shopify_state")).length, 1);
 });

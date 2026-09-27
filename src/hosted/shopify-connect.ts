@@ -22,6 +22,10 @@ const STATE_TTL_MS = 10 * 60_000;
 const EXPIRED_RECORD_GRACE_MS = 30 * 24 * 3600_000;
 const TOKEN_FORMAT = "v1";
 const SHOP_HOST = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
+/** Connect forms post to this server, which redirects to the store's Shopify admin. */
+const CONNECT_FORM_ACTION = "'self' https://*.myshopify.com";
+/** Shopify callbacks older than this (or this far in the future) are refused. */
+export const CALLBACK_MAX_AGE_SECONDS = 300;
 
 export interface ShopifyAssociatedUser {
   id: string;
@@ -124,19 +128,48 @@ export function decryptToken(key: Buffer, value: string, binding: { email: strin
 // ---------- Shopify request signatures ----------
 
 /**
- * Verify the hmac Shopify adds to OAuth redirects: hex HMAC-SHA256, keyed with the app's client
- * secret, over every other query parameter sorted by name and joined as name=value with "&".
+ * The message Shopify signs for an OAuth redirect: every parameter except hmac and signature,
+ * with "%", "&" and "=" escaped in names and "%" and "&" escaped in values, array parameters
+ * (name[]) written as name=["a", "b"], sorted by name, joined as name=value with "&".
  */
-export function verifyShopifyHmac(params: URLSearchParams, secret: string): boolean {
+export function shopifyHmacMessage(params: URLSearchParams): string | undefined {
+  const escapeKey = (value: string) => value.replace(/%/g, "%25").replace(/&/g, "%26").replace(/=/g, "%3D");
+  const escapeValue = (value: string) => value.replace(/%/g, "%25").replace(/&/g, "%26");
+  const grouped = new Map<string, string[]>();
+  for (const [name, value] of params.entries()) {
+    if (name === "hmac" || name === "signature") continue;
+    grouped.set(name, [...(grouped.get(name) ?? []), value]);
+  }
+  const pairs: Array<[string, string]> = [];
+  for (const [name, values] of grouped) {
+    if (name.endsWith("[]")) {
+      pairs.push([escapeKey(name.slice(0, -2)), escapeValue(`[${values.map((value) => `"${value}"`).join(", ")}]`)]);
+    } else {
+      // A repeated plain parameter is ambiguous; refuse rather than guess.
+      if (values.length !== 1) return undefined;
+      pairs.push([escapeKey(name), escapeValue(values[0]!)]);
+    }
+  }
+  return pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, value]) => `${name}=${value}`).join("&");
+}
+
+/**
+ * Verify the hmac Shopify adds to OAuth redirects (hex HMAC-SHA256 of shopifyHmacMessage, keyed
+ * with the app's client secret). With nowMs, also require a timestamp no older than
+ * CALLBACK_MAX_AGE_SECONDS (and no more than that in the future).
+ */
+export function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): boolean {
   const received = params.get("hmac") ?? "";
   if (!/^[0-9a-f]{64}$/i.test(received) || !secret) return false;
-  const message = [...params.entries()]
-    .filter(([name]) => name !== "hmac" && name !== "signature")
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([name, value]) => `${name}=${value}`)
-    .join("&");
+  const message = shopifyHmacMessage(params);
+  if (message === undefined) return false;
   const expected = createHmac("sha256", secret).update(message).digest("hex");
-  return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(received.toLowerCase(), "hex"));
+  if (!timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(received.toLowerCase(), "hex"))) return false;
+  if (nowMs !== undefined) {
+    const timestamp = Number(params.get("timestamp"));
+    if (!Number.isInteger(timestamp) || Math.abs(nowMs / 1000 - timestamp) > CALLBACK_MAX_AGE_SECONDS) return false;
+  }
+  return true;
 }
 
 function tokenKey(email: string, alias: string): string {
@@ -271,7 +304,7 @@ export class ShopifyConnections {
         : live
           ? `Connected as ${who}<br><span class="muted">Expires ${formatTime(record.expiresAt)}</span>`
           : `Expired<br><span class="muted">Was ${who}, expired ${formatTime(record.expiresAt)}</span>`;
-      const connect = `<a href="/shopify/connect?store=${encodeURIComponent(store.alias)}">${record ? "Reconnect" : "Connect"}</a>`;
+      const connect = this.connectForm(session, store.alias, false, record ? "Reconnect" : "Connect");
       const disconnect = record
         ? ` <form class="inline" method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="disconnect"><input type="hidden" name="store" value="${escapeHtml(store.alias)}"><button class="danger" type="submit">Disconnect</button></form>`
         : "";
@@ -284,10 +317,10 @@ export class ShopifyConnections {
 <p>Connect each store with your own Shopify staff account. AI apps then act as you in that store, and Shopify allows only what your staff permissions allow. Shopify ends these connections after about a day; reconnecting takes one click while you are signed in to Shopify.</p>
 ${message ? `<div class="warn"><p>${escapeHtml(message)}</p></div>` : ""}
 ${stores.length ? `<table><thead><tr><th>Store</th><th>Status</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>` : `<p class="muted">No stores are configured for you.</p>`}
-${first ? `<p class="actions"><a href="/shopify/connect?store=${encodeURIComponent(first.alias)}&amp;chain=1">Connect all ${unconnected} unconnected ${unconnected === 1 ? "store" : "stores"}</a></p>` : ""}
+${first ? `<div class="actions">${this.connectForm(session, first.alias, true, `Connect all ${unconnected} unconnected ${unconnected === 1 ? "store" : "stores"}`, "primary")}</div>` : ""}
 <form method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="signout"><div class="actions"><button type="submit">Sign out</button></div></form>
 </div>`;
-    return htmlPage({ status, title: `Your Shopify stores - ${displayName}`, body });
+    return htmlPage({ status, title: `Your Shopify stores - ${displayName}`, body, formAction: CONNECT_FORM_ACTION });
   }
 
   private async action(request: Request): Promise<Response> {
@@ -321,21 +354,45 @@ ${first ? `<p class="actions"><a href="/shopify/connect?store=${encodeURICompone
 
   // ---------- /shopify/connect ----------
 
+  /**
+   * GET shows a confirmation button; only a POST with the /stores CSRF token creates the state and
+   * redirects to Shopify, so another site cannot start a Shopify authorization in the user's name.
+   */
   async connect(request: Request): Promise<Response> {
-    if (request.method.toUpperCase() !== "GET") return new Response(JSON.stringify({ error: "method_not_allowed" }), { status: 405, headers: { "content-type": "application/json" } });
-    const url = new URL(request.url);
-    const session = await this.session(request);
-    if (!session) return this.options.auth.startPageSignIn("stores");
-    const alias = url.searchParams.get("store") ?? "";
-    const store = (await this.visibleStores(session.principal)).find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
-    if (!store) return this.render(session, `Store "${alias}" is not configured, or you are not allowed to use it.`, 404);
-    if (!SHOP_HOST.test(store.shop)) return this.render(session, `Store ${store.alias} does not use a *.myshopify.com domain, so it cannot be connected.`, 400);
-    const clientId = this.options.clientId(store);
-    if (!clientId || !this.options.clientSecret(store)) {
-      return this.render(session, `Store ${store.alias} has no Shopify app client id and secret on this server. Ask an administrator to set SHOPIFY_APP_CLIENT_ID and SHOPIFY_APP_CLIENT_SECRET.`, 500);
+    const method = request.method.toUpperCase();
+    if (method !== "GET" && method !== "POST") return new Response(JSON.stringify({ error: "method_not_allowed" }), { status: 405, headers: { "content-type": "application/json" } });
+    if (method === "GET") {
+      const url = new URL(request.url);
+      const session = await this.session(request);
+      if (!session) return this.options.auth.startPageSignIn("stores");
+      const checked = await this.connectableStore(session, url.searchParams.get("store") ?? "");
+      if ("error" in checked) return checked.error;
+      const chain = url.searchParams.get("chain") === "1";
+      const body = `<div class="card">
+<h1>Connect ${escapeHtml(checked.store.alias)}</h1>
+<p>You will sign in to <code>${escapeHtml(checked.store.shop)}</code> with your Shopify staff account. AI apps will then act as you in this store, limited by your Shopify permissions.</p>
+${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "primary")}
+<p><a href="/stores">Back to your stores</a></p>
+</div>`;
+      return htmlPage({ title: `Connect ${checked.store.alias}`, body, formAction: CONNECT_FORM_ACTION });
     }
+    if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+      return htmlPage({ status: 400, title: "Bad request", body: `<div class="card"><p>Unsupported form submission.</p></div>` });
+    }
+    if (!sameOrigin(request, this.options.auth.issuer)) {
+      return htmlPage({ status: 403, title: "Forbidden", body: `<div class="card"><p>This form was submitted from another site.</p></div>` });
+    }
+    const session = await this.session(request);
+    if (!session) return page(401, "Signed out", `Your session ended. <a href="/stores">Sign in again</a>.`);
+    const form = new URLSearchParams(await request.text());
+    if (!safeEqual(form.get("csrf") ?? "", session.csrf)) {
+      return page(403, "Forbidden", `This form could not be verified. Reload the page and try again.`);
+    }
+    const checked = await this.connectableStore(session, form.get("store") ?? "");
+    if ("error" in checked) return checked.error;
+    const { store, clientId } = checked;
     const state = randomBytes(32).toString("base64url");
-    const record: StateRecord = { email: session.email, alias: store.alias, shop: store.shop, sessionSha256: session.key, chain: url.searchParams.get("chain") === "1" };
+    const record: StateRecord = { email: session.email, alias: store.alias, shop: store.shop, sessionSha256: session.key, chain: form.get("chain") === "1" };
     await this.options.store.put("shopify_state", sha256(state), record, this.now() + STATE_TTL_MS);
     const target = new URL(`https://${store.shop}/admin/oauth/authorize`);
     target.searchParams.set("client_id", clientId);
@@ -344,6 +401,21 @@ ${first ? `<p class="actions"><a href="/shopify/connect?store=${encodeURICompone
     target.searchParams.set("state", state);
     target.searchParams.append("grant_options[]", "per-user");
     return new Response(null, { status: 302, headers: { location: target.toString(), "cache-control": "no-store" } });
+  }
+
+  private connectForm(session: Session, alias: string, chain: boolean, label: string, style = ""): string {
+    return `<form class="inline" method="post" action="/shopify/connect"><input type="hidden" name="csrf" value="${session.csrf}"><input type="hidden" name="store" value="${escapeHtml(alias)}">${chain ? `<input type="hidden" name="chain" value="1">` : ""}<button${style ? ` class="${style}"` : ""} type="submit">${escapeHtml(label)}</button></form>`;
+  }
+
+  private async connectableStore(session: Session, alias: string): Promise<{ store: StoreConfig; clientId: string } | { error: Response }> {
+    const store = (await this.visibleStores(session.principal)).find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
+    if (!store) return { error: await this.render(session, `Store "${alias}" is not configured, or you are not allowed to use it.`, 404) };
+    if (!SHOP_HOST.test(store.shop)) return { error: await this.render(session, `Store ${store.alias} does not use a *.myshopify.com domain, so it cannot be connected.`, 400) };
+    const clientId = this.options.clientId(store);
+    if (!clientId || !this.options.clientSecret(store)) {
+      return { error: await this.render(session, `Store ${store.alias} has no Shopify app client id and secret on this server. Ask an administrator to set SHOPIFY_APP_CLIENT_ID and SHOPIFY_APP_CLIENT_SECRET.`, 500) };
+    }
+    return { store, clientId };
   }
 
   // ---------- /shopify/callback ----------
@@ -357,8 +429,8 @@ ${first ? `<p class="actions"><a href="/shopify/connect?store=${encodeURICompone
     // The shop must be a configured store. Its secret verifies the signature.
     const store = SHOP_HOST.test(shop) ? stores.find((candidate) => candidate.shop.toLowerCase() === shop) : undefined;
     const secret = store ? this.options.clientSecret(store) : undefined;
-    if (!store || !secret || !verifyShopifyHmac(params, secret)) {
-      await this.options.auth.auditAuth({ event: "shopify_connect_denied", reason: "invalid Shopify signature or unknown shop", ...(store ? { store: store.alias } : {}) });
+    if (!store || !secret || !verifyShopifyHmac(params, secret, this.now())) {
+      await this.options.auth.auditAuth({ event: "shopify_connect_denied", reason: "invalid Shopify signature, stale timestamp, or unknown shop", ...(store ? { store: store.alias } : {}) });
       return page(400, "Connection failed", "Shopify's response could not be verified. Start again from the stores page.");
     }
     const stateValue = params.get("state") ?? "";

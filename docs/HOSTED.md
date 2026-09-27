@@ -145,8 +145,8 @@ A token acts as you, with your role and stores, and stops working as soon as it 
 | `POST /consent` | Approve or deny on the consent screen |
 | `GET`, `POST /tokens` | Personal access token page |
 | `GET`, `POST /stores` | Per-user mode: connect, reconnect, or disconnect each store with your Shopify account |
-| `GET /shopify/connect?store=<alias>` | Per-user mode: start Shopify's online (per-user) authorization for one store |
-| `GET /shopify/callback` | Per-user mode: Shopify's return; verifies the HMAC and state, stores the encrypted token |
+| `GET`, `POST /shopify/connect` | Per-user mode: `GET ?store=<alias>` shows a confirm button; the CSRF-protected same-origin `POST` starts Shopify's online (per-user) authorization for that store |
+| `GET /shopify/callback` | Per-user mode: Shopify's return; verifies the HMAC (Shopify's escaping rules, timestamp at most 300 seconds old) and state, stores the encrypted token |
 | `GET /healthz` | Health check |
 
 Client ID Metadata Documents are supported: a `client_id` that is an HTTPS URL is fetched and its `redirect_uris` are checked against the redirect policy. Public clients (`token_endpoint_auth_method: none`) and confidential DCR clients (`client_secret_post`, `client_secret_basic`) are both supported.
