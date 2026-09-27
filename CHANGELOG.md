@@ -4,6 +4,26 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Fix: `shopify_update_prices` / `shopify_update_prices_many` now reject a call
+  outright, before any write, when duplicate SKU rows in the input disagree on
+  what to write (identical duplicate rows are still collapsed with a note).
+- Fix: per-item write outcomes are now one of applied, rejected, not_found,
+  ambiguous, unknown, skipped, or mismatch, and the store-level status (ok,
+  partial, failed, unknown) is derived from every item's outcome instead of
+  from whether the mutation call itself returned. `shopify_update_prices_many`
+  derives its own `ok`/status from each store's status rather than from
+  whether the per-store call threw.
+- Fix: a network error, timeout, or throttled response with no data after a
+  price write was sent is now reported as `unknown` (with a
+  `doNotBlindlyRetry` hint), never mislabeled `rejected`.
+- Fix: applying a price/cost change now performs a separate verification
+  query for the affected variants afterward instead of only inspecting the
+  mutation response; a mutation that looks successful but disagrees with that
+  readback is reported as `mismatch` and the store status is not `ok`.
+- Fix: `shopify_update_prices` only requires `write_inventory` when the
+  request includes a `unitCost`; price/compareAtPrice-only requests need only
+  `read_products` and `write_products`.
+
 - Hosted: work with any MCP client on any plan, not only Claude. Built-in
   redirect URIs for Claude, ChatGPT, VS Code, VS Code Insiders, and Cursor
   live in `src/hosted/known-clients.ts`, plus loopback on any port for Claude
