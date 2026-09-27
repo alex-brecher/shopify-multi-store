@@ -49,24 +49,37 @@ async function setup(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), "sms-hosted-"));
   const auditPath = join(dir, "audit.jsonl");
   let now = Date.now();
+  const store = new MemoryStore(() => now);
   const app = createHostedApp({
     issuer: ORIGIN,
     resource: RESOURCE,
     google: fakeGoogle(),
     allowedDomains: ["bariatricpal.com", "netrition.com"],
     policy: staticPolicy(POLICY),
-    store: new MemoryStore(() => now),
+    store,
     audit: new FileAuditLog(auditPath),
     now: () => now,
     log: () => {},
     ...overrides
   });
   t.after(() => app.close());
-  return { app, auditPath, dir, advance: (ms) => { now += ms; } };
+  return { app, auditPath, dir, store: overrides.store ?? store, advance: (ms) => { now += ms; } };
 }
 
 function call(app, path, init = {}) {
   return app.fetch(new Request(`${ORIGIN}${path}`, init));
+}
+
+/** The "name=value" of the login binding cookie a sign-in start response sets. */
+function loginCookie(response) {
+  const set = response.headers.getSetCookie().find((value) => value.startsWith("__Secure-sms_login_"));
+  return set?.split(";")[0];
+}
+
+/** Follow a sign-in start (a redirect to Google) back to the callback, from the same browser. */
+function googleBack(app, start, account, { cookie = loginCookie(start) } = {}) {
+  const google = new URL(start.headers.get("location"));
+  return call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`, cookie ? { headers: { cookie } } : {});
 }
 
 function pkce() {
@@ -92,7 +105,7 @@ async function authorize(app, { clientId, redirectUri = CLAUDE_CALLBACK, challen
   assert.equal(start.status, 302, await start.clone().text());
   const google = new URL(start.headers.get("location"));
   assert.equal(google.host, "accounts.google.test");
-  const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  const back = await googleBack(app, start, account);
   if (back.status === 200) {
     const decided = await submitConsent(app, back, decision);
     assert.equal(decided.status, 303, await decided.clone().text());
@@ -127,8 +140,7 @@ async function startToCallback(app, { clientId, redirectUri = CLAUDE_CALLBACK, c
   });
   const start = await call(app, `/authorize?${query}`);
   assert.equal(start.status, 302, await start.clone().text());
-  const google = new URL(start.headers.get("location"));
-  return call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  return googleBack(app, start, account);
 }
 
 async function tokenRequest(app, params) {
@@ -925,6 +937,152 @@ test("personal token settings come from PERSONAL_TOKENS_ENABLED and PERSONAL_TOK
   await assert.rejects(buildHostedAppFromEnv({ ...base, PERSONAL_TOKEN_MAX_DAYS: "0" }), /positive integer/);
 });
 
+/** A test app with only example.com accounts, and a fake Google that counts code exchanges. */
+async function bindingSetup(t, overrides = {}) {
+  const google = fakeGoogle();
+  const exchanges = [];
+  const counting = { ...google, async exchange(args) { exchanges.push(args.code); return google.exchange(args); } };
+  const env = await setup(t, {
+    google: counting,
+    allowedDomains: ["example.com"],
+    policy: staticPolicy({ users: { "attacker@example.com": { role: "admin", stores: "*" }, "victim@example.com": { role: "admin", stores: "*" } }, domains: {} }),
+    ...overrides
+  });
+  return { ...env, exchanges };
+}
+
+async function startAuthorize(app, clientId) {
+  const query = new URLSearchParams({
+    response_type: "code", client_id: clientId, redirect_uri: CLAUDE_CALLBACK, code_challenge: pkce().challenge,
+    code_challenge_method: "S256", state: "client-state", resource: RESOURCE, scope: "mcp"
+  });
+  const start = await call(app, `/authorize?${query}`);
+  assert.equal(start.status, 302);
+  return start;
+}
+
+test("Google sign-in sets a browser binding cookie scoped to the callback", async (t) => {
+  const { app } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  const start = await startAuthorize(app, client.client_id);
+  const set = start.headers.getSetCookie().find((value) => value.startsWith("__Secure-sms_login_"));
+  assert.match(set, /^__Secure-sms_login_[0-9a-f]{24}=[A-Za-z0-9_-]{43}; Path=\/oauth\/google\/callback; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/);
+  const tokensStart = await call(app, "/tokens");
+  assert.equal(tokensStart.status, 302);
+  assert.ok(loginCookie(tokensStart), "the tokens page sign-in is bound too");
+  assert.notEqual(loginCookie(tokensStart).split("=")[0], loginCookie(start).split("=")[0], "one cookie per sign-in");
+});
+
+test("a forwarded Google callback without the originating cookie creates no session and leaves the state unconsumed", async (t) => {
+  const { app, exchanges, store, auditPath } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  // The attacker starts a sign-in in their own browser and completes Google as themselves...
+  const start = await startAuthorize(app, client.client_id);
+  // ...then sends the unredeemed callback URL to the victim, whose browser has no binding cookie.
+  const forwarded = await googleBack(app, start, "attacker|example.com", { cookie: null });
+  assert.equal(forwarded.status, 403);
+  assert.match(await forwarded.text(), /different browser/);
+  assert.equal(forwarded.headers.get("location"), null, "no redirect with a code");
+  assert.deepEqual(forwarded.headers.getSetCookie().filter((value) => /^__Host-sms_(consent|tokens)=/.test(value)), [], "no consent or session cookie");
+  assert.deepEqual(exchanges, [], "the Google code was not exchanged");
+  assert.equal((await store.entries("pending")).length, 1, "state is not consumed by an unbound callback");
+  assert.equal((await store.entries("code")).length, 0);
+  assert.equal((await store.entries("consent")).length, 0);
+
+  // The victim's own unrelated sign-in cookie does not help: it binds a different state.
+  const victimStart = await startAuthorize(app, client.client_id);
+  const crossed = await googleBack(app, start, "attacker|example.com", { cookie: loginCookie(victimStart) });
+  assert.equal(crossed.status, 403);
+  assert.deepEqual(exchanges, []);
+
+  const lines = await auditLines(auditPath);
+  assert.ok(lines.some((line) => line.event === "sign_in_denied" && /not bound to this browser/.test(line.reason) && line.clientId === client.client_id));
+
+  // In the browser that started it, the same state still works (and only for that browser's user).
+  const own = await googleBack(app, start, "attacker|example.com");
+  assert.equal(own.status, 200);
+  assert.ok((await consentForm(own)).html.includes("attacker@example.com"));
+});
+
+test("a Google callback with a mismatched binding cookie is refused", async (t) => {
+  const { app, exchanges, store } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  const start = await startAuthorize(app, client.client_id);
+  const name = loginCookie(start).split("=")[0];
+  const forged = await googleBack(app, start, "attacker|example.com", { cookie: `${name}=${"A".repeat(43)}` });
+  assert.equal(forged.status, 403);
+  assert.deepEqual(exchanges, []);
+  assert.equal((await store.entries("pending")).length, 1);
+});
+
+test("a bound Google callback is single use, expires, and clears the binding cookie", async (t) => {
+  const { app, exchanges, advance } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  const start = await startAuthorize(app, client.client_id);
+  const cleared = (response, from = start) => {
+    const name = loginCookie(from).split("=")[0];
+    return response.headers.getSetCookie().some((value) => value.startsWith(`${name}=;`) && /Path=\/oauth\/google\/callback/.test(value) && /Max-Age=0/.test(value));
+  };
+
+  const first = await googleBack(app, start, "victim|example.com");
+  assert.equal(first.status, 200, "consent page");
+  assert.ok(cleared(first), "success clears the binding cookie");
+  assert.match(first.headers.getSetCookie().join("\n"), /__Host-sms_consent=/, "the consent cookie is still set");
+  assert.equal(exchanges.length, 1);
+
+  const replay = await googleBack(app, start, "victim|example.com");
+  assert.equal(replay.status, 400, "replay refused");
+  assert.equal(exchanges.length, 1, "no second exchange");
+  assert.ok(cleared(replay));
+
+  const late = await startAuthorize(app, client.client_id);
+  advance(10 * 60_000 + 1);
+  const expired = await googleBack(app, late, "victim|example.com");
+  assert.equal(expired.status, 400);
+  assert.ok(cleared(expired, late), "terminal failure clears the binding cookie");
+  assert.equal(exchanges.length, 1);
+
+  // Google reporting an error is terminal too: the state is consumed and the cookie cleared.
+  const cancelled = await startAuthorize(app, client.client_id);
+  const google = new URL(cancelled.headers.get("location"));
+  const denied = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&error=access_denied`, { headers: { cookie: loginCookie(cancelled) } });
+  assert.equal(denied.status, 302);
+  assert.equal(new URL(denied.headers.get("location")).searchParams.get("error"), "access_denied");
+  assert.ok(denied.headers.getSetCookie().some((value) => value.startsWith(`${loginCookie(cancelled).split("=")[0]}=;`)));
+});
+
+test("the tokens page sign-in is bound to the browser that started it", async (t) => {
+  const { app, exchanges } = await bindingSetup(t);
+  const start = await call(app, "/tokens");
+  const forwarded = await googleBack(app, start, "attacker|example.com", { cookie: null });
+  assert.equal(forwarded.status, 403);
+  assert.deepEqual(forwarded.headers.getSetCookie().filter((value) => value.startsWith("__Host-sms_tokens=")), []);
+  assert.deepEqual(exchanges, []);
+  const own = await googleBack(app, start, "attacker|example.com");
+  assert.equal(own.status, 303);
+  const cookies = own.headers.getSetCookie();
+  assert.ok(cookies.some((value) => value.startsWith("__Host-sms_tokens=")));
+  assert.ok(cookies.some((value) => value.startsWith(`${loginCookie(start).split("=")[0]}=;`)));
+});
+
+test("node:http keeps every Set-Cookie header of a response", async (t) => {
+  const { app } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  const server = http.createServer(toNodeListener(app.fetch, { origin: ORIGIN, maxBodyBytes: 64 * 1024 }));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const query = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: CLAUDE_CALLBACK, code_challenge: pkce().challenge, code_challenge_method: "S256", state: "s" });
+  const start = await fetch(`${base}/authorize?${query}`, { redirect: "manual" });
+  const state = new URL(start.headers.get("location")).searchParams.get("state");
+  const back = await fetch(`${base}/oauth/google/callback?state=${encodeURIComponent(state)}&code=${encodeURIComponent("victim|example.com")}`, { headers: { cookie: loginCookie(start) }, redirect: "manual" });
+  assert.equal(back.status, 200);
+  const cookies = back.headers.getSetCookie();
+  assert.equal(cookies.length, 2, cookies.join("\n"));
+  assert.ok(cookies.some((value) => value.startsWith("__Host-sms_consent=")));
+  assert.ok(cookies.some((value) => value.startsWith("__Secure-sms_login_")));
+});
+
 test("consent screen shows the client, redirect host, user, role and stores, and escapes the client name", async (t) => {
   const { app } = await setup(t);
   const { body: client } = await registerClient(app, { client_name: "<script>alert(1)</script> Tool" });
@@ -1048,10 +1206,10 @@ async function tokensSession(app, account) {
   assert.equal(start.status, 302);
   const google = new URL(start.headers.get("location"));
   assert.equal(google.host, "accounts.google.test");
-  const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  const back = await googleBack(app, start, account);
   if (back.status !== 303) return { denied: back };
   assert.equal(back.headers.get("location"), "/tokens");
-  const setCookie = back.headers.get("set-cookie");
+  const setCookie = back.headers.getSetCookie().find((value) => value.startsWith("__Host-sms_tokens="));
   assert.match(setCookie, /^__Host-sms_tokens=[^;]+; Path=\/; HttpOnly; Secure; SameSite=Lax; Max-Age=\d+$/);
   const cookie = setCookie.split(";")[0];
   const page = await call(app, "/tokens", { headers: { cookie } });

@@ -4,6 +4,12 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Hosted: fix login CSRF in Google sign-in. Each sign-in sets a binding cookie
+  (HttpOnly, Secure, SameSite=Lax, callback path only, 10 minutes) and stores
+  only its hash. The callback checks it before using the login state or the
+  Google code, so a callback URL forwarded to another browser creates no
+  session. Applies to app sign-ins and the `/tokens` page. The node adapter now
+  keeps every Set-Cookie header.
 - Hosted audit log: stop storing raw GraphQL documents, search expressions, and
   free-text arguments. Documents are summarized (operation types, root fields,
   argument names, sha256), variables are hashed, and only ids, store aliases,
