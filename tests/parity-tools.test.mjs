@@ -610,3 +610,11 @@ test("sameMoney: decimal equality without float rounding", () => {
   assert.ok(!sameMoney(null, "0.00"));
   assert.ok(!sameMoney("abc", "abc"));
 });
+
+test("create_fulfillment: works with merchant-managed fulfillment order scopes and no write_fulfillments", async (t) => {
+  const { call, state } = await fixture(t);
+  state.scopes = ["read_merchant_managed_fulfillment_orders", "write_merchant_managed_fulfillment_orders"];
+  const applied = await call("create_fulfillment", { orderId: gid("Order", 1), dryRun: false });
+  assert.equal(applied.isError, undefined, applied.content[0].text);
+  assert.equal(applied.structuredContent.fulfillment.status, "SUCCESS");
+});

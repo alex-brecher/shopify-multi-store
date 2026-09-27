@@ -969,7 +969,7 @@ export function registerParityTools(server: McpServer) {
   // 10. Fulfillment
   register(
     "create_fulfillment",
-    "Fulfill an order's open fulfillment orders with optional tracking. notifyCustomer defaults to false. Requires write_fulfillments. Defaults to dryRun:true.",
+    "Fulfill an order's open fulfillment orders with optional tracking. notifyCustomer defaults to false. Requires read_merchant_managed_fulfillment_orders and write_merchant_managed_fulfillment_orders (Shopify reports any other missing scope, such as for fulfillment orders assigned to a fulfillment service). Defaults to dryRun:true.",
     {
       orderId: gid("Order"),
       trackingNumber: z.string().min(1).optional(),
@@ -979,7 +979,10 @@ export function registerParityTools(server: McpServer) {
     },
     true,
     async (w, a) => {
-      await w.requireScopes(["write_fulfillments"]);
+      // No local scope check: the scope Shopify needs depends on who the fulfillment
+      // orders are assigned to (merchant-managed or a fulfillment service), so Shopify's own
+      // access error is the accurate one. scope-requirements.ts lists the merchant-managed
+      // scopes for shopify_check_access.
       const d = await w.run(PDOCS.getOrderFulfillmentOrders, { id: a.orderId });
       if (!d.order) throw Error("Order not found in this store.");
       const open = (d.order.fulfillmentOrders?.nodes ?? []).filter(

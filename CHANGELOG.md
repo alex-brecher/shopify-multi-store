@@ -48,6 +48,9 @@ This file records notable changes to Shopify Multi-Store MCP.
   `shopify_update_delivery_rate` comparing money as strings, so "12" against
   "12.00" was reported as a mismatch and "5" against "5.0" as not persisted.
   Amounts are now compared as decimals.
+- Fix `shopify_create_fulfillment` refusing to run without `write_fulfillments`.
+  It no longer checks scopes itself; Shopify reports the missing scope, and
+  `shopify_check_access` lists the merchant-managed fulfillment order scopes.
 
 ## [1.6.0] - 2026-09-07
 
