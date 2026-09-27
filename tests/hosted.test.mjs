@@ -839,6 +839,9 @@ function recordingFs({ platform = process.platform, fail = {} } = {}) {
         async sync() {
           calls.push({ op: "sync", path, flags });
           if (fail.sync?.(path, flags)) throw Object.assign(new Error("sync failed"), { code: fail.syncCode });
+          // A simulated POSIX directory fsync cannot run on a real Windows host (Windows cannot
+          // fsync a directory handle); record it, and only perform real file syncs there.
+          if (process.platform === "win32" && flags === "r") return;
           return handle.sync();
         },
         async close() { calls.push({ op: "close", path }); return handle.close(); }
