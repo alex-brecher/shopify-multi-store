@@ -183,6 +183,10 @@ Copy `skills/shopify-multi-store/SKILL.md` into the client's skills directory wh
 
 </details>
 
+## Host it for your team
+
+Run `shopify-multi-store serve` (or the included Dockerfile) once, and add `https://<host>/mcp` as an organization custom connector in Claude. Employees sign in with Google Workspace; Shopify tokens stay on the server. Roles, per-store access, and an audit log are built in. See [docs/HOSTED.md](docs/HOSTED.md).
+
 ## Store authentication
 
 | Method | Command | Best fit |

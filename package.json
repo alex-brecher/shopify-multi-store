@@ -60,6 +60,7 @@
     "LICENSE",
     "schemas/",
     "docs/PARITY.md",
+    "docs/HOSTED.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {

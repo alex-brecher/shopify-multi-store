@@ -2,6 +2,14 @@
 
 This file records notable changes to Shopify Multi-Store MCP.
 
+## [Unreleased]
+
+- Add `shopify-multi-store serve`: a hosted Streamable HTTP connector at `/mcp` with a built-in OAuth 2.1 authorization server (PKCE S256, Dynamic Client Registration, Client ID Metadata Documents, rotating refresh tokens) and Google Workspace sign-in.
+- Add a policy file for per-user roles (admin, editor, viewer) and store allowlists, enforced for every tool.
+- Add a JSON Lines audit log of every hosted tool call.
+- Add `STORES_JSON` as an alternative to the stores file, a Dockerfile, and `/healthz`.
+- Move server construction into `createServer()`; stdio behavior is unchanged.
+
 ## [1.6.0] - 2026-09-07
 
 - Add guided Admin workflows for products, variants, collections, inventory, discounts, media, publication, analytics, and bulk exports.
