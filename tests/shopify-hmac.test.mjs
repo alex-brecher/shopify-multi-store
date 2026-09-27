@@ -46,3 +46,22 @@ test("scripts/oauth-connect.mjs uses the shared verifier instead of its own", as
   assert.doesNotMatch(source, /createHmac/);
   assert.match(source, /verifyShopifyHmac\(url\.searchParams, clientSecret/);
 });
+
+test("the hosted connector uses the same HMAC implementation (no copy), with Web Crypto", async () => {
+  const hmac = await import("../dist/shopify-hmac.js");
+  const connect = await import("../dist/hosted/shopify-connect.js");
+  assert.equal(connect.shopifyHmacMessage, hmac.shopifyHmacMessage, "one message builder");
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/hosted/shopify-connect.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /escapeKey|escapeValue|hmacSha256Hex/, "no second implementation in shopify-connect.ts");
+  const { createHmac } = await import("node:crypto");
+  const params = new URLSearchParams({ code: "c", shop: "main.myshopify.com", state: "s&=%", timestamp: "1700000000" });
+  params.set("hmac", createHmac("sha256", "secret").update(hmac.shopifyHmacMessage(params)).digest("hex"));
+  for (const [nowMs, expected] of [[undefined, true], [1700000000_000, true], [1700000000_000 + 301_000, false]]) {
+    const options = nowMs === undefined ? {} : { nowMs };
+    assert.equal(hmac.verifyShopifyHmac(params, "secret", options), expected);
+    assert.equal(await hmac.verifyShopifyHmacAsync(params, "secret", options), expected);
+    assert.equal(await connect.verifyShopifyHmac(params, "secret", nowMs), expected);
+  }
+  assert.equal(await hmac.verifyShopifyHmacAsync(params, "other"), false);
+});

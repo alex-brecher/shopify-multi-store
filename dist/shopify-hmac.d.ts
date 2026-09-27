@@ -1,6 +1,7 @@
 /**
- * Shopify OAuth redirect signatures, shared by the local connect script (scripts/oauth-connect.mjs)
- * and, later, the hosted connector.
+ * Shopify OAuth redirect signatures: the one implementation, shared by the local connect script
+ * (scripts/oauth-connect.mjs, synchronous node:crypto) and the hosted connector
+ * (src/hosted/shopify-connect.ts, Web Crypto, so it runs on Node and Cloudflare Workers).
  */
 /**
  * The message Shopify signs for an OAuth redirect: every parameter except hmac and signature,
@@ -19,6 +20,8 @@ export interface VerifyShopifyHmacOptions {
 }
 /**
  * Verify the hmac Shopify adds to OAuth redirects: hex HMAC-SHA256 of shopifyHmacMessage, keyed
- * with the app's client secret.
+ * with the app's client secret. Synchronous (node:crypto), for Node scripts.
  */
 export declare function verifyShopifyHmac(params: URLSearchParams, secret: string, options?: VerifyShopifyHmacOptions): boolean;
+/** verifyShopifyHmac with Web Crypto, for code that also runs on Cloudflare Workers. */
+export declare function verifyShopifyHmacAsync(params: URLSearchParams, secret: string, options?: VerifyShopifyHmacOptions): Promise<boolean>;

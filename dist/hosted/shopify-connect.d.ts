@@ -1,3 +1,4 @@
+import { shopifyHmacMessage } from "../shopify-hmac.js";
 import type { StoreConfig } from "../config.js";
 import type { UserShopifyAccess } from "../runtime.js";
 import { type AuthorizationServer, type PageSignInPurpose } from "./oauth.js";
@@ -78,16 +79,10 @@ export declare function decryptToken(keys: EncryptionKey[], value: string, bindi
     token: string;
     keyId: string;
 }>;
+export { shopifyHmacMessage };
 /**
- * The message Shopify signs for an OAuth redirect: every parameter except hmac and signature,
- * with "%", "&" and "=" escaped in names and "%" and "&" escaped in values, array parameters
- * (name[]) written as name=["a", "b"], sorted by name, joined as name=value with "&".
- */
-export declare function shopifyHmacMessage(params: URLSearchParams): string | undefined;
-/**
- * Verify the hmac Shopify adds to OAuth redirects (hex HMAC-SHA256 of shopifyHmacMessage, keyed
- * with the app's client secret). With nowMs, also require a timestamp no older than
- * CALLBACK_MAX_AGE_SECONDS (and no more than that in the future).
+ * Verify the hmac Shopify adds to OAuth redirects. With nowMs, also require a timestamp within
+ * CALLBACK_MAX_AGE_SECONDS of it.
  */
 export declare function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): Promise<boolean>;
 export declare class ShopifyConnections {
@@ -151,4 +146,3 @@ export declare class ShopifyConnections {
     /** Shopify callback for connecting one more store from the /stores session. */
     private connectionCallback;
 }
-export {};

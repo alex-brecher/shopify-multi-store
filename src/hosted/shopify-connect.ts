@@ -1,4 +1,5 @@
-import { aesGcmOpen, aesGcmSeal, base64UrlToBytes, bytesToBase64Url, constantTimeEqual, hmacSha256Hex, randomToken } from "../platform/crypto.js";
+import { aesGcmOpen, aesGcmSeal, base64UrlToBytes, bytesToBase64Url, constantTimeEqual, randomToken } from "../platform/crypto.js";
+import { shopifyHmacMessage, verifyShopifyHmacAsync } from "../shopify-hmac.js";
 import type { StoreConfig } from "../config.js";
 import type { ShopifyUserToken, UserShopifyAccess } from "../runtime.js";
 import { auditError } from "./audit.js";
@@ -197,49 +198,15 @@ export async function decryptToken(keys: EncryptionKey[], value: string, binding
 
 // ---------- Shopify request signatures ----------
 
-/**
- * The message Shopify signs for an OAuth redirect: every parameter except hmac and signature,
- * with "%", "&" and "=" escaped in names and "%" and "&" escaped in values, array parameters
- * (name[]) written as name=["a", "b"], sorted by name, joined as name=value with "&".
- */
-export function shopifyHmacMessage(params: URLSearchParams): string | undefined {
-  const escapeKey = (value: string) => value.replace(/%/g, "%25").replace(/&/g, "%26").replace(/=/g, "%3D");
-  const escapeValue = (value: string) => value.replace(/%/g, "%25").replace(/&/g, "%26");
-  const grouped = new Map<string, string[]>();
-  for (const [name, value] of params.entries()) {
-    if (name === "hmac" || name === "signature") continue;
-    grouped.set(name, [...(grouped.get(name) ?? []), value]);
-  }
-  const pairs: Array<[string, string]> = [];
-  for (const [name, values] of grouped) {
-    if (name.endsWith("[]")) {
-      pairs.push([escapeKey(name.slice(0, -2)), escapeValue(`[${values.map((value) => `"${value}"`).join(", ")}]`)]);
-    } else {
-      // A repeated plain parameter is ambiguous; refuse rather than guess.
-      if (values.length !== 1) return undefined;
-      pairs.push([escapeKey(name), escapeValue(values[0]!)]);
-    }
-  }
-  return pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, value]) => `${name}=${value}`).join("&");
-}
+// One implementation for the connect script and the hosted connector: src/shopify-hmac.ts.
+export { shopifyHmacMessage };
 
 /**
- * Verify the hmac Shopify adds to OAuth redirects (hex HMAC-SHA256 of shopifyHmacMessage, keyed
- * with the app's client secret). With nowMs, also require a timestamp no older than
- * CALLBACK_MAX_AGE_SECONDS (and no more than that in the future).
+ * Verify the hmac Shopify adds to OAuth redirects. With nowMs, also require a timestamp within
+ * CALLBACK_MAX_AGE_SECONDS of it.
  */
-export async function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): Promise<boolean> {
-  const received = params.get("hmac") ?? "";
-  if (!/^[0-9a-f]{64}$/i.test(received) || !secret) return false;
-  const message = shopifyHmacMessage(params);
-  if (message === undefined) return false;
-  const expected = await hmacSha256Hex(secret, message);
-  if (!constantTimeEqual(expected, received.toLowerCase())) return false;
-  if (nowMs !== undefined) {
-    const timestamp = Number(params.get("timestamp"));
-    if (!Number.isInteger(timestamp) || Math.abs(nowMs / 1000 - timestamp) > CALLBACK_MAX_AGE_SECONDS) return false;
-  }
-  return true;
+export function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): Promise<boolean> {
+  return verifyShopifyHmacAsync(params, secret, nowMs === undefined ? {} : { nowMs, maxAgeSeconds: CALLBACK_MAX_AGE_SECONDS });
 }
 
 function tokenKey(email: string, alias: string): string {
