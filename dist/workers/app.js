@@ -4,6 +4,7 @@ import { createHostedApp } from "../hosted/app.js";
 import { hostedOptionsFromEnv } from "../hosted/config.js";
 import { gzipSchemaSource, setSchemaSource } from "../platform/schema-source.js";
 import { enableHostedMode } from "../runtime.js";
+import { setRequestSource } from "../hosted/request-source.js";
 import { D1AuditLog } from "./d1-audit.js";
 import { DurableObjectStore } from "./do-store.js";
 import { installRedirectErrorShim } from "./fetch-shim.js";
@@ -48,6 +49,8 @@ export function createWorker(options = {}) {
                 // A configuration error is reported on every request until it is fixed and the Worker redeployed.
                 app.catch(() => apps.delete(configured));
             }
+            // Cloudflare's edge sets CF-Connecting-IP to the client's address; a client cannot set it.
+            setRequestSource(request, request.headers.get("cf-connecting-ip") ?? undefined);
             try {
                 return await (await app).fetch(request);
             }

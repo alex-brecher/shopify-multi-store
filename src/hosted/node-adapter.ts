@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { setRequestSource } from "./request-source.js";
 
 export interface NodeAdapterOptions {
   /** Public origin used to build request URLs, so handlers never trust the Host header. */
@@ -35,6 +36,8 @@ export function toNodeListener(handler: (request: Request) => Promise<Response>,
         ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
         signal: abort.signal
       });
+      // The socket's peer, never a forwarding header. Behind a reverse proxy this is the proxy.
+      setRequestSource(request, req.socket.remoteAddress);
       const response = await handler(request);
       const outHeaders: Record<string, string | string[]> = {};
       response.headers.forEach((value, key) => { if (key !== "set-cookie") outHeaders[key] = value; });

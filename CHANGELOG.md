@@ -21,6 +21,13 @@ This file records notable changes to Shopify Multi-Store MCP.
 - `ACTIONS_DENYLIST` and `ACTIONS_DENYLIST_REPLACE` are read from the Worker's
   env (`runtimeEnv()`), not `process.env`, so an operator's denylist applies on
   Cloudflare whatever the compatibility date.
+- Dynamically registered OAuth clients expire after 30 days without use
+  (`OAUTH_CLIENT_IDLE_TTL_SECONDS`; each use pushes it back, at most one write a
+  day). Registration is limited per source address per hour
+  (`OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR`, default 30, `0` for no
+  limit; the TCP peer on Node, `CF-Connecting-IP` on Workers). The Durable
+  Object keeps the client count in a counter key instead of listing every
+  client on each registration.
 
 Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
 ### Review 3: fixes and a smaller tool surface

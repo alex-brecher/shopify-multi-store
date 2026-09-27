@@ -1,3 +1,4 @@
+import { setRequestSource } from "./request-source.js";
 /** Serve a web-standard fetch handler from node:http, streaming the response body (SSE included). */
 export function toNodeListener(handler, options) {
     return async (req, res) => {
@@ -28,6 +29,8 @@ export function toNodeListener(handler, options) {
                 ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
                 signal: abort.signal
             });
+            // The socket's peer, never a forwarding header. Behind a reverse proxy this is the proxy.
+            setRequestSource(request, req.socket.remoteAddress);
             const response = await handler(request);
             const outHeaders = {};
             response.headers.forEach((value, key) => { if (key !== "set-cookie")

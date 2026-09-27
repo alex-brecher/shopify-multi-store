@@ -1,5 +1,14 @@
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "revoked_family";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "revoked_family" | "counter";
+/** Every record kind, for stores that enumerate them. */
+export declare const RECORD_KINDS: readonly RecordKind[];
+/** Options for OAuthStore.increment. */
+export interface IncrementOptions {
+    /** Refuse (applied: false, nothing changes) when the new value would exceed this. */
+    max?: number;
+    /** Expiry of a counter this call creates. A live counter keeps its expiry. */
+    expiresAt?: number;
+}
 export interface OAuthStore {
     get<T>(kind: RecordKind, key: string): Promise<T | undefined>;
     put<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<void>;
@@ -23,7 +32,20 @@ export interface OAuthStore {
      * can run it in one step.
      */
     deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number>;
+    /**
+     * Number of live records of a kind. A store may keep this as a maintained counter rather
+     * than listing (the Durable Object does, for clients), so treat it as possibly counting
+     * records that expired but were not yet swept: an upper bound.
+     */
     count(kind: RecordKind): Promise<number>;
+    /**
+     * Atomically add one to a numeric counter record (a missing or expired one counts as 0),
+     * unless that would exceed options.max. Used for rate limits, without listing records.
+     */
+    increment(kind: RecordKind, key: string, options?: IncrementOptions): Promise<{
+        value: number;
+        applied: boolean;
+    }>;
     /** Every live record of a kind, as [key, value] pairs. */
     entries<T>(kind: RecordKind): Promise<Array<[string, T]>>;
 }
@@ -50,6 +72,10 @@ export declare class MemoryStore implements OAuthStore {
         value: T;
         claimed: boolean;
     } | undefined>;
+    increment(kind: RecordKind, key: string, options?: IncrementOptions): Promise<{
+        value: number;
+        applied: boolean;
+    }>;
     delete(kind: RecordKind, key: string): Promise<void>;
     deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number>;
     count(kind: RecordKind): Promise<number>;

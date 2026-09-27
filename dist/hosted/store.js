@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
+/** Every record kind, for stores that enumerate them. */
+export const RECORD_KINDS = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "revoked_family", "counter"];
 /** Every field in `match` equals the value's field of the same name. */
 export function matches(value, match) {
     if (!value || typeof value !== "object")
@@ -8,7 +10,7 @@ export function matches(value, match) {
     return Object.entries(match).every(([field, expected]) => value[field] === expected);
 }
 function emptyData() {
-    return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, session: {}, shopify_state: {}, shopify_token: {}, revoked_family: {} };
+    return Object.fromEntries(RECORD_KINDS.map((kind) => [kind, {}]));
 }
 /**
  * In-memory store. All operations are synchronous against the map, so take() is atomic
@@ -57,6 +59,17 @@ export class MemoryStore {
         this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
         await this.changed();
         return { value: next, claimed: true };
+    }
+    async increment(kind, key, options = {}) {
+        // Read and write with no await in between, as in claim().
+        const entry = this.live(kind, key);
+        const current = typeof entry?.value === "number" ? entry.value : 0;
+        if (options.max !== undefined && current + 1 > options.max)
+            return { value: current, applied: false };
+        const expiresAt = entry ? entry.expiresAt : options.expiresAt;
+        this.data[kind][key] = { value: current + 1, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+        await this.changed();
+        return { value: current + 1, applied: true };
     }
     async delete(kind, key) {
         if (!Object.hasOwn(this.data[kind], key))

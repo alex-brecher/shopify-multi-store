@@ -3,7 +3,18 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "revoked_family";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "revoked_family" | "counter";
+
+/** Every record kind, for stores that enumerate them. */
+export const RECORD_KINDS: readonly RecordKind[] = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "revoked_family", "counter"];
+
+/** Options for OAuthStore.increment. */
+export interface IncrementOptions {
+  /** Refuse (applied: false, nothing changes) when the new value would exceed this. */
+  max?: number;
+  /** Expiry of a counter this call creates. A live counter keeps its expiry. */
+  expiresAt?: number;
+}
 
 export interface OAuthStore {
   get<T>(kind: RecordKind, key: string): Promise<T | undefined>;
@@ -25,7 +36,17 @@ export interface OAuthStore {
    * can run it in one step.
    */
   deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number>;
+  /**
+   * Number of live records of a kind. A store may keep this as a maintained counter rather
+   * than listing (the Durable Object does, for clients), so treat it as possibly counting
+   * records that expired but were not yet swept: an upper bound.
+   */
   count(kind: RecordKind): Promise<number>;
+  /**
+   * Atomically add one to a numeric counter record (a missing or expired one counts as 0),
+   * unless that would exceed options.max. Used for rate limits, without listing records.
+   */
+  increment(kind: RecordKind, key: string, options?: IncrementOptions): Promise<{ value: number; applied: boolean }>;
   /** Every live record of a kind, as [key, value] pairs. */
   entries<T>(kind: RecordKind): Promise<Array<[string, T]>>;
 }
@@ -44,7 +65,7 @@ export function matches(value: unknown, match: Record<string, string | number | 
 }
 
 function emptyData(): Data {
-  return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, session: {}, shopify_state: {}, shopify_token: {}, revoked_family: {} };
+  return Object.fromEntries(RECORD_KINDS.map((kind) => [kind, {}])) as Data;
 }
 
 /**
@@ -93,6 +114,17 @@ export class MemoryStore implements OAuthStore {
     this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
     await this.changed();
     return { value: next as T, claimed: true };
+  }
+
+  async increment(kind: RecordKind, key: string, options: IncrementOptions = {}): Promise<{ value: number; applied: boolean }> {
+    // Read and write with no await in between, as in claim().
+    const entry = this.live(kind, key);
+    const current = typeof entry?.value === "number" ? entry.value : 0;
+    if (options.max !== undefined && current + 1 > options.max) return { value: current, applied: false };
+    const expiresAt = entry ? entry.expiresAt : options.expiresAt;
+    this.data[kind][key] = { value: current + 1, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+    await this.changed();
+    return { value: current + 1, applied: true };
   }
 
   async delete(kind: RecordKind, key: string): Promise<void> {

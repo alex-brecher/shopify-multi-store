@@ -1,5 +1,5 @@
-import type { OAuthStore, RecordKind } from "../hosted/store.js";
-import { matches } from "../hosted/store.js";
+import type { IncrementOptions, OAuthStore, RecordKind } from "../hosted/store.js";
+import { matches, RECORD_KINDS } from "../hosted/store.js";
 import type { DurableObjectNamespaceLike, DurableObjectStateLike, DurableObjectStorageLike } from "./types.js";
 
 /**
@@ -21,15 +21,27 @@ type Operation =
   | { op: "get" | "take" | "delete"; kind: RecordKind; key: string }
   | { op: "put"; kind: RecordKind; key: string; value: unknown; expiresAt?: number }
   | { op: "claim"; kind: RecordKind; key: string; flag: string }
+  | { op: "increment"; kind: RecordKind; key: string; max?: number; expiresAt?: number }
   | { op: "deleteMatching"; kind: RecordKind; match: Record<string, string | number | boolean> }
   | { op: "count" | "entries"; kind: RecordKind };
 
-const KINDS: ReadonlySet<string> = new Set<RecordKind>(["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "revoked_family"]);
+const KINDS: ReadonlySet<string> = new Set<RecordKind>(RECORD_KINDS);
+/**
+ * Kinds whose count is kept in a counter key, so count() never lists every record (the
+ * registration cap checks the client count on each registration). The counter includes
+ * records that expired but were not yet removed until the next access or sweep.
+ */
+const COUNTED: ReadonlySet<RecordKind> = new Set<RecordKind>(["client"]);
 /** How often the object sweeps expired records. */
 const SWEEP_MS = 6 * 3600_000;
 
 function storageKey(kind: RecordKind, key: string): string {
   return `${kind}\u0000${key}`;
+}
+
+/** Outside every kind's prefix, so listing a kind never returns it. */
+function countKey(kind: RecordKind): string {
+  return `\u0001count\u0000${kind}`;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -55,9 +67,18 @@ export class OAuthStoreObject {
     if (!entry) return undefined;
     if (entry.expiresAt !== undefined && entry.expiresAt <= this.now()) {
       await this.storage.delete(storageKey(kind, key));
+      await this.adjustCount(kind, -1);
       return undefined;
     }
     return entry;
+  }
+
+  /** Move a counted kind's counter. A counter not yet built is left alone; count() builds it. */
+  private async adjustCount(kind: RecordKind, delta: number): Promise<void> {
+    if (!COUNTED.has(kind) || delta === 0) return;
+    const current = await this.storage.get<number>(countKey(kind));
+    if (current === undefined) return;
+    await this.storage.put(countKey(kind), Math.max(0, current + delta));
   }
 
   private async all(kind: RecordKind): Promise<Array<[string, Entry]>> {
@@ -70,7 +91,10 @@ export class OAuthStoreObject {
       if (entry.expiresAt !== undefined && entry.expiresAt <= now) expired.push(key);
       else out.push([key.slice(prefix.length), entry]);
     }
-    if (expired.length) await this.deleteKeys(expired);
+    if (expired.length) {
+      await this.deleteKeys(expired);
+      await this.adjustCount(kind, -expired.length);
+    }
     return out;
   }
 
@@ -87,6 +111,7 @@ export class OAuthStoreObject {
       case "get":
         return (await this.live(kind, operation.key))?.value;
       case "put":
+        if (COUNTED.has(kind) && !(await this.live(kind, operation.key))) await this.adjustCount(kind, 1);
         await this.storage.put(storageKey(kind, operation.key), { value: operation.value, ...(operation.expiresAt !== undefined ? { expiresAt: operation.expiresAt } : {}) });
         await this.scheduleSweep();
         return null;
@@ -94,11 +119,15 @@ export class OAuthStoreObject {
         const entry = await this.live(kind, operation.key);
         if (!entry) return undefined;
         await this.storage.delete(storageKey(kind, operation.key));
+        await this.adjustCount(kind, -1);
         return entry.value;
       }
-      case "delete":
+      case "delete": {
+        const existed = COUNTED.has(kind) && (await this.storage.get(storageKey(kind, operation.key))) !== undefined;
         await this.storage.delete(storageKey(kind, operation.key));
+        if (existed) await this.adjustCount(kind, -1);
         return null;
+      }
       case "claim": {
         const entry = await this.live(kind, operation.key);
         if (!entry) return undefined;
@@ -111,10 +140,27 @@ export class OAuthStoreObject {
       case "deleteMatching": {
         const doomed = (await this.all(kind)).filter(([, entry]) => matches(entry.value, operation.match)).map(([key]) => storageKey(kind, key));
         await this.deleteKeys(doomed);
+        await this.adjustCount(kind, -doomed.length);
         return doomed.length;
       }
-      case "count":
-        return (await this.all(kind)).length;
+      case "increment": {
+        const entry = await this.live(kind, operation.key);
+        const current = typeof entry?.value === "number" ? entry.value : 0;
+        if (operation.max !== undefined && current + 1 > operation.max) return { value: current, applied: false };
+        const expiresAt = entry ? entry.expiresAt : operation.expiresAt;
+        await this.storage.put(storageKey(kind, operation.key), { value: current + 1, ...(expiresAt !== undefined ? { expiresAt } : {}) });
+        await this.scheduleSweep();
+        return { value: current + 1, applied: true };
+      }
+      case "count": {
+        if (!COUNTED.has(kind)) return (await this.all(kind)).length;
+        const kept = await this.storage.get<number>(countKey(kind));
+        if (kept !== undefined) return kept;
+        // First count on this object (or after an upgrade): list once, then keep the counter.
+        const listed = (await this.all(kind)).length;
+        await this.storage.put(countKey(kind), listed);
+        return listed;
+      }
       case "entries":
         return (await this.all(kind)).map(([key, entry]) => [key, entry.value]);
       default:
@@ -188,6 +234,10 @@ export class DurableObjectStore implements OAuthStore {
 
   async count(kind: RecordKind): Promise<number> {
     return (await this.call<number>({ op: "count", kind })) ?? 0;
+  }
+
+  async increment(kind: RecordKind, key: string, options: IncrementOptions = {}): Promise<{ value: number; applied: boolean }> {
+    return (await this.call<{ value: number; applied: boolean }>({ op: "increment", kind, key, ...options })) ?? { value: 0, applied: false };
   }
 
   async entries<T>(kind: RecordKind): Promise<Array<[string, T]>> {

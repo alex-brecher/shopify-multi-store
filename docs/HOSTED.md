@@ -201,6 +201,8 @@ These settings apply to `shopify-multi-store serve`. The Worker uses the same na
 | `OAUTH_ACCESS_TOKEN_TTL_SECONDS` | no | `3600` | Access token lifetime |
 | `OAUTH_REFRESH_TOKEN_TTL_SECONDS` | no | `2592000` | Refresh token lifetime (30 days, renewed on each rotation, never past the session maximum age) |
 | `OAUTH_SESSION_MAX_AGE_SECONDS` | no | `604800` | Maximum age of a sign-in session (7 days), counted from the Shopify sign-in. After it, refresh fails with `invalid_grant` and the person signs in with Shopify again, which proves again that they are staff on a configured store. |
+| `OAUTH_CLIENT_IDLE_TTL_SECONDS` | no | `2592000` | A dynamically registered client that is not used for this long (30 days) is deleted; each use pushes the expiry back (at most one write a day). Its app registers again on the next sign-in. Clients registered before this setting existed get the expiry on their next use. Client ID Metadata Document clients are never stored. |
+| `OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR` | no | `30` | Dynamic client registrations allowed from one address per clock hour (`429` with `Retry-After` after that); `0` turns the limit off. The address is the TCP peer on Node (a reverse proxy's address when behind one, so the limit then applies to the proxy as a whole) and `CF-Connecting-IP` on Cloudflare Workers. The server also stops registering at 10,000 stored clients, counted from a maintained counter rather than by listing clients. |
 
 `ACTIONS_DENYLIST` (stdio too) adds mutations to the list `shopify_run_action` refuses; `ACTIONS_DENYLIST_REPLACE=1` makes it replace the default list. See [ACTIONS.md](ACTIONS.md#denylist).
 

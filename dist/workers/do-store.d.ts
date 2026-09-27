@@ -1,4 +1,4 @@
-import type { OAuthStore, RecordKind } from "../hosted/store.js";
+import type { IncrementOptions, OAuthStore, RecordKind } from "../hosted/store.js";
 import type { DurableObjectNamespaceLike, DurableObjectStateLike } from "./types.js";
 type Operation = {
     op: "get" | "take" | "delete";
@@ -15,6 +15,12 @@ type Operation = {
     kind: RecordKind;
     key: string;
     flag: string;
+} | {
+    op: "increment";
+    kind: RecordKind;
+    key: string;
+    max?: number;
+    expiresAt?: number;
 } | {
     op: "deleteMatching";
     kind: RecordKind;
@@ -33,6 +39,8 @@ export declare class OAuthStoreObject {
     private readonly now;
     constructor(state: DurableObjectStateLike, _env?: unknown, now?: () => number);
     private live;
+    /** Move a counted kind's counter. A counter not yet built is left alone; count() builds it. */
+    private adjustCount;
     private all;
     private deleteKeys;
     /** Run one store operation. Exposed for tests; fetch() is the Durable Object entry point. */
@@ -58,6 +66,10 @@ export declare class DurableObjectStore implements OAuthStore {
     } | undefined>;
     deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number>;
     count(kind: RecordKind): Promise<number>;
+    increment(kind: RecordKind, key: string, options?: IncrementOptions): Promise<{
+        value: number;
+        applied: boolean;
+    }>;
     entries<T>(kind: RecordKind): Promise<Array<[string, T]>>;
 }
 export {};

@@ -7,6 +7,7 @@ import type { HostedAppOptions } from "./app.js";
 export type HostedEnv = Readonly<Record<string, string | undefined>>;
 export declare function list(value: string | undefined): string[] | undefined;
 export declare function flag(value: string | undefined): boolean;
+export declare function nonNegativeInt(env: HostedEnv, name: string, fallback: number): number;
 export declare function positiveInt(env: HostedEnv, name: string, fallback: number): number;
 /** MCP_PUBLIC_URL as an origin: https (http only for localhost), no path. */
 export declare function publicOrigin(env: HostedEnv): string;

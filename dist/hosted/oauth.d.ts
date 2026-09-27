@@ -39,7 +39,19 @@ export interface AuthServerOptions {
      * again, which proves again that they are staff on a configured store. Defaults to 7 days.
      */
     sessionMaxAgeSeconds?: number;
+    /** Cap on stored registered (DCR) clients. Default 10,000. */
     maxRegisteredClients?: number;
+    /**
+     * A registered (DCR) client record expires after this long without use (authorize or token
+     * requests push it back). Default 30 days. Client ID Metadata Document clients are never
+     * stored, only cached in memory for five minutes.
+     */
+    clientIdleTtlSeconds?: number;
+    /**
+     * Registrations allowed per source address per clock hour; 0 turns the limit off. Default 30.
+     * The source is the socket peer on Node and CF-Connecting-IP on Workers (request-source.ts).
+     */
+    maxRegistrationsPerSourcePerHour?: number;
     now?: () => number;
     log?: (message: string) => void;
     /** Receives sign-in and token events. Tokens and codes are never passed. */
@@ -55,6 +67,8 @@ export interface ClientRecord {
     client_name?: string;
     client_secret_sha256?: string;
     client_id_issued_at?: number;
+    /** ms since epoch; when the idle expiry was last pushed back. */
+    last_used_at?: number;
 }
 interface PendingRecord {
     clientId: string;
@@ -113,6 +127,8 @@ export declare class AuthorizationServer {
     private readonly refreshTtlMs;
     private readonly sessionMaxAgeMs;
     private readonly maxClients;
+    private readonly clientIdleTtlMs;
+    private readonly registrationsPerSourcePerHour;
     private readonly now;
     private readonly log;
     private readonly cimdCache;

@@ -26,6 +26,14 @@ export function flag(value: string | undefined): boolean {
   return value !== undefined && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
+export function nonNegativeInt(env: HostedEnv, name: string, fallback: number): number {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a whole number, 0 or more.`);
+  return value;
+}
+
 export function positiveInt(env: HostedEnv, name: string, fallback: number): number {
   const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
@@ -88,6 +96,8 @@ export async function hostedOptionsFromEnv(
     accessTokenTtlSeconds: positiveInt(env, "OAUTH_ACCESS_TOKEN_TTL_SECONDS", 3600),
     refreshTokenTtlSeconds: positiveInt(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS", 30 * 24 * 3600),
     sessionMaxAgeSeconds: positiveInt(env, "OAUTH_SESSION_MAX_AGE_SECONDS", 7 * 24 * 3600),
+    clientIdleTtlSeconds: positiveInt(env, "OAUTH_CLIENT_IDLE_TTL_SECONDS", 30 * 24 * 3600),
+    maxRegistrationsPerSourcePerHour: nonNegativeInt(env, "OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR", 30),
     shopifyConnect: {
       encryptionKeys,
       loadStores: platform.loadStores,

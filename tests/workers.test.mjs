@@ -262,6 +262,56 @@ test("the Durable Object store keeps single-use and expiry semantics", async () 
   assert.equal(bad.status, 400);
 });
 
+test("the Durable Object keeps the client count in a counter (no listing), and increments atomically", async () => {
+  let now = 1_000;
+  const storage = memoryStorage();
+  let lists = 0;
+  const list = storage.list;
+  storage.list = (options) => { lists += 1; return list(options); };
+  const object = new OAuthStoreObject({ storage }, {}, () => now);
+  const namespace = { idFromName: (n) => n, get: () => ({ fetch: (input, init) => object.fetch(new Request(input, init)) }) };
+  const store = new DurableObjectStore(namespace);
+  // An object from before the counter existed: two clients already stored.
+  await storage.put("client\u0000old1", { value: { client_id: "old1" } });
+  await storage.put("client\u0000old2", { value: { client_id: "old2" }, expiresAt: 5_000 });
+  assert.equal(await store.count("client"), 2, "built once by listing");
+  assert.equal(lists, 1);
+  await store.put("client", "c1", { client_id: "c1" }, 10_000);
+  await store.put("client", "c1", { client_id: "c1", touched: true }, 20_000);
+  assert.equal(await store.count("client"), 3, "a rewrite of the same client is not a new one");
+  await store.delete("client", "old1");
+  await store.delete("client", "never-there");
+  assert.equal(await store.take("client", "c1").then((value) => value.touched), true);
+  assert.equal(await store.count("client"), 1);
+  now = 6_000;
+  assert.equal(await store.get("client", "old2"), undefined, "expired on read");
+  assert.equal(await store.count("client"), 0);
+  await store.put("client", "c2", { client_id: "c2" }, 7_000);
+  await store.put("client", "c3", { client_id: "c3" }, 70_000);
+  assert.equal(await store.count("client"), 2);
+  assert.equal(lists, 1, "no listing after the counter exists");
+  now = 8_000;
+  await object.alarm();
+  assert.equal(await store.count("client"), 1, "the sweep takes expired clients off the counter");
+
+  assert.deepEqual(await store.increment("counter", "r", { max: 2, expiresAt: 9_000 }), { value: 1, applied: true });
+  assert.deepEqual(await store.increment("counter", "r", { max: 2 }), { value: 2, applied: true });
+  assert.deepEqual(await store.increment("counter", "r", { max: 2 }), { value: 2, applied: false });
+  now = 9_000;
+  assert.deepEqual(await store.increment("counter", "r", { max: 2, expiresAt: 10_000 }), { value: 1, applied: true }, "expired counters restart");
+});
+
+test("on the Worker, registrations are limited per CF-Connecting-IP", async (t) => {
+  const admin = await shopifyAdmin(t);
+  const worker = createWorker();
+  const env = workerEnv(admin.base, { OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR: "2" });
+  const register = (ip) => worker.fetch(new Request(`${ORIGIN}/register`, { method: "POST", headers: { "content-type": "application/json", "cf-connecting-ip": ip }, body: JSON.stringify({ redirect_uris: [CALLBACK], token_endpoint_auth_method: "none" }) }), env, { waitUntil() {} });
+  assert.equal((await register("203.0.113.7")).status, 201);
+  assert.equal((await register("203.0.113.7")).status, 201);
+  assert.equal((await register("203.0.113.7")).status, 429);
+  assert.equal((await register("198.51.100.9")).status, 201);
+});
+
 test("wrangler.jsonc: nodejs_compat, the Durable Object and D1 bindings, one bundled schema, and the package version", async () => {
   const text = await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   const config = JSON.parse(text.replace(/^\s*\/\/.*$/gm, ""));

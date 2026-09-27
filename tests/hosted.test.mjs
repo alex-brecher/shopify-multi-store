@@ -11,6 +11,7 @@ import { fetchMetadataDocument } from "../dist/platform/cimd-node.js";
 import { isForbiddenAddress } from "../dist/platform/ip.js";
 import { FileStore, MemoryStore, nodeDurableFs, writeFileDurable } from "../dist/hosted/store.js";
 import { enableHostedMode } from "../dist/runtime.js";
+import { requestSource, setRequestSource } from "../dist/hosted/request-source.js";
 import { KNOWN_CLIENT_REDIRECTS, RedirectPolicy, isSafePrivateUseRedirect, redirectListFromEnv } from "../dist/hosted/known-clients.js";
 import { buildHostedAppFromEnv } from "../dist/serve.js";
 import {
@@ -542,6 +543,89 @@ test("file store persists atomically and serves over node:http", async (t) => {
   assert.equal(tooLarge.status, 413);
 });
 
+test("registered clients expire after 30 idle days, and use pushes the expiry back", async (t) => {
+  const { app, store, advance } = await setup(t);
+  const { body: idle } = await registerClient(app);
+  const { body: active } = await registerClient(app);
+  assert.ok(await store.get("client", idle.client_id));
+  const start = (clientId) => call(app, `/authorize?${authorizeQuery({ clientId, challenge: pkce().challenge })}`);
+  advance(20 * 24 * 3600_000);
+  assert.equal((await start(active.client_id)).status, 200, "used on day 20");
+  advance(15 * 24 * 3600_000);
+  assert.equal(await store.get("client", idle.client_id), undefined, "unused for 35 days: gone");
+  const gone = await start(idle.client_id);
+  assert.equal(gone.status, 400);
+  assert.match(await gone.text(), /Unknown client_id/);
+  assert.equal((await start(active.client_id)).status, 200, "used 15 days ago: still there");
+  // A record written before client expiry existed (no last_used_at, no expiry) gets one on first use.
+  await store.put("client", "sms_client_legacy", { client_id: "sms_client_legacy", redirect_uris: [CLAUDE_CALLBACK], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"] });
+  assert.equal((await start("sms_client_legacy")).status, 200);
+  assert.ok((await store.get("client", "sms_client_legacy")).last_used_at);
+  advance(30 * 24 * 3600_000 + 1);
+  assert.equal(await store.get("client", "sms_client_legacy"), undefined);
+});
+
+test("client registration is limited per source address per hour and by a total cap", async (t) => {
+  const { app, advance } = await setup(t, { maxRegistrationsPerSourcePerHour: 2, maxRegisteredClients: 5 });
+  const register = (source) => {
+    const request = new Request(`${ORIGIN}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: [CLAUDE_CALLBACK], token_endpoint_auth_method: "none" }) });
+    setRequestSource(request, source);
+    return app.fetch(request);
+  };
+  assert.equal((await register("203.0.113.7")).status, 201);
+  assert.equal((await register("203.0.113.7")).status, 201);
+  const limited = await register("203.0.113.7");
+  assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).error, "temporarily_unavailable");
+  const retryAfter = Number(limited.headers.get("retry-after"));
+  assert.ok(retryAfter >= 1 && retryAfter <= 3600, String(retryAfter));
+  assert.equal((await register("198.51.100.9")).status, 201, "another address has its own allowance");
+  advance(3600_000);
+  assert.equal((await register("203.0.113.7")).status, 201, "the next hour starts fresh");
+  assert.equal((await register("192.0.2.1")).status, 201);
+  const full = await register("192.0.2.2");
+  assert.equal(full.status, 503, "the total cap still applies");
+  assert.match((await full.json()).error_description, /registration limit/);
+
+  const open = (await setup(t, { maxRegistrationsPerSourcePerHour: 0 })).app;
+  for (let i = 0; i < 5; i += 1) assert.equal((await registerClient(open)).response.status, 201, "0 turns the per-source limit off");
+});
+
+test("the Node adapter records the socket address as the request source, never a forwarding header", async (t) => {
+  const seen = [];
+  const server = http.createServer(toNodeListener(async (request) => { seen.push(requestSource(request)); return new Response("ok"); }, { origin: ORIGIN, maxBodyBytes: 1024 }));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  await (await fetch(`http://127.0.0.1:${server.address().port}/`, { headers: { "x-forwarded-for": "203.0.113.50", "cf-connecting-ip": "203.0.113.51" } })).text();
+  assert.equal(seen.length, 1);
+  assert.match(seen[0], /127\.0\.0\.1$/);
+});
+
+test("OAUTH_CLIENT_IDLE_TTL_SECONDS and OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR are read and checked", async () => {
+  const { hostedOptionsFromEnv } = await import("../dist/hosted/config.js");
+  const env = { MCP_PUBLIC_URL: ORIGIN, SHOPIFY_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64") };
+  const platform = { loadStores: async () => [] };
+  const defaults = await hostedOptionsFromEnv(env, platform);
+  assert.equal(defaults.clientIdleTtlSeconds, 30 * 24 * 3600);
+  assert.equal(defaults.maxRegistrationsPerSourcePerHour, 30);
+  const set = await hostedOptionsFromEnv({ ...env, OAUTH_CLIENT_IDLE_TTL_SECONDS: "86400", OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR: "0" }, platform);
+  assert.equal(set.clientIdleTtlSeconds, 86400);
+  assert.equal(set.maxRegistrationsPerSourcePerHour, 0);
+  await assert.rejects(hostedOptionsFromEnv({ ...env, OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR: "-1" }, platform), /OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR/);
+});
+
+test("MemoryStore.increment counts atomically up to a maximum and keeps the first expiry", async () => {
+  let now = 1_000;
+  const store = new MemoryStore(() => now);
+  assert.deepEqual(await store.increment("counter", "k", { max: 2, expiresAt: 2_000 }), { value: 1, applied: true });
+  assert.deepEqual(await store.increment("counter", "k", { max: 2, expiresAt: 9_000 }), { value: 2, applied: true });
+  assert.deepEqual(await store.increment("counter", "k", { max: 2 }), { value: 2, applied: false });
+  now = 2_000;
+  assert.deepEqual(await store.increment("counter", "k", { max: 2, expiresAt: 3_000 }), { value: 1, applied: true }, "the first expiry held; a new window starts");
+  const results = await Promise.all(Array.from({ length: 10 }, () => store.increment("counter", "race", { max: 3 })));
+  assert.equal(results.filter((result) => result.applied).length, 3);
+});
+
 test("auditError keeps codes, statuses and field paths, never message text", async () => {
   const { auditError } = await import("../dist/hosted/audit.js");
   const thrown = new TypeError("Shopify throttled main for jane.doe@example.com at 12 Elm Street. Response: {\"errors\":[{\"message\":\"Jane Doe\",\"extensions\":{\"code\":\"THROTTLED\"}}]}");
@@ -912,7 +996,8 @@ test("consent screen shows the client, redirect host, and signed-in Shopify user
 });
 
 test("consent deny returns access_denied and approve is remembered for 30 days", async (t) => {
-  const { app, advance } = await setup(t);
+  // Clients outlive the 30-day approval here; idle client expiry has its own test.
+  const { app, advance } = await setup(t, { clientIdleTtlSeconds: 90 * 24 * 3600 });
   const { body: client } = await registerClient(app);
   const denied = await authorize(app, { clientId: client.client_id, challenge: pkce().challenge, decision: "deny" });
   assert.equal(denied.searchParams.get("error"), "access_denied");

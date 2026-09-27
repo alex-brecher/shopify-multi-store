@@ -4,6 +4,7 @@ import { constantTimeEqual, randomToken, randomUuid } from "../platform/crypto.j
 import type { Principal } from "./guard.js";
 import type { OAuthStore } from "./store.js";
 import type { AuditLog, AuthAuditEntry } from "./audit.js";
+import { requestSource } from "./request-source.js";
 import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDisplayHost, type RedirectClass } from "./known-clients.js";
 import { cookie, escapeHtml, formActionSource, htmlPage, readCookie, sameOrigin } from "./html.js";
 
@@ -27,6 +28,8 @@ const CONSENT_COOKIE = "__Host-sms_consent";
  */
 const LOGIN_COOKIE_PREFIX = "__Host-sms_login_";
 const CIMD_CACHE_MS = 5 * 60_000;
+/** A registered client's idle expiry is pushed back at most once a day, so use is not a write per request. */
+const CLIENT_TOUCH_MS = 24 * 3600_000;
 const AUTH_METHODS = ["none", "client_secret_post", "client_secret_basic"] as const;
 type AuthMethod = (typeof AUTH_METHODS)[number];
 
@@ -59,7 +62,19 @@ export interface AuthServerOptions {
    * again, which proves again that they are staff on a configured store. Defaults to 7 days.
    */
   sessionMaxAgeSeconds?: number;
+  /** Cap on stored registered (DCR) clients. Default 10,000. */
   maxRegisteredClients?: number;
+  /**
+   * A registered (DCR) client record expires after this long without use (authorize or token
+   * requests push it back). Default 30 days. Client ID Metadata Document clients are never
+   * stored, only cached in memory for five minutes.
+   */
+  clientIdleTtlSeconds?: number;
+  /**
+   * Registrations allowed per source address per clock hour; 0 turns the limit off. Default 30.
+   * The source is the socket peer on Node and CF-Connecting-IP on Workers (request-source.ts).
+   */
+  maxRegistrationsPerSourcePerHour?: number;
   now?: () => number;
   log?: (message: string) => void;
   /** Receives sign-in and token events. Tokens and codes are never passed. */
@@ -76,6 +91,8 @@ export interface ClientRecord {
   client_name?: string;
   client_secret_sha256?: string;
   client_id_issued_at?: number;
+  /** ms since epoch; when the idle expiry was last pushed back. */
+  last_used_at?: number;
 }
 
 interface PendingRecord {
@@ -212,6 +229,8 @@ export class AuthorizationServer {
   private readonly refreshTtlMs: number;
   private readonly sessionMaxAgeMs: number;
   private readonly maxClients: number;
+  private readonly clientIdleTtlMs: number;
+  private readonly registrationsPerSourcePerHour: number;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
   private readonly cimdCache = new Map<string, { client: ClientRecord; fetchedAt: number }>();
@@ -230,6 +249,8 @@ export class AuthorizationServer {
     this.refreshTtlMs = (options.refreshTokenTtlSeconds ?? 30 * 24 * 3600) * 1000;
     this.sessionMaxAgeMs = (options.sessionMaxAgeSeconds ?? 7 * 24 * 3600) * 1000;
     this.maxClients = options.maxRegisteredClients ?? 10_000;
+    this.clientIdleTtlMs = (options.clientIdleTtlSeconds ?? 30 * 24 * 3600) * 1000;
+    this.registrationsPerSourcePerHour = options.maxRegistrationsPerSourcePerHour ?? 30;
     this.now = options.now ?? Date.now;
     this.log = options.log ?? ((message) => console.error(message));
   }
@@ -319,8 +340,22 @@ export class AuthorizationServer {
       return oauthError("invalid_client_metadata", "Only the code response type is supported.");
     }
     const clientName = typeof body.client_name === "string" ? body.client_name.slice(0, 200) : undefined;
+    // The total first (a cheap counter read, never a listing), so a full server does not spend
+    // anyone's hourly allowance.
     if (await this.options.store.count("client") >= this.maxClients) {
       return oauthError("temporarily_unavailable", "Client registration limit reached.", 503);
+    }
+    if (this.registrationsPerSourcePerHour > 0) {
+      const hour = Math.floor(this.now() / 3600_000);
+      const source = requestSource(request) ?? "unknown";
+      const counted = await this.options.store.increment("counter", `register:${hour}:${source}`, {
+        max: this.registrationsPerSourcePerHour,
+        expiresAt: (hour + 1) * 3600_000
+      });
+      if (!counted.applied) {
+        const retryAfter = Math.max(1, Math.ceil(((hour + 1) * 3600_000 - this.now()) / 1000));
+        return oauthError("temporarily_unavailable", "Too many client registrations from this address. Try again later.", 429, { "retry-after": String(retryAfter) });
+      }
     }
 
     const clientId = `sms_client_${randomUuid()}`;
@@ -333,9 +368,10 @@ export class AuthorizationServer {
       grant_types: grantTypes as string[],
       ...(clientName ? { client_name: clientName } : {}),
       ...(clientSecret ? { client_secret_sha256: sha256(clientSecret) } : {}),
-      client_id_issued_at: issuedAt
+      client_id_issued_at: issuedAt,
+      last_used_at: this.now()
     };
-    await this.options.store.put("client", clientId, record);
+    await this.options.store.put("client", clientId, record, this.now() + this.clientIdleTtlMs);
     return json({
       client_id: clientId,
       client_id_issued_at: issuedAt,
@@ -353,7 +389,15 @@ export class AuthorizationServer {
   private async resolveClient(clientId: string): Promise<ClientRecord | { error: string }> {
     if (clientId.startsWith("https://")) return this.resolveMetadataDocument(clientId);
     const client = await this.options.store.get<ClientRecord>("client", clientId);
-    return client ?? { error: "Unknown client_id." };
+    if (!client) return { error: "Unknown client_id." };
+    // In use: push the idle expiry back (at most once a day). Records from before client
+    // expiry existed have no last_used_at and get an expiry on their first use.
+    if (client.last_used_at === undefined || this.now() - client.last_used_at >= CLIENT_TOUCH_MS) {
+      const touched: ClientRecord = { ...client, last_used_at: this.now() };
+      await this.options.store.put("client", clientId, touched, this.now() + this.clientIdleTtlMs);
+      return touched;
+    }
+    return client;
   }
 
   private async resolveMetadataDocument(clientId: string): Promise<ClientRecord | { error: string }> {
