@@ -971,8 +971,8 @@ test("OAUTH_ALLOW_ANY_REDIRECT admits https and safe custom schemes but never da
 
 test("OAUTH_REDIRECT_URIS adds to the built-ins unless OAUTH_REDIRECT_URIS_REPLACE is set", async (t) => {
   const added = redirectListFromEnv(["https://tools.example.com/cb"], false);
-  assert.ok(added.includes("https://claude.ai/api/mcp/auth_callback"));
-  assert.ok(added.includes("https://tools.example.com/cb"));
+  assert.ok(new Set(added).has("https://claude.ai/api/mcp/auth_callback"));
+  assert.ok(new Set(added).has("https://tools.example.com/cb"));
   assert.deepEqual(redirectListFromEnv(["https://tools.example.com/cb"], true), ["https://tools.example.com/cb"]);
 
   const dir = await mkdtemp(join(tmpdir(), "sms-env-"));
@@ -1240,7 +1240,7 @@ test("with OAUTH_ALLOW_ANY_REDIRECT, unlisted redirects always show consent with
   const first = await startToCallback(app, { clientId: client.client_id, redirectUri, account: "admin|bariatricpal.com" });
   assert.equal(first.status, 200);
   const { html } = await consentForm(first.clone());
-  assert.ok(html.includes("tools.example.com"));
+  assert.match(html, /tools\.example\.com/);
   assert.match(html, /not on this server's list of known apps/);
   assert.ok(!html.includes("remembered for 30 days"));
   const decided = await submitConsent(app, first);
