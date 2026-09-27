@@ -11,6 +11,7 @@ import { createHostedApp } from "../dist/hosted/app.js";
 import { AUDIT_MAX_LINE_BYTES, FileAuditLog, auditLine } from "../dist/hosted/audit.js";
 import { checkGoogleIdentity, verifyGoogleIdToken } from "../dist/hosted/google.js";
 import { toNodeListener } from "../dist/hosted/node-adapter.js";
+import { fetchMetadataDocument, isForbiddenAddress } from "../dist/hosted/oauth.js";
 import { staticPolicy } from "../dist/hosted/policy.js";
 import { FileStore, MemoryStore } from "../dist/hosted/store.js";
 import { enableHostedMode } from "../dist/runtime.js";
@@ -247,6 +248,27 @@ test("client ID metadata documents are validated and bad redirects rejected", as
   const foreignHost = await start("https://attacker.example/client.json");
   assert.equal(foreignHost.status, 400);
   assert.ok(!fetched.includes("https://attacker.example/client.json"), "disallowed hosts are never fetched");
+});
+
+test("client metadata fetches refuse private, loopback, link-local, and metadata addresses", async (t) => {
+  for (const address of ["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.100.100.200", "0.0.0.0",
+    "::1", "::", "fe80::1", "fd00:ec2::254", "::ffff:127.0.0.1", "::ffff:a9fe:a9fe", "64:ff9b::a9fe:a9fe", "ff02::1", "not-an-ip"]) {
+    assert.equal(isForbiddenAddress(address), true, address);
+  }
+  for (const address of ["8.8.8.8", "160.79.104.10", "2606:4700::6810:84e5", "64:ff9b::808:808"]) assert.equal(isForbiddenAddress(address), false, address);
+
+  await assert.rejects(fetchMetadataDocument("https://127.0.0.1/client.json"), /non-public/);
+  await assert.rejects(fetchMetadataDocument("https://[::ffff:169.254.169.254]/client.json"), /non-public/);
+  await assert.rejects(fetchMetadataDocument("https://localhost/client.json"), /non-public/);
+
+  // With OAUTH_CIMD_ALLOWED_HOSTS=* and the built-in fetcher, a loopback client_id is refused before any connection.
+  const logs = [];
+  const { app } = await setup(t, { cimdAllowedHosts: ["*"], fetchClientMetadata: undefined, log: (message) => logs.push(message) });
+  const { challenge } = pkce();
+  const query = new URLSearchParams({ response_type: "code", client_id: "https://localhost/client.json", redirect_uri: CLAUDE_CALLBACK, code_challenge: challenge, code_challenge_method: "S256", state: "s" });
+  const response = await call(app, `/authorize?${query}`);
+  assert.equal(response.status, 400);
+  assert.ok(logs.some((message) => /non-public/.test(message)), logs.join("\n"));
 });
 
 test("authorization requires PKCE S256 and the token endpoint rejects a wrong verifier", async (t) => {

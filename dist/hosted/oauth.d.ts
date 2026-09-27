@@ -101,4 +101,14 @@ export declare class AuthorizationServer {
     verifyAccessToken(token: string): Promise<AccessRecord | undefined>;
     resolvePrincipal(email: string): Principal | null;
 }
+/** True for an IP address a client metadata fetch must not connect to. Non-IP input is refused. */
+export declare function isForbiddenAddress(address: string): boolean;
+/**
+ * Fetch a Client ID Metadata Document: HTTPS only, no redirects, 5-second limit, small body.
+ * With restrictAddresses, the host must resolve only to public addresses (checked at connect time,
+ * so a DNS answer cannot change between the check and the connection).
+ */
+export declare function fetchMetadataDocument(url: string, { restrictAddresses }?: {
+    restrictAddresses?: boolean;
+}): Promise<unknown>;
 export {};

@@ -60,6 +60,10 @@ This file records notable changes to Shopify Multi-Store MCP.
   email, phone, and address fields; logged strings are capped at 2,000
   characters and lines at 64 KB. Sign-in, token issue and refresh, refresh
   denials, and 401/403 responses are logged as auth events.
+- Hosted: with `OAUTH_CIMD_ALLOWED_HOSTS=*`, client metadata URLs must resolve
+  to public addresses. Private, loopback, link-local, cloud metadata, and
+  reserved IPv4 and IPv6 ranges are refused at connect time, so a DNS change
+  between check and connection does not help. Redirects are not followed.
 
 ## [1.6.0] - 2026-09-07
 

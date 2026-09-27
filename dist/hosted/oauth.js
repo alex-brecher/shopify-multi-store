@@ -1,4 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { lookup as dnsLookup } from "node:dns";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP } from "node:net";
 import { checkGoogleIdentity } from "./google.js";
 export const SCOPE = "mcp";
 export const DEFAULT_REDIRECT_URIS = [
@@ -215,15 +218,20 @@ export class AuthorizationServer {
             return { error: "client_id metadata URL must be HTTPS with a path and no credentials or fragment." };
         }
         const host = url.hostname.toLowerCase();
-        const hostAllowed = this.cimdHosts.includes("*") || this.cimdHosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+        const listed = this.cimdHosts.some((allowed) => allowed !== "*" && (host === allowed || host.endsWith(`.${allowed}`)));
+        const hostAllowed = listed || this.cimdHosts.includes("*");
         if (!hostAllowed)
             return { error: `Client metadata host ${host} is not allowed on this server.` };
+        // A host admitted only by "*" could point anywhere, so its addresses must be public.
+        const restrictAddresses = !listed;
         const cached = this.cimdCache.get(clientId);
         if (cached && this.now() - cached.fetchedAt < CIMD_CACHE_MS)
             return cached.client;
         let document;
         try {
-            document = await (this.options.fetchClientMetadata ?? fetchMetadataDocument)(clientId);
+            document = this.options.fetchClientMetadata
+                ? await this.options.fetchClientMetadata(clientId)
+                : await fetchMetadataDocument(clientId, { restrictAddresses });
         }
         catch (error) {
             this.log(`Client metadata fetch failed for ${clientId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -564,30 +572,125 @@ export class AuthorizationServer {
         return this.options.policy.current().resolve(email);
     }
 }
-/** Fetch a Client ID Metadata Document: HTTPS only, no redirects, short timeout, small body. */
-async function fetchMetadataDocument(url) {
-    const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(5_000), headers: { accept: "application/json" } });
-    if (!response.ok)
-        throw new Error(`HTTP ${response.status}`);
-    const length = Number(response.headers.get("content-length") ?? "0");
-    if (length > CIMD_MAX_BYTES)
-        throw new Error("Document too large.");
-    const reader = response.body?.getReader();
-    if (!reader)
-        throw new Error("Empty response.");
-    const chunks = [];
-    let size = 0;
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done)
-            break;
-        size += value.byteLength;
-        if (size > CIMD_MAX_BYTES) {
-            await reader.cancel();
-            throw new Error("Document too large.");
-        }
-        chunks.push(value);
+// Addresses a client metadata URL must never reach: unspecified, loopback, private,
+// carrier-grade NAT, link-local (including cloud metadata at 169.254.169.254), benchmark,
+// documentation, multicast, and reserved ranges, for IPv4 and IPv6.
+const FORBIDDEN = new BlockList();
+for (const [network, prefix] of [
+    ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
+    ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.88.99.0", 24], ["192.168.0.0", 16],
+    ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4]
+])
+    FORBIDDEN.addSubnet(network, prefix, "ipv4");
+for (const [network, prefix] of [
+    ["::", 96], ["64:ff9b:1::", 48], ["100::", 64], ["2001::", 23], ["2001:db8::", 32],
+    ["2002::", 16], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]
+])
+    FORBIDDEN.addSubnet(network, prefix, "ipv6");
+/** True for an IP address a client metadata fetch must not connect to. Non-IP input is refused. */
+export function isForbiddenAddress(address) {
+    const ip = address.replace(/^\[|\]$/g, "").toLowerCase();
+    const family = isIP(ip);
+    if (family === 4)
+        return FORBIDDEN.check(ip, "ipv4");
+    if (family !== 6)
+        return true;
+    // IPv4-mapped, IPv4-compatible and NAT64 (64:ff9b::/96) addresses carry an IPv4 address.
+    const embedded = /^(?:::ffff:|::|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/.exec(ip)?.[1];
+    if (embedded)
+        return FORBIDDEN.check(embedded, "ipv4");
+    const hex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
+    if (hex) {
+        const value = (parseInt(hex[1], 16) << 16) | parseInt(hex[2], 16);
+        return FORBIDDEN.check([24, 16, 8, 0].map((shift) => (value >>> shift) & 255).join("."), "ipv4");
     }
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return FORBIDDEN.check(ip, "ipv6");
+}
+/** dns.lookup that fails when any resolved address is forbidden. Used as the socket's lookup, so the checked address is the one connected to. */
+const publicOnlyLookup = (hostname, options, callback) => {
+    dnsLookup(hostname, { ...options, all: true }, (error, addresses) => {
+        if (error)
+            return callback(error);
+        const list = addresses;
+        const blocked = list.find((entry) => isForbiddenAddress(entry.address));
+        if (!list.length || blocked) {
+            return callback(new Error(`Client metadata host ${hostname} resolves to a non-public address${blocked ? ` (${blocked.address})` : ""}.`));
+        }
+        if (options.all)
+            return callback(null, list);
+        callback(null, list[0].address, list[0].family);
+    });
+};
+/**
+ * Fetch a Client ID Metadata Document: HTTPS only, no redirects, 5-second limit, small body.
+ * With restrictAddresses, the host must resolve only to public addresses (checked at connect time,
+ * so a DNS answer cannot change between the check and the connection).
+ */
+export function fetchMetadataDocument(url, { restrictAddresses = true } = {}) {
+    return new Promise((resolve, reject) => {
+        let target;
+        try {
+            target = new URL(url);
+        }
+        catch {
+            reject(new Error("Invalid URL."));
+            return;
+        }
+        if (target.protocol !== "https:") {
+            reject(new Error("Only HTTPS is allowed."));
+            return;
+        }
+        const literal = target.hostname.replace(/^\[|\]$/g, "");
+        if (restrictAddresses && isIP(literal) && isForbiddenAddress(literal)) {
+            reject(new Error(`Client metadata host ${literal} is a non-public address.`));
+            return;
+        }
+        const request = httpsRequest(target, {
+            method: "GET",
+            headers: { accept: "application/json" },
+            ...(restrictAddresses ? { lookup: publicOnlyLookup } : {})
+        }, (response) => {
+            const status = response.statusCode ?? 0;
+            if (status >= 300 && status < 400) {
+                response.resume();
+                reject(new Error(`Redirects are not followed (HTTP ${status}).`));
+                return;
+            }
+            if (status < 200 || status >= 300) {
+                response.resume();
+                reject(new Error(`HTTP ${status}`));
+                return;
+            }
+            if (Number(response.headers["content-length"] ?? "0") > CIMD_MAX_BYTES) {
+                response.destroy();
+                reject(new Error("Document too large."));
+                return;
+            }
+            const chunks = [];
+            let size = 0;
+            response.on("data", (chunk) => {
+                size += chunk.byteLength;
+                if (size > CIMD_MAX_BYTES) {
+                    response.destroy();
+                    reject(new Error("Document too large."));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            response.on("end", () => {
+                try {
+                    resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+                }
+                catch {
+                    reject(new Error("Document is not valid JSON."));
+                }
+            });
+            response.on("error", reject);
+        });
+        const timer = setTimeout(() => request.destroy(new Error("Timed out.")), 5_000);
+        request.on("close", () => clearTimeout(timer));
+        request.on("error", reject);
+        request.end();
+    });
 }
 //# sourceMappingURL=oauth.js.map
