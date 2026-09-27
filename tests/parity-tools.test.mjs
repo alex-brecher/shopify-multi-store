@@ -84,6 +84,7 @@ async function fixture(t) {
     const name = op.name?.value;
     const root = op.selectionSet.selections[0].name.value;
     const v = b.variables;
+    if (state.networkFailOn === name) throw new Error("simulated network reset");
     if (state.reject === name)
       return Response.json({
         data: { [root]: { userErrors: [{ message: "Rejected fixture", field: ["input"] }] } },
@@ -121,15 +122,38 @@ async function fixture(t) {
         break;
       }
       case "UpdatePricesBulk":
+        // The mutation response always "looks fine" (reflects what was requested). The
+        // separately-stored state (read back afterward by VariantsForPricing, used as the
+        // independent verification query) is what state.mismatchPrice / state.readbackCost
+        // can make disagree with it, simulating Shopify accepting a write that didn't
+        // actually persist as reported.
         data = {
           productVariantsBulkUpdate: {
-            productVariants: v.variants.map((variant) => ({
-              id: variant.id,
-              sku: state.variants["SKU-FOUND"].sku,
-              price: state.mismatchPrice ?? variant.price ?? state.variants["SKU-FOUND"].price,
-              compareAtPrice: variant.compareAtPrice ?? null,
-              inventoryItem: { id: gid("InventoryItem", 1), unitCost: { amount: state.readbackCost ?? variant.inventoryItem?.cost ?? "5.00", currencyCode: "USD" } },
-            })),
+            productVariants: v.variants.map((variant) => {
+              const stored = state.byId.get(variant.id) ?? state.variants["SKU-FOUND"];
+              const looksLike = {
+                id: variant.id,
+                sku: stored.sku,
+                price: variant.price ?? stored.price,
+                compareAtPrice: variant.compareAtPrice !== undefined ? variant.compareAtPrice : stored.compareAtPrice,
+                inventoryItem: {
+                  id: stored.inventoryItem?.id ?? gid("InventoryItem", 1),
+                  unitCost: { amount: variant.inventoryItem?.cost ?? stored.inventoryItem?.unitCost?.amount ?? "5.00", currencyCode: "USD" },
+                },
+              };
+              state.byId.set(variant.id, {
+                ...stored,
+                id: variant.id,
+                price: state.mismatchPrice ?? looksLike.price,
+                compareAtPrice: looksLike.compareAtPrice,
+                inventoryItem: {
+                  id: looksLike.inventoryItem.id,
+                  sku: stored.sku,
+                  unitCost: { amount: state.readbackCost ?? looksLike.inventoryItem.unitCost.amount, currencyCode: "USD" },
+                },
+              });
+              return looksLike;
+            }),
             userErrors: [],
           },
         };
@@ -281,12 +305,11 @@ async function fixture(t) {
   return { state, tools, call, callMulti };
 }
 
-test("update_prices: resolves SKUs, flags duplicates and not-found, and previews under dryRun", async (t) => {
+test("update_prices: resolves SKUs, flags not-found, and previews under dryRun", async (t) => {
   const { call } = await fixture(t);
   const result = await call("update_prices", {
     skus: [
       { sku: "SKU-FOUND", price: "12.00" },
-      { sku: "SKU-FOUND", price: "13.00" },
       { sku: "SKU-MISSING", price: "9.00" },
     ],
   });
@@ -295,11 +318,42 @@ test("update_prices: resolves SKUs, flags duplicates and not-found, and previews
   assert.equal(body.wouldApply.length, 1);
   assert.equal(body.wouldApply[0].sku, "SKU-FOUND");
   assert.equal(body.wouldApply[0].requested.price, "12.00");
-  assert.deepEqual(body.duplicateSkus, ["SKU-FOUND"]);
   assert.deepEqual(body.notFound, ["SKU-MISSING"]);
 });
 
-test("update_prices: dryRun:false applies and reports a mismatch when the readback disagrees", async (t) => {
+test("update_prices: conflicting duplicate SKU rows are rejected before any write", async (t) => {
+  const { call, state } = await fixture(t);
+  const result = await call("update_prices", {
+    skus: [
+      { sku: "SKU-FOUND", price: "12.00" },
+      { sku: "SKU-FOUND", price: "13.00" },
+    ],
+    dryRun: false,
+  });
+  assert.equal(result.isError, true);
+  assert.match(result.structuredContent.error, /conflicting values/i);
+  assert.deepEqual(
+    result.structuredContent.conflicts.map((c) => c.sku),
+    ["SKU-FOUND"],
+  );
+  assert.equal(sentVariables(state, "UpdatePricesBulk").length, 0);
+});
+
+test("update_prices: identical duplicate SKU rows are collapsed with a note", async (t) => {
+  const { call } = await fixture(t);
+  const result = await call("update_prices", {
+    skus: [
+      { sku: "SKU-FOUND", price: "12.00" },
+      { sku: "SKU-FOUND", price: "12.00" },
+    ],
+  });
+  const body = result.structuredContent;
+  assert.equal(body.dryRun, true);
+  assert.equal(body.wouldApply.length, 1);
+  assert.deepEqual(body.collapsedDuplicateSkus, ["SKU-FOUND"]);
+});
+
+test("update_prices: dryRun:false applies and verifies with a separate readback query", async (t) => {
   const { call, state } = await fixture(t);
   const applied = await call("update_prices", {
     skus: [{ sku: "SKU-FOUND", price: "12.00" }],
@@ -307,15 +361,102 @@ test("update_prices: dryRun:false applies and reports a mismatch when the readba
   });
   assert.equal(applied.structuredContent.dryRun, false);
   assert.equal(applied.structuredContent.results[0].outcome, "applied");
+  assert.equal(applied.structuredContent.results[0].verification, "verified");
+  assert.equal(applied.structuredContent.status, "ok");
   assert.equal(applied.structuredContent.succeeded, 1);
+  // The readback is a genuinely separate query, not just an inspection of the mutation response.
+  assert.ok(sentVariables(state, "VariantsForPricing").length >= 1);
+});
 
+test("update_prices: a mutation response that looks fine but the readback disagrees is reported as mismatch", async (t) => {
+  const { call, state } = await fixture(t);
   state.mismatchPrice = "99.99";
   const mismatched = await call("update_prices", {
     skus: [{ sku: "SKU-FOUND", price: "12.00" }],
     dryRun: false,
   });
   assert.equal(mismatched.structuredContent.results[0].outcome, "mismatch");
+  assert.equal(mismatched.structuredContent.results[0].verification, "mismatch");
+  assert.equal(mismatched.structuredContent.status, "failed");
   assert.equal(mismatched.structuredContent.failed, 1);
+});
+
+test("update_prices: a network error after the write was sent is reported as unknown, never rejected", async (t) => {
+  const { call, state } = await fixture(t);
+  state.networkFailOn = "UpdatePricesBulk";
+  const result = await call("update_prices", {
+    skus: [{ sku: "SKU-FOUND", price: "12.00" }],
+    dryRun: false,
+  });
+  const item = result.structuredContent.results[0];
+  assert.equal(item.outcome, "unknown");
+  assert.ok(item.doNotBlindlyRetry);
+  assert.equal(result.structuredContent.status, "unknown");
+});
+
+test("update_prices: a partial failure (userErrors on some variants) yields a partial store status", async (t) => {
+  const { call, state } = await fixture(t);
+  state.skuPages = {
+    "OK-1": [[variantWithSku(50, "OK-1", 5)]],
+    "OK-2": [[variantWithSku(51, "OK-2", 5)]],
+  };
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const b = JSON.parse(options.body);
+    const op = parse(b.query).definitions.find((d) => d.kind === "OperationDefinition");
+    if (op.name?.value === "UpdatePricesBulk") {
+      // Both variants belong to the same product; Shopify applies one and rejects the
+      // other with a userError, all in a single (non-throwing) mutation response.
+      const first = b.variables.variants.find((v) => v.id === gid("ProductVariant", 50));
+      const applied = first
+        ? { id: first.id, sku: "OK-1", price: first.price, compareAtPrice: null, inventoryItem: { id: gid("InventoryItem", 50), unitCost: { amount: "5.00", currencyCode: "USD" } } }
+        : undefined;
+      if (applied) state.byId.set(applied.id, { ...state.byId.get(applied.id), ...applied });
+      return Response.json({
+        data: {
+          productVariantsBulkUpdate: {
+            productVariants: applied ? [applied] : [],
+            userErrors: [{ field: ["variants", "1"], message: "Price must be positive" }],
+          },
+        },
+      });
+    }
+    return original(url, options);
+  };
+  const result = await call("update_prices", {
+    skus: [
+      { sku: "OK-1", price: "12.00" },
+      { sku: "OK-2", price: "8.00" },
+    ],
+    dryRun: false,
+  });
+  const body = result.structuredContent;
+  assert.equal(body.results.find((r) => r.sku === "OK-1").outcome, "applied");
+  assert.equal(body.results.find((r) => r.sku === "OK-2").outcome, "rejected");
+  assert.match(body.results.find((r) => r.sku === "OK-2").error, /Price must be positive/);
+  assert.equal(body.status, "partial");
+});
+
+test("update_prices: a price-only request does not require write_inventory", async (t) => {
+  const { call, state } = await fixture(t);
+  state.scopes = ["read_products", "write_products"];
+  const result = await call("update_prices", {
+    skus: [{ sku: "SKU-FOUND", price: "12.00" }],
+    dryRun: false,
+  });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.equal(result.structuredContent.status, "ok");
+});
+
+test("update_prices: a unitCost request requires write_inventory", async (t) => {
+  const { call, state } = await fixture(t);
+  state.scopes = ["read_products", "write_products"];
+  const result = await call("update_prices", {
+    skus: [{ sku: "SKU-FOUND", unitCost: "6.00" }],
+    dryRun: false,
+  });
+  assert.equal(result.isError, true);
+  assert.match(result.structuredContent.error, /access scopes/i);
 });
 
 test("update_prices: ambiguous SKU matches are reported, not applied", async (t) => {
@@ -336,6 +477,28 @@ test("update_prices_many: applies the same SKU list across stores independently"
   assert.equal(result.structuredContent.stores.length, 2);
   assert.ok(result.structuredContent.stores.every((s) => s.ok));
   assert.equal(result.structuredContent.succeeded, 2);
+});
+
+test("update_prices_many: aggregates mixed outcomes across stores into an ok/status per store", async (t) => {
+  const { callMulti } = await fixture(t);
+  const result = await callMulti("update_prices_many", {
+    stores: ["fixture", "second"],
+    skus: [
+      { sku: "SKU-FOUND", price: "12.00" },
+      { sku: "SKU-MISSING", price: "9.00" },
+    ],
+    dryRun: false,
+  });
+  const body = result.structuredContent;
+  assert.equal(body.stores.length, 2);
+  for (const store of body.stores) {
+    assert.equal(store.status, "partial");
+    assert.equal(store.ok, false, "ok must not be true when a SKU was not found");
+    assert.equal(store.results.find((r) => r.sku === "SKU-FOUND").outcome, "applied");
+    assert.deepEqual(store.notFound, ["SKU-MISSING"]);
+  }
+  assert.equal(body.succeeded, 0);
+  assert.equal(body.failed, 2);
 });
 
 test("update_delivery_rate: detects Shopify's silent-discard (no userErrors, value not persisted)", async (t) => {
