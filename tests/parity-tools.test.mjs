@@ -222,7 +222,7 @@ async function fixture(t) {
         data = { draftOrderCreate: { draftOrder: { id: gid("DraftOrder", 1), name: "#D1", invoiceUrl: "https://fixture.myshopify.com/invoice", totalPriceSet: { shopMoney: { amount: "10.00", currencyCode: "USD" } } }, userErrors: [] } };
         break;
       case "GetOrderFulfillmentOrders":
-        data = { order: { id: v.id, name: "#1001", fulfillmentOrders: connection([{ id: gid("FulfillmentOrder", 1), status: "OPEN", lineItems: connection([{ id: gid("FulfillmentOrderLineItem", 1), remainingQuantity: 1 }]) }]) } };
+        data = { order: { id: v.id, name: "#1001", fulfillmentOrders: connection(state.fulfillmentOrders ?? [{ id: gid("FulfillmentOrder", 1), status: "OPEN", lineItems: connection([{ id: gid("FulfillmentOrderLineItem", 1), remainingQuantity: 1 }]) }]) } };
         break;
       case "CreateFulfillment":
         data = { fulfillmentCreateV2: { fulfillment: { id: gid("Fulfillment", 1), status: "SUCCESS", trackingInfo: [] }, userErrors: [] } };
@@ -645,4 +645,28 @@ test("update_delivery_rate: reads the rate back from the specific profile and me
     { profileId: gid("DeliveryProfile", 1), methodId: gid("DeliveryMethodDefinition", 1) },
   ]);
   assert.equal(sentVariables(state, "ListDeliveryProfiles").length, 0);
+});
+
+test("create_fulfillment: includes IN_PROGRESS fulfillment orders and fulfills remaining quantities", async (t) => {
+  const { call, state } = await fixture(t);
+  state.fulfillmentOrders = [
+    { id: gid("FulfillmentOrder", 1), status: "IN_PROGRESS", lineItems: connection([
+      { id: gid("FulfillmentOrderLineItem", 1), remainingQuantity: 2 },
+      { id: gid("FulfillmentOrderLineItem", 2), remainingQuantity: 0 },
+    ]) },
+    { id: gid("FulfillmentOrder", 2), status: "OPEN", lineItems: connection([{ id: gid("FulfillmentOrderLineItem", 3), remainingQuantity: 1 }]) },
+    { id: gid("FulfillmentOrder", 3), status: "CLOSED", lineItems: connection([{ id: gid("FulfillmentOrderLineItem", 4), remainingQuantity: 0 }]) },
+  ];
+  const applied = await call("create_fulfillment", { orderId: gid("Order", 1), trackingNumber: "1Z", dryRun: false });
+  assert.equal(applied.isError, undefined, applied.content[0].text);
+  assert.deepEqual(sentVariables(state, "CreateFulfillment"), [{
+    fulfillment: {
+      notifyCustomer: false,
+      lineItemsByFulfillmentOrder: [
+        { fulfillmentOrderId: gid("FulfillmentOrder", 1), fulfillmentOrderLineItems: [{ id: gid("FulfillmentOrderLineItem", 1), quantity: 2 }] },
+        { fulfillmentOrderId: gid("FulfillmentOrder", 2), fulfillmentOrderLineItems: [{ id: gid("FulfillmentOrderLineItem", 3), quantity: 1 }] },
+      ],
+      trackingInfo: { number: "1Z" },
+    },
+  }]);
 });

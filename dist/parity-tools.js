@@ -776,7 +776,7 @@ export function registerParityTools(server) {
         return { dryRun: false, before: before.customer, after: after.customer };
     });
     // 10. Fulfillment
-    register("create_fulfillment", "Fulfill an order's open fulfillment orders with optional tracking. notifyCustomer defaults to false. Requires read_merchant_managed_fulfillment_orders and write_merchant_managed_fulfillment_orders (Shopify reports any other missing scope, such as for fulfillment orders assigned to a fulfillment service). Defaults to dryRun:true.", {
+    register("create_fulfillment", "Fulfill the remaining quantities of an order's OPEN and IN_PROGRESS fulfillment orders with optional tracking. notifyCustomer defaults to false. Requires read_merchant_managed_fulfillment_orders and write_merchant_managed_fulfillment_orders (Shopify reports any other missing scope, such as for fulfillment orders assigned to a fulfillment service). Defaults to dryRun:true.", {
         orderId: gid("Order"),
         trackingNumber: z.string().min(1).optional(),
         trackingCompany: z.string().min(1).optional(),
@@ -790,13 +790,27 @@ export function registerParityTools(server) {
         const d = await w.run(PDOCS.getOrderFulfillmentOrders, { id: a.orderId });
         if (!d.order)
             throw Error("Order not found in this store.");
-        const open = (d.order.fulfillmentOrders?.nodes ?? []).filter((fo) => fo.status === "OPEN");
+        // IN_PROGRESS fulfillment orders are partially fulfilled; fulfill what remains.
+        const open = (d.order.fulfillmentOrders?.nodes ?? [])
+            .filter((fo) => fo.status === "OPEN" || fo.status === "IN_PROGRESS")
+            .map((fo) => ({
+            id: fo.id,
+            status: fo.status,
+            // With more line items than one page, omit them so Shopify fulfills everything remaining.
+            lineItems: fo.lineItems?.pageInfo?.hasNextPage
+                ? undefined
+                : (fo.lineItems?.nodes ?? [])
+                    .filter((li) => li.remainingQuantity > 0)
+                    .map((li) => ({ id: li.id, quantity: li.remainingQuantity })),
+        }))
+            .filter((fo) => fo.lineItems === undefined || fo.lineItems.length > 0);
         if (!open.length)
-            throw Error("No open fulfillment orders on this order.");
+            throw Error("No open or in-progress fulfillment orders with remaining quantity on this order.");
         if (a.dryRun)
             return {
                 dryRun: true,
                 openFulfillmentOrders: open.map((o) => o.id),
+                fulfillmentOrders: open,
                 notifyCustomer: a.notifyCustomer,
                 notice: "Pass dryRun:false to apply.",
             };
@@ -804,6 +818,7 @@ export function registerParityTools(server) {
             notifyCustomer: a.notifyCustomer,
             lineItemsByFulfillmentOrder: open.map((o) => ({
                 fulfillmentOrderId: o.id,
+                ...(o.lineItems ? { fulfillmentOrderLineItems: o.lineItems } : {}),
             })),
             ...(a.trackingNumber || a.trackingCompany || a.trackingUrl
                 ? {

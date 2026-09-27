@@ -46,7 +46,7 @@ export const PDOCS = {
   createDraftOrder: `mutation CreateDraftOrder($input:DraftOrderInput!) { draftOrderCreate(input:$input) { draftOrder { id name invoiceUrl totalPriceSet { shopMoney { amount currencyCode } } } userErrors { field message } } }`,
   getOrderTagsNote: `query GetOrderTagsNote($id:ID!) { order(id:$id) { id name tags note email } }`,
   updateOrder: `mutation UpdateOrder($input:OrderInput!) { orderUpdate(input:$input) { order { id name tags note email } userErrors { field message } } }`,
-  getOrderFulfillmentOrders: `query GetOrderFulfillmentOrders($id:ID!) { order(id:$id) { id name fulfillmentOrders(first:10) { nodes { id status lineItems(first:50) { nodes { id remainingQuantity } } } } } }`,
+  getOrderFulfillmentOrders: `query GetOrderFulfillmentOrders($id:ID!) { order(id:$id) { id name fulfillmentOrders(first:50) { nodes { id status lineItems(first:250) { nodes { id remainingQuantity } pageInfo { hasNextPage } } } } } }`,
   createFulfillment: `mutation CreateFulfillment($fulfillment:FulfillmentV2Input!) { fulfillmentCreateV2(fulfillment:$fulfillment) { fulfillment { id status trackingInfo { company number url } } userErrors { field message } } }`,
 
   // Generic tags

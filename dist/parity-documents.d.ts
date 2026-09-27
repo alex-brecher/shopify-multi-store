@@ -23,7 +23,7 @@ export declare const PDOCS: {
     readonly createDraftOrder: `mutation CreateDraftOrder($input:DraftOrderInput!) { draftOrderCreate(input:$input) { draftOrder { id name invoiceUrl totalPriceSet { shopMoney { amount currencyCode } } } userErrors { field message } } }`;
     readonly getOrderTagsNote: `query GetOrderTagsNote($id:ID!) { order(id:$id) { id name tags note email } }`;
     readonly updateOrder: `mutation UpdateOrder($input:OrderInput!) { orderUpdate(input:$input) { order { id name tags note email } userErrors { field message } } }`;
-    readonly getOrderFulfillmentOrders: `query GetOrderFulfillmentOrders($id:ID!) { order(id:$id) { id name fulfillmentOrders(first:10) { nodes { id status lineItems(first:50) { nodes { id remainingQuantity } } } } } }`;
+    readonly getOrderFulfillmentOrders: `query GetOrderFulfillmentOrders($id:ID!) { order(id:$id) { id name fulfillmentOrders(first:50) { nodes { id status lineItems(first:250) { nodes { id remainingQuantity } pageInfo { hasNextPage } } } } } }`;
     readonly createFulfillment: `mutation CreateFulfillment($fulfillment:FulfillmentV2Input!) { fulfillmentCreateV2(fulfillment:$fulfillment) { fulfillment { id status trackingInfo { company number url } } userErrors { field message } } }`;
     readonly tagsAdd: `mutation AddTags($id:ID!, $tags:[String!]!) { tagsAdd(id:$id, tags:$tags) { node { id ... on Product { tags } ... on Order { tags } ... on Customer { tags } ... on DraftOrder { tags } } userErrors { field message } } }`;
     readonly tagsRemove: `mutation RemoveTags($id:ID!, $tags:[String!]!) { tagsRemove(id:$id, tags:$tags) { node { id ... on Product { tags } ... on Order { tags } ... on Customer { tags } ... on DraftOrder { tags } } userErrors { field message } } }`;
