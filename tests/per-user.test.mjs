@@ -121,6 +121,25 @@ function call(app, path, init = {}) {
   return app.fetch(new Request(`${ORIGIN}${path}`, init));
 }
 
+/** The "name=value" of the login binding cookie a sign-in start response sets. */
+function loginCookie(response) {
+  const set = response.headers.getSetCookie().find((value) => value.startsWith("__Secure-sms_login_"));
+  return set?.split(";")[0];
+}
+
+/** Follow a sign-in start (a redirect to Google) back to the callback, from the same browser. */
+function googleBack(app, start, account) {
+  const google = new URL(start.headers.get("location"));
+  const cookie = loginCookie(start);
+  return call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`, cookie ? { headers: { cookie } } : {});
+}
+
+/** The "name=value" of a named cookie from a response. */
+function cookieNamed(response, prefix) {
+  const set = response.headers.getSetCookie().find((value) => value.startsWith(prefix));
+  return set?.split(";")[0];
+}
+
 /** Shopify callback timestamp: now, in seconds. */
 function ts(offsetSeconds = 0) {
   return String(Math.floor(Date.now() / 1000) + offsetSeconds);
@@ -137,11 +156,10 @@ function signedCallback(params, secret = SECRET) {
 async function storesSession(app, account) {
   const start = await call(app, "/stores");
   assert.equal(start.status, 302);
-  const google = new URL(start.headers.get("location"));
-  const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  const back = await googleBack(app, start, account);
   assert.equal(back.status, 303, await back.clone().text());
   assert.equal(back.headers.get("location"), "/stores");
-  const cookie = back.headers.get("set-cookie").split(";")[0];
+  const cookie = cookieNamed(back, "__Host-sms_stores=");
   assert.match(cookie, /^__Host-sms_stores=/);
   return cookie;
 }
@@ -178,11 +196,10 @@ async function login(app, account) {
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const start = await call(app, `/authorize?${new URLSearchParams({ response_type: "code", client_id: reg.client_id, redirect_uri: CALLBACK, code_challenge: challenge, code_challenge_method: "S256", state: "s", resource: RESOURCE, scope: "mcp" })}`);
-  const google = new URL(start.headers.get("location"));
-  const consent = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  const consent = await googleBack(app, start, account);
   const html = await consent.text();
   const field = (name) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)?.[1];
-  const consentCookie = /^(__Host-sms_consent=[^;]+)/.exec(consent.headers.get("set-cookie") ?? "")?.[1];
+  const consentCookie = cookieNamed(consent, "__Host-sms_consent=");
   const decided = await call(app, "/consent", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: consentCookie }, body: new URLSearchParams({ consent: field("consent"), csrf: field("csrf"), decision: "approve" }) });
   const code = new URL(decided.headers.get("location")).searchParams.get("code");
   const tokens = await (await call(app, "/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: CALLBACK, client_id: reg.client_id, resource: RESOURCE }) })).json();
@@ -480,9 +497,8 @@ test("personal access tokens carry no Shopify access in per-user mode unless ena
   const requests = await shopifyMock(t);
   const createToken = async (app, days) => {
     const start = await call(app, "/tokens");
-    const google = new URL(start.headers.get("location"));
-    const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent("pat|bariatricpal.com")}`);
-    const tokenCookie = back.headers.get("set-cookie").split(";")[0];
+    const back = await googleBack(app, start, "pat|bariatricpal.com");
+    const tokenCookie = cookieNamed(back, "__Host-sms_tokens=");
     const html = await (await call(app, "/tokens", { headers: { cookie: tokenCookie } })).text();
     const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
     const created = await call(app, "/tokens", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: tokenCookie }, body: new URLSearchParams({ csrf, action: "create", name: "ci", days }) });
@@ -611,4 +627,24 @@ test("SHOPIFY_TOKEN_ENCRYPTION_KEYS rotates keys: the first encrypts, all decryp
   const retired = await setup(t, { store: first.store, encryptionKeys: [newKey] });
   result = await (await mcpClient(t, retired.app, await login(retired.app, "pat|bariatricpal.com"))).callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
   assert.notEqual(result.isError, true, JSON.stringify(result));
+});
+
+test("a Google callback forwarded to another browser cannot give it the attacker's /stores session or store its Shopify token under the attacker", async (t) => {
+  await shopifyMock(t);
+  const { app } = await setup(t);
+  // Attacker starts a /stores sign-in and finishes Google as themselves, but does not open the callback.
+  const start = await call(app, "/stores");
+  const google = new URL(start.headers.get("location"));
+  const forwarded = `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent("mallory|bariatricpal.com")}`;
+  // Victim opens the forwarded link: no binding cookie, so no session is issued.
+  const victim = await call(app, forwarded);
+  assert.equal(victim.status, 403, await victim.clone().text());
+  assert.equal(cookieNamed(victim, "__Host-sms_stores="), undefined);
+  // Without a session the victim cannot start a Shopify connection at all.
+  const connect = await call(app, "/shopify/connect?store=main");
+  assert.equal(connect.status, 302);
+  assert.match(connect.headers.get("location"), /accounts\.google\.com|oauth\/google|google/i);
+  // The attacker's own browser (with its binding cookie) still completes normally, proving the state was not consumed by the refusal.
+  const own = await googleBack(app, start, "mallory|bariatricpal.com");
+  assert.equal(own.status, 303);
 });

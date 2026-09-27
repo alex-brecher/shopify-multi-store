@@ -36,8 +36,11 @@ export function toNodeListener(handler: (request: Request) => Promise<Response>,
         signal: abort.signal
       });
       const response = await handler(request);
-      const outHeaders: Record<string, string> = {};
-      response.headers.forEach((value, key) => { outHeaders[key] = value; });
+      const outHeaders: Record<string, string | string[]> = {};
+      response.headers.forEach((value, key) => { if (key !== "set-cookie") outHeaders[key] = value; });
+      // Each cookie stays its own Set-Cookie header; forEach would keep only the last one.
+      const cookies = response.headers.getSetCookie();
+      if (cookies.length) outHeaders["set-cookie"] = cookies;
       res.writeHead(response.status, outHeaders);
       if (!response.body || method === "HEAD") {
         res.end();

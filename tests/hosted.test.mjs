@@ -13,7 +13,7 @@ import { checkGoogleIdentity, verifyGoogleIdToken } from "../dist/hosted/google.
 import { toNodeListener } from "../dist/hosted/node-adapter.js";
 import { fetchMetadataDocument, isForbiddenAddress } from "../dist/hosted/oauth.js";
 import { staticPolicy } from "../dist/hosted/policy.js";
-import { FileStore, MemoryStore } from "../dist/hosted/store.js";
+import { FileStore, MemoryStore, nodeDurableFs, writeFileDurable } from "../dist/hosted/store.js";
 import { enableHostedMode } from "../dist/runtime.js";
 import { KNOWN_CLIENT_REDIRECTS, RedirectPolicy, isSafePrivateUseRedirect, redirectListFromEnv } from "../dist/hosted/known-clients.js";
 import { buildHostedAppFromEnv } from "../dist/serve.js";
@@ -49,24 +49,37 @@ async function setup(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), "sms-hosted-"));
   const auditPath = join(dir, "audit.jsonl");
   let now = Date.now();
+  const store = new MemoryStore(() => now);
   const app = createHostedApp({
     issuer: ORIGIN,
     resource: RESOURCE,
     google: fakeGoogle(),
     allowedDomains: ["bariatricpal.com", "netrition.com"],
     policy: staticPolicy(POLICY),
-    store: new MemoryStore(() => now),
+    store,
     audit: new FileAuditLog(auditPath),
     now: () => now,
     log: () => {},
     ...overrides
   });
   t.after(() => app.close());
-  return { app, auditPath, dir, advance: (ms) => { now += ms; } };
+  return { app, auditPath, dir, store: overrides.store ?? store, advance: (ms) => { now += ms; } };
 }
 
 function call(app, path, init = {}) {
   return app.fetch(new Request(`${ORIGIN}${path}`, init));
+}
+
+/** The "name=value" of the login binding cookie a sign-in start response sets. */
+function loginCookie(response) {
+  const set = response.headers.getSetCookie().find((value) => value.startsWith("__Secure-sms_login_"));
+  return set?.split(";")[0];
+}
+
+/** Follow a sign-in start (a redirect to Google) back to the callback, from the same browser. */
+function googleBack(app, start, account, { cookie = loginCookie(start) } = {}) {
+  const google = new URL(start.headers.get("location"));
+  return call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`, cookie ? { headers: { cookie } } : {});
 }
 
 function pkce() {
@@ -92,7 +105,7 @@ async function authorize(app, { clientId, redirectUri = CLAUDE_CALLBACK, challen
   assert.equal(start.status, 302, await start.clone().text());
   const google = new URL(start.headers.get("location"));
   assert.equal(google.host, "accounts.google.test");
-  const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  const back = await googleBack(app, start, account);
   if (back.status === 200) {
     const decided = await submitConsent(app, back, decision);
     assert.equal(decided.status, 303, await decided.clone().text());
@@ -127,8 +140,7 @@ async function startToCallback(app, { clientId, redirectUri = CLAUDE_CALLBACK, c
   });
   const start = await call(app, `/authorize?${query}`);
   assert.equal(start.status, 302, await start.clone().text());
-  const google = new URL(start.headers.get("location"));
-  return call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  return googleBack(app, start, account);
 }
 
 async function tokenRequest(app, params) {
@@ -509,8 +521,10 @@ test("audit log records mutations with an argument hash and hosted mode refuses 
   assert.equal(entry.ok, true);
   assert.deepEqual(entry.stores, ["main"]);
   assert.match(entry.argsSha256, /^[0-9a-f]{64}$/);
-  assert.equal(entry.args.mutation, mutation);
-  assert.equal(entry.args.variables.accessToken, "[REDACTED]");
+  assert.deepEqual(entry.args.mutation.graphql.operations, [{ type: "mutation", rootFields: ["productUpdate"] }]);
+  assert.equal(entry.args.mutation.graphql.documentSha256, createHash("sha256").update(mutation).digest("hex"));
+  assert.match(entry.args.variables, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.equal(entry.args.confirm, true);
   assert.equal(typeof entry.durationMs, "number");
   assert.ok(!JSON.stringify(lines).includes(tokens.access_token));
   assert.ok(!JSON.stringify(lines).includes("should-not-log"));
@@ -540,17 +554,116 @@ test("audit log records read-only argument hashes, capped query text, and redact
   const lines = await auditLines(auditPath);
   const readEntry = lines.find((line) => line.tool === "shopify_graphql_query");
   assert.match(readEntry.argsSha256, /^[0-9a-f]{64}$/);
-  assert.equal(readEntry.args, undefined);
-  assert.ok(readEntry.query.startsWith(query.slice(0, 2000)));
-  assert.ok(readEntry.query.length < 2100);
+  assert.equal(readEntry.query, undefined, "the raw query text is not stored");
+  assert.deepEqual(readEntry.args.query.graphql.operations, [{ type: "query", rootFields: ["shop"] }]);
+  assert.equal(readEntry.args.store, "main");
 
   const writeEntry = lines.find((line) => line.tool === "shopify_graphql_mutation");
-  assert.match(writeEntry.args.variables.email, /^\[PII sha256:[0-9a-f]{64}\]$/);
-  assert.match(writeEntry.args.variables.phone, /^\[PII sha256:[0-9a-f]{64}\]$/);
-  assert.match(writeEntry.args.variables.shippingAddress, /^\[PII sha256:[0-9a-f]{64}\]$/);
-  assert.ok(writeEntry.args.variables.note.length < 2100);
+  assert.match(writeEntry.args.variables, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.equal(writeEntry.args.store, "main");
   const raw = await readFile(auditPath, "utf8");
-  for (const secret of ["customer@example.com", "+15185551234", "1 Main St", tokens.access_token]) assert.ok(!raw.includes(secret), secret);
+  for (const secret of ["customer@example.com", "+15185551234", "1 Main St", "nnnnnnnnnn", "qqqqqqqqqq", tokens.access_token]) assert.ok(!raw.includes(secret), secret);
+});
+
+test("audit lines never contain customer PII from GraphQL literals, variables, or search arguments", async (t) => {
+  await shopifyMock(t);
+  const { app, auditPath } = await setup(t, {
+    allowedDomains: ["example.com"],
+    policy: staticPolicy({ users: { "admin@example.com": { role: "admin", stores: "*" } }, domains: {} })
+  });
+  const { tokens } = await login(app, "admin|example.com");
+  const client = await mcpClient(t, app, tokens.access_token);
+
+  const pii = ["jane.doe@example.com", "+1 555 010 0199", "5550100199", "Jane", "Doe", "Janet Q. Sample", "12 Elm Street", "Springfield", "90210"];
+  const search = 'email:jane.doe@example.com OR phone:5550100199 OR "Janet Q. Sample"';
+  const readDocument = `query Lookup($q: String!) {
+    customers(first: 5, query: "email:jane.doe@example.com") { nodes { id } }
+    byName: customers(first: 5, query: "first_name:Jane last_name:Doe") { nodes { id } }
+    orders(first: 1, query: $q) { nodes { id } }
+    ...Extra
+  }
+  fragment Extra on QueryRoot { shop { name } }`;
+  const mutation = `mutation {
+    customerUpdate(input: { id: "gid://shopify/Customer/7", email: "jane.doe@example.com", phone: "+1 555 010 0199",
+      firstName: "Jane", lastName: "Doe", addresses: [{ address1: "12 Elm Street", city: "Springfield", zip: "90210" }] }) {
+      customer { id } userErrors { field message }
+    }
+  }`;
+  const variables = { q: search, customer: { email: "jane.doe@example.com", phone: "+1 555 010 0199", firstName: "Jane", lastName: "Doe" } };
+
+  const calls = [
+    { name: "shopify_graphql_query", arguments: { store: "main", query: readDocument, variables } },
+    { name: "shopify_graphql_query_many", arguments: { stores: ["main", "wholesale"], query: readDocument, variables } },
+    { name: "shopify_graphql_mutation", arguments: { store: "main", mutation, variables, confirm: true } },
+    { name: "shopify_search_products_many", arguments: { stores: ["main"], query: search, first: 5 } },
+    { name: "shopify_list_customers", arguments: { store: "main", query: search } },
+    { name: "shopify_list_orders", arguments: { store: "main", query: "email:jane.doe@example.com" } }
+  ];
+  for (const request of calls) await client.callTool(request);
+
+  const raw = await readFile(auditPath, "utf8");
+  const lines = await auditLines(auditPath);
+  for (const request of calls) assert.ok(lines.some((line) => line.tool === request.name), request.name);
+  for (const value of pii) assert.ok(!raw.includes(value), `audit log contains ${value}`);
+  assert.ok(!raw.includes("email:"), "no search expression survives");
+
+  const query = lines.find((line) => line.tool === "shopify_graphql_query");
+  assert.deepEqual(query.args.query.graphql.operations, [{ type: "query", rootFields: ["customers", "orders", "shop"] }]);
+  assert.deepEqual(query.args.query.graphql.argumentNames, ["first", "query"]);
+  assert.equal(query.args.query.graphql.documentSha256, createHash("sha256").update(readDocument).digest("hex"));
+  assert.match(query.args.variables, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.equal(query.args.store, "main");
+
+  const many = lines.find((line) => line.tool === "shopify_graphql_query_many");
+  assert.deepEqual(many.args.stores, ["main", "wholesale"]);
+
+  const write = lines.find((line) => line.tool === "shopify_graphql_mutation");
+  assert.deepEqual(write.args.mutation.graphql.operations, [{ type: "mutation", rootFields: ["customerUpdate"] }]);
+  assert.deepEqual(write.args.mutation.graphql.argumentNames, ["input"]);
+
+  const searchEntry = lines.find((line) => line.tool === "shopify_search_products_many");
+  assert.match(searchEntry.args.query, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.equal(searchEntry.args.first, 5);
+  const orders = lines.find((line) => line.tool === "shopify_list_orders");
+  const customers = lines.find((line) => line.tool === "shopify_list_customers");
+  assert.match(orders.args.query, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.notEqual(orders.args.query, customers.args.query, "different searches hash differently");
+});
+
+test("audit argument reduction keeps only allowlisted scalars", async () => {
+  const { auditArguments, summarizeGraphql } = await import("../dist/hosted/audit.js");
+  const reduced = auditArguments({
+    store: "main",
+    stores: ["main", "Not An Alias!"],
+    id: "gid://shopify/Product/1",
+    productIds: ["gid://shopify/Product/2", "Jane Doe"],
+    orderId: "12345",
+    status: "ACTIVE",
+    sortKey: "Jane Doe",
+    first: 10,
+    confirm: true,
+    title: "Gift for Jane Doe",
+    tags: ["vip", "jane.doe@example.com"],
+    zip: 90210,
+    customerName: "Janet Q. Sample",
+    shipping: { address1: "12 Elm Street", note: "call +1 555 010 0199" },
+    apiToken: "secret-value"
+  });
+  const text = JSON.stringify(reduced);
+  for (const value of ["Jane", "Doe", "Janet", "jane.doe@example.com", "12 Elm Street", "90210", "555 010", "secret-value", "Not An Alias", "Gift", "vip"]) {
+    assert.ok(!text.includes(value), value);
+  }
+  assert.equal(reduced.store, "main");
+  assert.equal(reduced.stores[0], "main");
+  assert.equal(reduced.id, "gid://shopify/Product/1");
+  assert.equal(reduced.productIds[0], "gid://shopify/Product/2");
+  assert.equal(reduced.orderId, "12345");
+  assert.equal(reduced.status, "ACTIVE");
+  assert.equal(reduced.first, 10);
+  assert.equal(reduced.confirm, true);
+  assert.equal(reduced.apiToken, "[REDACTED]");
+  assert.match(reduced.zip, /^\[sha256:/);
+  assert.match(summarizeGraphql("email:jane.doe@example.com"), /^\[sha256:[0-9a-f]{64}\]$/, "unparseable text is only hashed");
 });
 
 test("audit lines are capped at 64KB", () => {
@@ -654,6 +767,110 @@ test("file store persists atomically and serves over node:http", async (t) => {
   assert.equal(tooLarge.status, 413);
 });
 
+/** A filesystem that records every call and forwards to the real one, with optional injected failures. */
+function recordingFs({ platform = process.platform, fail = {} } = {}) {
+  const calls = [];
+  const fs = {
+    platform,
+    async open(path, flags, mode) {
+      calls.push({ op: "open", path, flags, mode });
+      if (fail.open?.(path, flags)) throw Object.assign(new Error("open failed"), { code: fail.openCode ?? "EACCES" });
+      const handle = await nodeDurableFs.open(path, flags, mode);
+      return {
+        async writeFile(data, options) { calls.push({ op: "write", path, flags }); return handle.writeFile(data, options); },
+        async sync() {
+          calls.push({ op: "sync", path, flags });
+          if (fail.sync?.(path, flags)) throw Object.assign(new Error("sync failed"), { code: fail.syncCode });
+          return handle.sync();
+        },
+        async close() { calls.push({ op: "close", path }); return handle.close(); }
+      };
+    },
+    async rename(from, to) {
+      calls.push({ op: "rename", from, to });
+      if (fail.rename) throw Object.assign(new Error("rename failed"), { code: "EPERM" });
+      return nodeDurableFs.rename(from, to);
+    },
+    async unlink(path) { calls.push({ op: "unlink", path }); return nodeDurableFs.unlink(path); }
+  };
+  return { fs, calls };
+}
+
+test("durable writes sync a writable handle, then rename, then sync the directory except on Windows", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sms-durable-"));
+  const path = join(dir, "state.json");
+
+  const posix = recordingFs({ platform: "linux" });
+  await writeFileDurable(path, "{\"a\":1}", posix.fs);
+  assert.equal(await readFile(path, "utf8"), "{\"a\":1}");
+  const ops = posix.calls.map((c) => c.op);
+  assert.deepEqual(ops, ["open", "write", "sync", "close", "rename", "open", "sync", "close"]);
+  const [openTemp, , syncTemp] = posix.calls;
+  assert.equal(openTemp.flags, "wx", "the temp file is opened for writing, never read-only");
+  assert.equal(openTemp.mode, 0o600);
+  assert.equal(syncTemp.path, openTemp.path, "the synced handle is the one that was written");
+  assert.equal(syncTemp.flags, "wx");
+  assert.equal(posix.calls[4].from, openTemp.path);
+  assert.equal(posix.calls[5].path, dir, "directory fsync after rename");
+  assert.ok(!posix.calls.some((c) => c.op === "open" && c.flags === "r" && c.path !== dir), "no read-only reopen of the temp file");
+
+  const windows = recordingFs({ platform: "win32" });
+  await writeFileDurable(path, "{\"b\":2}", windows.fs);
+  assert.deepEqual(windows.calls.map((c) => c.op), ["open", "write", "sync", "close", "rename"]);
+  assert.equal(await readFile(path, "utf8"), "{\"b\":2}");
+
+  // A filesystem without directory fsync is tolerated.
+  const unsupported = recordingFs({ platform: "linux", fail: { sync: (p) => p === dir, syncCode: "EINVAL" } });
+  await writeFileDurable(path, "{\"c\":3}", unsupported.fs);
+  assert.equal(await readFile(path, "utf8"), "{\"c\":3}");
+});
+
+test("durable writes propagate every error other than unsupported directory fsync and leave no temp file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sms-durable-"));
+  const path = join(dir, "state.json");
+  const { readdir } = await import("node:fs/promises");
+
+  const dirIo = recordingFs({ platform: "linux", fail: { sync: (p) => p === dir, syncCode: "EIO" } });
+  await assert.rejects(writeFileDurable(path, "{}", dirIo.fs), /sync failed/);
+
+  const fileSync = recordingFs({ platform: "win32", fail: { sync: (p) => p !== dir, syncCode: "EPERM" } });
+  await assert.rejects(writeFileDurable(path, "{\"x\":1}", fileSync.fs), /sync failed/);
+  assert.ok(fileSync.calls.some((c) => c.op === "unlink"), "temp file removed after a failed sync");
+
+  const renameFails = recordingFs({ platform: "linux", fail: { rename: true } });
+  await assert.rejects(writeFileDurable(path, "{\"y\":1}", renameFails.fs), /rename failed/);
+  assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith(".tmp")), []);
+  assert.equal(await readFile(path, "utf8"), "{}", "the target keeps its last good content");
+
+  // FileStore surfaces the failure to the caller and retries the change on the next write.
+  const flaky = recordingFs({ platform: "linux", fail: { rename: true } });
+  const store = await FileStore.open(join(dir, "oauth.json"), Date.now, flaky.fs);
+  await assert.rejects(store.put("client", "c1", { client_id: "c1" }), /rename failed/);
+  delete flaky.fs.rename;
+  flaky.fs.rename = (from, to) => nodeDurableFs.rename(from, to);
+  await store.put("client", "c2", { client_id: "c2" });
+  const reopened = await FileStore.open(join(dir, "oauth.json"));
+  assert.deepEqual(await reopened.get("client", "c1"), { client_id: "c1" });
+  assert.deepEqual(await reopened.get("client", "c2"), { client_id: "c2" });
+});
+
+test("hosted mode refuses a store configuration with two aliases for one shop", async (t) => {
+  const { loadStores } = await import("../dist/config.js");
+  const previous = process.env.STORES_JSON;
+  t.after(() => { if (previous === undefined) delete process.env.STORES_JSON; else process.env.STORES_JSON = previous; });
+  process.env.STORES_JSON = JSON.stringify({ stores: [
+    { alias: "retail", shop: "example-one.myshopify.com" },
+    { alias: "outlet", shop: "example-two.myshopify.com" },
+    { alias: "retail-alt", shop: "Example-One.myshopify.com" }
+  ] });
+  await assert.rejects(loadStores(), /"retail" and "retail-alt" both point to/);
+  process.env.STORES_JSON = JSON.stringify({ stores: [
+    { alias: "retail", shop: "example-one.myshopify.com" },
+    { alias: "outlet", shop: "example-two.myshopify.com" }
+  ] });
+  assert.deepEqual((await loadStores()).map((store) => store.alias), ["retail", "outlet"]);
+});
+
 test("redirect policy accepts known MCP clients and loopback by default", async (t) => {
   const policy = new RedirectPolicy();
   for (const uri of [
@@ -735,6 +952,152 @@ test("personal token settings come from PERSONAL_TOKENS_ENABLED and PERSONAL_TOK
   assert.equal(off.tokens.enabled, false);
   assert.equal(off.tokens.maxDays, 30);
   await assert.rejects(buildHostedAppFromEnv({ ...base, PERSONAL_TOKEN_MAX_DAYS: "0" }), /positive integer/);
+});
+
+/** A test app with only example.com accounts, and a fake Google that counts code exchanges. */
+async function bindingSetup(t, overrides = {}) {
+  const google = fakeGoogle();
+  const exchanges = [];
+  const counting = { ...google, async exchange(args) { exchanges.push(args.code); return google.exchange(args); } };
+  const env = await setup(t, {
+    google: counting,
+    allowedDomains: ["example.com"],
+    policy: staticPolicy({ users: { "attacker@example.com": { role: "admin", stores: "*" }, "victim@example.com": { role: "admin", stores: "*" } }, domains: {} }),
+    ...overrides
+  });
+  return { ...env, exchanges };
+}
+
+async function startAuthorize(app, clientId) {
+  const query = new URLSearchParams({
+    response_type: "code", client_id: clientId, redirect_uri: CLAUDE_CALLBACK, code_challenge: pkce().challenge,
+    code_challenge_method: "S256", state: "client-state", resource: RESOURCE, scope: "mcp"
+  });
+  const start = await call(app, `/authorize?${query}`);
+  assert.equal(start.status, 302);
+  return start;
+}
+
+test("Google sign-in sets a browser binding cookie scoped to the callback", async (t) => {
+  const { app } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  const start = await startAuthorize(app, client.client_id);
+  const set = start.headers.getSetCookie().find((value) => value.startsWith("__Secure-sms_login_"));
+  assert.match(set, /^__Secure-sms_login_[0-9a-f]{24}=[A-Za-z0-9_-]{43}; Path=\/oauth\/google\/callback; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/);
+  const tokensStart = await call(app, "/tokens");
+  assert.equal(tokensStart.status, 302);
+  assert.ok(loginCookie(tokensStart), "the tokens page sign-in is bound too");
+  assert.notEqual(loginCookie(tokensStart).split("=")[0], loginCookie(start).split("=")[0], "one cookie per sign-in");
+});
+
+test("a forwarded Google callback without the originating cookie creates no session and leaves the state unconsumed", async (t) => {
+  const { app, exchanges, store, auditPath } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  // The attacker starts a sign-in in their own browser and completes Google as themselves...
+  const start = await startAuthorize(app, client.client_id);
+  // ...then sends the unredeemed callback URL to the victim, whose browser has no binding cookie.
+  const forwarded = await googleBack(app, start, "attacker|example.com", { cookie: null });
+  assert.equal(forwarded.status, 403);
+  assert.match(await forwarded.text(), /different browser/);
+  assert.equal(forwarded.headers.get("location"), null, "no redirect with a code");
+  assert.deepEqual(forwarded.headers.getSetCookie().filter((value) => /^__Host-sms_(consent|tokens)=/.test(value)), [], "no consent or session cookie");
+  assert.deepEqual(exchanges, [], "the Google code was not exchanged");
+  assert.equal((await store.entries("pending")).length, 1, "state is not consumed by an unbound callback");
+  assert.equal((await store.entries("code")).length, 0);
+  assert.equal((await store.entries("consent")).length, 0);
+
+  // The victim's own unrelated sign-in cookie does not help: it binds a different state.
+  const victimStart = await startAuthorize(app, client.client_id);
+  const crossed = await googleBack(app, start, "attacker|example.com", { cookie: loginCookie(victimStart) });
+  assert.equal(crossed.status, 403);
+  assert.deepEqual(exchanges, []);
+
+  const lines = await auditLines(auditPath);
+  assert.ok(lines.some((line) => line.event === "sign_in_denied" && /not bound to this browser/.test(line.reason) && line.clientId === client.client_id));
+
+  // In the browser that started it, the same state still works (and only for that browser's user).
+  const own = await googleBack(app, start, "attacker|example.com");
+  assert.equal(own.status, 200);
+  assert.ok((await consentForm(own)).html.includes("attacker@example.com"));
+});
+
+test("a Google callback with a mismatched binding cookie is refused", async (t) => {
+  const { app, exchanges, store } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  const start = await startAuthorize(app, client.client_id);
+  const name = loginCookie(start).split("=")[0];
+  const forged = await googleBack(app, start, "attacker|example.com", { cookie: `${name}=${"A".repeat(43)}` });
+  assert.equal(forged.status, 403);
+  assert.deepEqual(exchanges, []);
+  assert.equal((await store.entries("pending")).length, 1);
+});
+
+test("a bound Google callback is single use, expires, and clears the binding cookie", async (t) => {
+  const { app, exchanges, advance } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  const start = await startAuthorize(app, client.client_id);
+  const cleared = (response, from = start) => {
+    const name = loginCookie(from).split("=")[0];
+    return response.headers.getSetCookie().some((value) => value.startsWith(`${name}=;`) && /Path=\/oauth\/google\/callback/.test(value) && /Max-Age=0/.test(value));
+  };
+
+  const first = await googleBack(app, start, "victim|example.com");
+  assert.equal(first.status, 200, "consent page");
+  assert.ok(cleared(first), "success clears the binding cookie");
+  assert.match(first.headers.getSetCookie().join("\n"), /__Host-sms_consent=/, "the consent cookie is still set");
+  assert.equal(exchanges.length, 1);
+
+  const replay = await googleBack(app, start, "victim|example.com");
+  assert.equal(replay.status, 400, "replay refused");
+  assert.equal(exchanges.length, 1, "no second exchange");
+  assert.ok(cleared(replay));
+
+  const late = await startAuthorize(app, client.client_id);
+  advance(10 * 60_000 + 1);
+  const expired = await googleBack(app, late, "victim|example.com");
+  assert.equal(expired.status, 400);
+  assert.ok(cleared(expired, late), "terminal failure clears the binding cookie");
+  assert.equal(exchanges.length, 1);
+
+  // Google reporting an error is terminal too: the state is consumed and the cookie cleared.
+  const cancelled = await startAuthorize(app, client.client_id);
+  const google = new URL(cancelled.headers.get("location"));
+  const denied = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&error=access_denied`, { headers: { cookie: loginCookie(cancelled) } });
+  assert.equal(denied.status, 302);
+  assert.equal(new URL(denied.headers.get("location")).searchParams.get("error"), "access_denied");
+  assert.ok(denied.headers.getSetCookie().some((value) => value.startsWith(`${loginCookie(cancelled).split("=")[0]}=;`)));
+});
+
+test("the tokens page sign-in is bound to the browser that started it", async (t) => {
+  const { app, exchanges } = await bindingSetup(t);
+  const start = await call(app, "/tokens");
+  const forwarded = await googleBack(app, start, "attacker|example.com", { cookie: null });
+  assert.equal(forwarded.status, 403);
+  assert.deepEqual(forwarded.headers.getSetCookie().filter((value) => value.startsWith("__Host-sms_tokens=")), []);
+  assert.deepEqual(exchanges, []);
+  const own = await googleBack(app, start, "attacker|example.com");
+  assert.equal(own.status, 303);
+  const cookies = own.headers.getSetCookie();
+  assert.ok(cookies.some((value) => value.startsWith("__Host-sms_tokens=")));
+  assert.ok(cookies.some((value) => value.startsWith(`${loginCookie(start).split("=")[0]}=;`)));
+});
+
+test("node:http keeps every Set-Cookie header of a response", async (t) => {
+  const { app } = await bindingSetup(t);
+  const { body: client } = await registerClient(app);
+  const server = http.createServer(toNodeListener(app.fetch, { origin: ORIGIN, maxBodyBytes: 64 * 1024 }));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const query = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: CLAUDE_CALLBACK, code_challenge: pkce().challenge, code_challenge_method: "S256", state: "s" });
+  const start = await fetch(`${base}/authorize?${query}`, { redirect: "manual" });
+  const state = new URL(start.headers.get("location")).searchParams.get("state");
+  const back = await fetch(`${base}/oauth/google/callback?state=${encodeURIComponent(state)}&code=${encodeURIComponent("victim|example.com")}`, { headers: { cookie: loginCookie(start) }, redirect: "manual" });
+  assert.equal(back.status, 200);
+  const cookies = back.headers.getSetCookie();
+  assert.equal(cookies.length, 2, cookies.join("\n"));
+  assert.ok(cookies.some((value) => value.startsWith("__Host-sms_consent=")));
+  assert.ok(cookies.some((value) => value.startsWith("__Secure-sms_login_")));
 });
 
 test("consent screen shows the client, redirect host, user, role and stores, and escapes the client name", async (t) => {
@@ -860,10 +1223,10 @@ async function tokensSession(app, account) {
   assert.equal(start.status, 302);
   const google = new URL(start.headers.get("location"));
   assert.equal(google.host, "accounts.google.test");
-  const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  const back = await googleBack(app, start, account);
   if (back.status !== 303) return { denied: back };
   assert.equal(back.headers.get("location"), "/tokens");
-  const setCookie = back.headers.get("set-cookie");
+  const setCookie = back.headers.getSetCookie().find((value) => value.startsWith("__Host-sms_tokens="));
   assert.match(setCookie, /^__Host-sms_tokens=[^;]+; Path=\/; HttpOnly; Secure; SameSite=Lax; Max-Age=\d+$/);
   const cookie = setCookie.split(";")[0];
   const page = await call(app, "/tokens", { headers: { cookie } });
@@ -987,6 +1350,75 @@ test("tokens page enforces CSRF, same origin, ownership, and gives admins every 
   assert.equal(stranger.denied.status, 403);
   const consumer = await tokensSession(app, "someone|gmail.com|gmail.com");
   assert.equal(consumer.denied.status, 403);
+});
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+/** A store that can pause one personal-token read after it has read the record, to order a race exactly. */
+class GatedStore extends MemoryStore {
+  gate;
+  async get(kind, key) {
+    const value = await super.get(kind, key);
+    if (kind === "pat" && this.gate) {
+      const gate = this.gate;
+      this.gate = undefined;
+      gate.arrived.resolve();
+      await gate.release.promise;
+    }
+    return value;
+  }
+}
+
+const EXAMPLE_POLICY = { users: { "editor@example.com": { role: "editor", stores: ["main"] } }, domains: {} };
+
+test("a personal token revoked while a request is being verified is not written back or accepted", async (t) => {
+  const store = new GatedStore();
+  const { app } = await setup(t, { store, allowedDomains: ["example.com"], policy: staticPolicy(EXAMPLE_POLICY) });
+  const session = await tokensSession(app, "editor|example.com");
+  const created = await session.create("Race");
+  assert.ok(created.token);
+
+  // Verification reads the record, then pauses; the token is revoked; then verification resumes.
+  const gate = { arrived: deferred(), release: deferred() };
+  store.gate = gate;
+  const verifying = app.tokens.verify(created.token);
+  await gate.arrived.promise;
+  assert.equal((await session.post({ action: "revoke", id: created.id })).status, 303);
+  assert.equal((await store.entries("pat")).length, 0);
+  gate.release.resolve();
+
+  assert.equal(await verifying, undefined, "the revoked token is refused");
+  assert.equal((await store.entries("pat")).length, 0, "the last-used write did not recreate the revoked token");
+  assert.equal((await mcpPost(app, created.token)).status, 401);
+
+  // Without a revoke in the gap, the same ordering records the last use.
+  const other = await session.create("Kept");
+  const gate2 = { arrived: deferred(), release: deferred() };
+  store.gate = gate2;
+  const verifying2 = app.tokens.verify(other.token);
+  await gate2.arrived.promise;
+  gate2.release.resolve();
+  const record = await verifying2;
+  assert.equal(record.id, other.id);
+  assert.equal(typeof (await store.entries("pat"))[0][1].lastUsedAt, "number");
+});
+
+test("store update is conditional on the live record and keeps its expiry", async () => {
+  let now = 1_000;
+  const store = new MemoryStore(() => now);
+  assert.equal(await store.update("pat", "missing", (value) => ({ ...value, touched: true })), undefined);
+  assert.equal(await store.get("pat", "missing"), undefined, "update never creates a record");
+  await store.put("pat", "k", { id: "a" }, 2_000);
+  assert.deepEqual(await store.update("pat", "k", (value) => ({ ...value, touched: true })), { id: "a", touched: true });
+  assert.equal(await store.update("pat", "k", () => undefined), undefined);
+  assert.deepEqual(await store.get("pat", "k"), { id: "a", touched: true });
+  now = 2_000;
+  assert.equal(await store.update("pat", "k", (value) => ({ ...value, late: true })), undefined, "expired records are not revived");
+  assert.equal(await store.get("pat", "k"), undefined);
 });
 
 test("PERSONAL_TOKENS_ENABLED=0 turns off the page and bearer use", async (t) => {

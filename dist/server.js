@@ -11,7 +11,7 @@ import { currentUserAccess, isHostedMode } from "./runtime.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
-import { findStore, loadStores, unconnectedStores } from "./config.js";
+import { findStore, loadStores, resolveStoreTargets, unconnectedStores } from "./config.js";
 import { catalogHealth, catalogGapReport, compareCatalog, compareCollections, compareInventory, comparePrices, customerGrowth, duplicateSkuReport, fulfillmentSlaReport, getProductEverywhere, listUnfulfilledOrders, lowStockReport, orderSummary, portfolioSnapshot, recentProductChanges, searchProductsMany, storeLocations } from "./reports.js";
 import { adminGraphql, hasGraphqlErrors, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
 import { fitMultiStoreResults } from "./result-limits.js";
@@ -120,15 +120,11 @@ export function createServer(options = {}) {
     }, async ({ stores, query, variables }) => {
         try {
             requireQuery(query);
-            const requestedStores = stores.filter((store, index) => stores.findIndex((candidate) => candidate.toLowerCase() === store.toLowerCase()) === index);
-            const configuredStores = await loadStores();
-            const storesByAlias = new Map(configuredStores.map((store) => [store.alias.toLowerCase(), store]));
-            const results = await mapConcurrent(requestedStores, async (store) => {
+            const targets = await resolveStoreTargets(stores);
+            const results = await mapConcurrent(targets, async ({ requestedAlias: store, store: selected, error }) => {
                 try {
-                    const selected = storesByAlias.get(store.toLowerCase());
-                    if (!selected) {
-                        throw new Error(`Unknown store "${store}". Available stores: ${configuredStores.map((configured) => configured.alias).join(", ")}`);
-                    }
+                    if (!selected)
+                        throw new Error(error ?? `Unknown store "${store}".`);
                     const result = await adminGraphql(selected, query, variables);
                     return { store: selected.alias, ok: !hasGraphqlErrors(result), result,
                         ...(hasGraphqlErrors(result) ? { error: "Shopify returned GraphQL errors. See result.errors." } : {}) };

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile, open } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 function emptyData() {
     return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, pat: {}, session: {}, shopify_state: {}, shopify_token: {} };
@@ -39,6 +39,18 @@ export class MemoryStore {
         await this.changed();
         return entry.value;
     }
+    async update(kind, key, change) {
+        // Read and write with no await in between, so no other operation can run in the gap.
+        const entry = this.live(kind, key);
+        if (!entry)
+            return undefined;
+        const next = change(entry.value);
+        if (next === undefined)
+            return undefined;
+        this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
+        await this.changed();
+        return next;
+    }
     async delete(kind, key) {
         if (!Object.hasOwn(this.data[kind], key))
             return;
@@ -76,21 +88,71 @@ export class MemoryStore {
     }
     async changed() { }
 }
+export const nodeDurableFs = {
+    open: (path, flags, mode) => open(path, flags, mode),
+    rename,
+    unlink,
+    platform: process.platform
+};
+/** Errors a directory fsync may return on filesystems that do not support it. */
+const DIRECTORY_SYNC_UNSUPPORTED = new Set(["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EISDIR"]);
 /**
- * JSON file store for a single server process. Each change rewrites the file through a
- * temporary file, fsync, and rename, so a crash never leaves a partial file.
- * Do not point two running servers at the same file.
+ * Replace a file atomically and durably: write a temporary file through a handle opened for
+ * writing, fsync that same handle, close it, rename it over the target, then fsync the
+ * directory so the rename itself survives a crash. The directory step is skipped on Windows,
+ * which cannot open a directory for flushing, and tolerated only where the filesystem reports
+ * directory fsync as unsupported. Every other error propagates.
+ */
+export async function writeFileDurable(path, data, fs = nodeDurableFs) {
+    const temp = `${path}.${randomUUID()}.tmp`;
+    let handle;
+    try {
+        // "wx": a fresh file opened for writing. Windows rejects FlushFileBuffers on a read-only handle.
+        handle = await fs.open(temp, "wx", 0o600);
+        await handle.writeFile(data, { encoding: "utf8" });
+        await handle.sync();
+        const opened = handle;
+        handle = undefined;
+        await opened.close();
+        await fs.rename(temp, path);
+    }
+    catch (error) {
+        if (handle)
+            await handle.close().catch(() => { });
+        await fs.unlink(temp).catch(() => { });
+        throw error;
+    }
+    if (fs.platform === "win32")
+        return;
+    const directory = await fs.open(dirname(path), "r");
+    try {
+        await directory.sync();
+    }
+    catch (error) {
+        if (!DIRECTORY_SYNC_UNSUPPORTED.has(error.code ?? ""))
+            throw error;
+    }
+    finally {
+        await directory.close();
+    }
+}
+/**
+ * JSON file store for a single server process. Each change rewrites the file through
+ * writeFileDurable (temporary file, fsync, rename, directory fsync), so a crash never leaves
+ * a partial file. Do not point two running servers at the same file.
  */
 export class FileStore extends MemoryStore {
     path;
+    fs;
     writing = Promise.resolve();
     dirty = false;
-    constructor(path, now) {
+    constructor(path, now, fs) {
         super(now);
         this.path = path;
+        this.fs = fs;
     }
-    static async open(path, now = Date.now) {
-        const store = new FileStore(path, now);
+    static async open(path, now = Date.now, fs = nodeDurableFs) {
+        const store = new FileStore(path, now, fs);
         try {
             const parsed = JSON.parse(await readFile(path, "utf8"));
             store.data = { ...emptyData(), ...parsed };
@@ -115,16 +177,14 @@ export class FileStore extends MemoryStore {
             return;
         this.dirty = false;
         this.purgeExpired();
-        const temp = `${this.path}.${randomUUID()}.tmp`;
-        await writeFile(temp, JSON.stringify(this.data), { mode: 0o600 });
-        const handle = await open(temp, "r");
         try {
-            await handle.sync();
+            await writeFileDurable(this.path, JSON.stringify(this.data), this.fs);
         }
-        finally {
-            await handle.close();
+        catch (error) {
+            // The change is still in memory; the next write retries it.
+            this.dirty = true;
+            throw error;
         }
-        await rename(temp, this.path);
     }
 }
 //# sourceMappingURL=store.js.map

@@ -202,7 +202,7 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
       return jsonResponse(auth.authorizationServerMetadata(), 200, { "cache-control": "public, max-age=3600" });
     }
     if (path === "/authorize") return method === "GET" ? auth.authorize(url) : jsonResponse({ error: "method_not_allowed" }, 405);
-    if (path === "/oauth/google/callback") return method === "GET" ? auth.googleCallback(url) : jsonResponse({ error: "method_not_allowed" }, 405);
+    if (path === "/oauth/google/callback") return method === "GET" ? auth.googleCallback(request) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/tokens") return tokens.handle(request);
     if (shopify && path === "/stores") return shopify.handleStoresPage(request);
     if (shopify && path === "/shopify/connect") return shopify.connect(request);

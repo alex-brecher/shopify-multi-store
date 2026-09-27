@@ -73,8 +73,11 @@ export const REQUIRED_SCOPES: Record<string, string[]> = {
   shopify_get_preview_store: [],
 
   // src/parity-tools.ts
-  shopify_update_prices: ["write_products", "write_inventory"],
-  shopify_update_prices_many: ["write_products", "write_inventory"],
+  // read_products is needed to look up SKUs; write_inventory is only actually required at
+  // runtime when a request includes a unitCost (see VARIABLE_SCOPE_TOOLS below). Listed here
+  // at the worst case so shopify_check_access and the generated shopify.app.toml cover it.
+  shopify_update_prices: ["read_products", "write_products", "write_inventory"],
+  shopify_update_prices_many: ["read_products", "write_products", "write_inventory"],
   shopify_get_metafields: [],
   shopify_set_metafields: [],
   shopify_delete_metafields: [],
@@ -122,6 +125,8 @@ export const VARIABLE_SCOPE_TOOLS: Record<string, string> = {
   shopify_delete_metafields: "Scope depends on the owner resource type.",
   shopify_tags: "Scope depends on the owner resource type (write_products, write_orders, write_customers or write_draft_orders).",
   shopify_run_action: "Scope depends on the mutation; shopify_describe_action shows a hint. Request the full set (print-scopes --full).",
+  shopify_update_prices: "write_inventory is only required at runtime when the request includes a unitCost.",
+  shopify_update_prices_many: "write_inventory is only required at runtime when the request includes a unitCost.",
 };
 
 /** The union of every scope handle any tool in REQUIRED_SCOPES might need, for generating a shopify.app.toml. */

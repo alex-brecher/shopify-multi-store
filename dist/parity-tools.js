@@ -2,7 +2,7 @@ import { z } from "zod/v4";
 import { workflow, textResult, toolError, WorkflowError, } from "./admin-workflows.js";
 import { PDOCS } from "./parity-documents.js";
 import { mapConcurrent } from "./concurrency.js";
-import { loadStores } from "./config.js";
+import { resolveStoreTargets } from "./config.js";
 import { REQUIRED_SCOPES, VARIABLE_SCOPE_TOOLS } from "./scope-requirements.js";
 // These tools pin their Admin GraphQL operations to 2026-04 (the newest quarterly
 // version bundled with the server at the time they were written) rather than
@@ -110,26 +110,70 @@ async function findVariantIdsByExactSku(w, wanted) {
     }
     throw new WorkflowError(`SKU lookup for "${wanted}" returned more than ${SKU_LOOKUP_MAX_PAGES * 250} candidate variants; refusing to guess.`, { sku: wanted });
 }
-async function updatePricesCore(w, a) {
-    await w.requireScopes(["write_products", "write_inventory"]);
-    const seen = new Set();
-    const duplicates = new Set();
-    const uniqueEntries = [];
-    for (const raw of a.skus) {
+/** True when two SKU entries request the same price/compareAtPrice/unitCost. */
+function sameEntryValues(a, b) {
+    return (sameMoney(a.price, b.price) &&
+        sameMoney(a.compareAtPrice, b.compareAtPrice) &&
+        sameMoney(a.unitCost, b.unitCost));
+}
+/**
+ * Collapses exact-duplicate SKU rows and rejects the whole call (before any write) when
+ * duplicate rows for the same SKU disagree on what to write.
+ */
+function dedupeSkuEntries(skus) {
+    const groups = new Map();
+    for (const raw of skus) {
         const entry = { ...raw, sku: raw.sku.trim() };
-        if (seen.has(entry.sku)) {
-            duplicates.add(entry.sku);
+        const list = groups.get(entry.sku) ?? [];
+        list.push(entry);
+        groups.set(entry.sku, list);
+    }
+    const entries = [];
+    const collapsedSkus = [];
+    const conflicts = [];
+    for (const [sku, group] of groups) {
+        if (group.length === 1) {
+            entries.push(group[0]);
             continue;
         }
-        seen.add(entry.sku);
-        uniqueEntries.push(entry);
+        if (group.every((e) => sameEntryValues(e, group[0]))) {
+            entries.push(group[0]);
+            collapsedSkus.push(sku);
+        }
+        else {
+            conflicts.push({ sku, entries: group });
+        }
     }
+    if (conflicts.length)
+        throw new WorkflowError(`Duplicate SKU rows with conflicting values: ${conflicts.map((c) => c.sku).join(", ")}. No changes were made; fix the input and resubmit.`, { conflicts });
+    return { entries, collapsedSkus };
+}
+/** Derives a store-level status from every item's outcome. See src/parity-tools.ts task 8b. */
+function deriveStatus(outcomes) {
+    const total = outcomes.length;
+    const applied = outcomes.filter((o) => o === "applied" || o === "skipped").length;
+    if (total === 0 || applied === total)
+        return "ok";
+    if (applied === 0) {
+        return outcomes.includes("unknown") ? "unknown" : "failed";
+    }
+    return "partial";
+}
+async function updatePricesCore(w, a) {
+    const needsCost = a.skus.some((s) => s.unitCost !== undefined);
+    await w.requireScopes([
+        "read_products",
+        "write_products",
+        ...(needsCost ? ["write_inventory"] : []),
+    ]);
+    const { entries: uniqueEntries, collapsedSkus } = dedupeSkuEntries(a.skus);
     const notFound = [];
     const ambiguous = [];
+    const skipped = [];
     const resolved = [];
     for (const entry of uniqueEntries) {
         if (!entry.price && entry.compareAtPrice === undefined && !entry.unitCost) {
-            notFound.push(entry.sku); // nothing requested; treated the same as not actionable
+            skipped.push(entry.sku); // nothing requested for this SKU; an explicit no-op
             continue;
         }
         const matches = await findVariantsByExactSku(w, entry.sku);
@@ -166,7 +210,9 @@ async function updatePricesCore(w, a) {
             dryRun: true,
             wouldApply: preview,
             notFound,
-            duplicateSkus: [...duplicates],
+            skippedSkus: skipped,
+            collapsedDuplicateSkus: collapsedSkus,
+            duplicateSkus: collapsedSkus,
             ambiguousSkus: ambiguous,
             notice: ambiguous.length
                 ? "Pass dryRun:false to apply these changes. SKUs in ambiguousSkus match more than one variant and are skipped unless allowDuplicates:true."
@@ -180,6 +226,8 @@ async function updatePricesCore(w, a) {
         byProduct.set(r.variant.product.id, list);
     }
     const results = [];
+    // Entries whose mutation response looked fine and now need an independent readback.
+    const provisional = [];
     for (const [productId, entries] of byProduct) {
         const variants = entries.map(({ entry, variant }) => ({
             id: variant.id,
@@ -189,48 +237,132 @@ async function updatePricesCore(w, a) {
                 : {}),
             ...(entry.unitCost ? { inventoryItem: { cost: entry.unitCost } } : {}),
         }));
+        let d;
         try {
-            const d = await w.run(PDOCS.variantsBulkUpdatePrices, {
-                productId,
-                variants,
-            });
-            const after = d.productVariantsBulkUpdate?.productVariants ?? [];
-            for (const { entry, variant } of entries) {
-                const updated = after.find((v) => v.id === variant.id);
-                const mismatch = !updated ||
-                    (entry.price !== undefined && !sameMoney(updated.price, entry.price)) ||
-                    (entry.compareAtPrice !== undefined &&
-                        !sameMoney(updated.compareAtPrice, entry.compareAtPrice)) ||
-                    (entry.unitCost !== undefined &&
-                        !sameMoney(updated.inventoryItem?.unitCost?.amount, entry.unitCost));
-                results.push({
-                    sku: entry.sku,
-                    productId,
-                    variantId: variant.id,
-                    outcome: mismatch ? "mismatch" : "applied",
-                    after: updated,
-                });
-            }
+            d = await w.run(PDOCS.variantsBulkUpdatePrices, { productId, variants });
         }
         catch (error) {
-            for (const { entry, variant } of entries)
+            const unknown = error instanceof WorkflowError && error.details?.outcome === "unknown";
+            if (unknown) {
+                for (const { entry, variant } of entries)
+                    results.push({
+                        sku: entry.sku,
+                        productId,
+                        variantId: variant.id,
+                        outcome: "unknown",
+                        doNotBlindlyRetry: "The write may or may not have applied. Read the variant back before retrying instead of resending the same write.",
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                continue;
+            }
+            // Shopify can reject some variants in a batch (userErrors) while still applying the
+            // rest; that partial data travels in the thrown error's details, not a return value.
+            const partial = error instanceof WorkflowError && error.details?.outcome === "rejected_or_partial"
+                ? error.details.response?.data
+                : undefined;
+            if (!partial) {
+                for (const { entry, variant } of entries)
+                    results.push({
+                        sku: entry.sku,
+                        productId,
+                        variantId: variant.id,
+                        outcome: "rejected",
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                continue;
+            }
+            d = partial;
+        }
+        const bulkUserErrors = d.productVariantsBulkUpdate?.userErrors ?? [];
+        const after = d.productVariantsBulkUpdate?.productVariants ?? [];
+        for (const { entry, variant } of entries) {
+            const mutationResponse = after.find((v) => v.id === variant.id);
+            if (!mutationResponse) {
                 results.push({
                     sku: entry.sku,
                     productId,
                     variantId: variant.id,
                     outcome: "rejected",
-                    error: error instanceof Error ? error.message : String(error),
+                    error: bulkUserErrors.length
+                        ? bulkUserErrors.map((e) => e.message).join("; ")
+                        : "Shopify did not return this variant in the mutation response.",
                 });
+                continue;
+            }
+            provisional.push({ entry, productId, variant, mutationResponse });
         }
     }
+    // Independent verification (task 10): a fresh query for the affected variants, never just
+    // an inspection of the mutation response, which Shopify can return looking fine while the
+    // actual state disagrees.
+    const verified = new Map();
+    let verificationFailed = false;
+    if (provisional.length) {
+        const ids = [...new Set(provisional.map((p) => p.variant.id))];
+        try {
+            for (let i = 0; i < ids.length; i += 100) {
+                const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + 100) });
+                for (const v of d.nodes ?? [])
+                    if (v?.id)
+                        verified.set(v.id, v);
+            }
+        }
+        catch {
+            verificationFailed = true;
+        }
+    }
+    for (const { entry, productId, variant, mutationResponse } of provisional) {
+        if (verificationFailed) {
+            results.push({
+                sku: entry.sku,
+                productId,
+                variantId: variant.id,
+                outcome: "applied",
+                verification: "verification_failed",
+                mutationResponse,
+            });
+            continue;
+        }
+        const verifiedState = verified.get(variant.id);
+        const mismatch = !verifiedState ||
+            (entry.price !== undefined && !sameMoney(verifiedState.price, entry.price)) ||
+            (entry.compareAtPrice !== undefined &&
+                !sameMoney(verifiedState.compareAtPrice, entry.compareAtPrice)) ||
+            (entry.unitCost !== undefined &&
+                !sameMoney(verifiedState.inventoryItem?.unitCost?.amount, entry.unitCost));
+        results.push({
+            sku: entry.sku,
+            productId,
+            variantId: variant.id,
+            outcome: mismatch ? "mismatch" : "applied",
+            verification: mismatch ? "mismatch" : "verified",
+            mutationResponse,
+            verifiedState,
+        });
+    }
+    const itemOutcomes = [
+        ...results.map((r) => r.outcome),
+        ...notFound.map(() => "not_found"),
+        ...ambiguous.map(() => "ambiguous"),
+        ...skipped.map(() => "skipped"),
+    ];
+    const status = deriveStatus(itemOutcomes);
     return {
         dryRun: false,
+        status,
         results,
         notFound,
-        duplicateSkus: [...duplicates],
+        skippedSkus: skipped,
+        collapsedDuplicateSkus: collapsedSkus,
+        duplicateSkus: collapsedSkus,
         ambiguousSkus: ambiguous,
         succeeded: results.filter((r) => r.outcome === "applied").length,
         failed: results.filter((r) => r.outcome !== "applied").length,
+        ...(status === "unknown"
+            ? {
+                notice: "At least one write's outcome is unknown (network error, timeout, or throttled response after the request was sent) and none could be confirmed applied. Read the affected variants back before retrying; do not blindly resend the same write.",
+            }
+            : {}),
     };
 }
 export function registerParityTools(server) {
@@ -280,7 +412,7 @@ export function registerParityTools(server) {
         });
     }
     // 1. Prices
-    register("update_prices", "Set price, compareAtPrice and/or unit cost for up to 250 SKUs on one store. Resolves each SKU to the variants whose SKU matches exactly (Shopify search is a prefix match) and groups writes by product. A SKU shared by several variants is skipped unless allowDuplicates:true. Defaults to dryRun:true.", { skus: skusField, allowDuplicates: allowDuplicatesField }, true, (w, a) => updatePricesCore(w, a));
+    register("update_prices", "Set price, compareAtPrice and/or unit cost for up to 250 SKUs on one store. Resolves each SKU to the variants whose SKU matches exactly (Shopify search is a prefix match) and groups writes by product. A SKU shared by several variants is skipped unless allowDuplicates:true. Duplicate SKU rows with conflicting values are rejected before any write; identical duplicates are collapsed. After a successful write, verifies each variant with a separate readback query (not just the mutation response) and reports per-item outcome (applied, rejected, not_found, ambiguous, unknown, skipped, mismatch) plus an overall store status (ok, partial, failed, unknown). Defaults to dryRun:true.", { skus: skusField, allowDuplicates: allowDuplicatesField }, true, (w, a) => updatePricesCore(w, a));
     server.registerTool("shopify_update_prices_many", {
         description: "Apply the same shopify_update_prices SKU list to multiple stores in parallel. Defaults to dryRun:true; each store gets its own outcome.",
         inputSchema: z
@@ -300,7 +432,8 @@ export function registerParityTools(server) {
     }, async (args) => {
         const a = args;
         try {
-            const requested = a.stores.filter((s, i) => a.stores.findIndex((c) => c.toLowerCase() === s.toLowerCase()) === i);
+            // Refuses two aliases for one shop, so no price change runs twice.
+            const requested = (await resolveStoreTargets(a.stores)).map((target) => target.store?.alias ?? target.requestedAlias);
             const results = await mapConcurrent(requested, async (alias) => {
                 try {
                     const w = await workflow(alias);
@@ -310,12 +443,16 @@ export function registerParityTools(server) {
                         dryRun: a.dryRun,
                         allowDuplicates: a.allowDuplicates,
                     });
-                    return { store: w.store.alias, ok: true, ...result };
+                    // Derive ok from the store's own status (task 8d): the batch wrapper never
+                    // reports ok:true just because updatePricesCore returned without throwing.
+                    const ok = a.dryRun ? true : result.status === "ok";
+                    return { store: w.store.alias, ok, ...result };
                 }
                 catch (error) {
                     return {
                         store: alias,
                         ok: false,
+                        status: "failed",
                         error: error instanceof Error ? error.message : String(error),
                         ...(error instanceof WorkflowError ? error.details : {}),
                     };
@@ -898,10 +1035,7 @@ export function registerParityTools(server) {
     }, async (args) => {
         const a = args;
         try {
-            const configured = await loadStores();
-            const aliases = a.stores?.length
-                ? a.stores
-                : configured.map((s) => s.alias);
+            const aliases = (await resolveStoreTargets(a.stores)).map((target) => target.store?.alias ?? target.requestedAlias);
             const results = await mapConcurrent(aliases, async (alias) => {
                 try {
                     const w = await workflow(alias);

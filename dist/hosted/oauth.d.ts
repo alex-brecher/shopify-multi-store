@@ -104,6 +104,12 @@ export declare class AuthorizationServer {
     private resolveClient;
     private resolveMetadataDocument;
     authorize(url: URL): Promise<Response>;
+    /**
+     * Store a pending sign-in and send the browser to Google. The browser also gets a binding
+     * cookie; only its sha256 is stored, and the callback must present it, so a callback URL
+     * forwarded to another browser cannot complete there (login CSRF).
+     */
+    private redirectToGoogle;
     private clientRedirect;
     /**
      * Start a Google sign-in for a page on this server (the personal access token page) rather
@@ -112,7 +118,15 @@ export declare class AuthorizationServer {
     startPageSignIn(purpose: PageSignInPurpose): Promise<Response>;
     /** Receives page sign-ins (see startPageSignIn) after the domain and policy checks pass. */
     onPageSignIn?: (purpose: PageSignInPurpose, email: string, principal: Principal) => Promise<Response>;
-    googleCallback(url: URL): Promise<Response>;
+    /**
+     * GET /oauth/google/callback. The binding cookie is checked before the login state is
+     * consumed or the Google code is exchanged. A callback without the matching cookie (for
+     * example a callback URL forwarded from another browser) is refused and leaves the state
+     * unconsumed, so it can neither create a session nor burn the real sign-in. Once the check
+     * passes, the state is taken (single use) and every outcome clears the cookie.
+     */
+    googleCallback(request: Request): Promise<Response>;
+    private completeGoogleSignIn;
     private issueCode;
     private consentPage;
     /** POST /consent: the user's Approve or Deny decision. */
