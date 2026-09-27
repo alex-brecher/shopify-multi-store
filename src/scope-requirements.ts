@@ -94,7 +94,7 @@ export const REQUIRED_SCOPES: Record<string, string[]> = {
   shopify_update_order: ["write_orders"],
   shopify_tags: [],
   shopify_update_customer: ["write_customers"],
-  shopify_create_fulfillment: ["write_fulfillments"],
+  shopify_create_fulfillment: ["read_merchant_managed_fulfillment_orders", "write_merchant_managed_fulfillment_orders"],
   shopify_list_pages: ["read_content"],
   shopify_upsert_page: ["write_content"],
   shopify_list_blog_articles: ["read_content"],
