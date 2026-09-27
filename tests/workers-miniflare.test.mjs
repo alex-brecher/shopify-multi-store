@@ -90,7 +90,10 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
     modules: [{ type: "ESModule", path: join(outdir, "index.js") }, ...schemaFiles.map((name) => ({ type: "Data", path: join(outdir, name) }))],
     modulesRoot: outdir,
     compatibilityDate: "2026-09-01",
-    compatibilityFlags: ["nodejs_compat"],
+    // Settings must come from the Worker's env, not process.env: workerd fills process.env
+    // only for recent compatibility dates, so the test turns that off to prove the code
+    // does not depend on it (ACTIONS_DENYLIST below).
+    compatibilityFlags: ["nodejs_compat", "nodejs_compat_do_not_populate_process_env"],
     ...(MEASURE ? { inspectorPort: 9239 } : {}),
     durableObjects: { OAUTH_STORE: { className: "OAuthStoreObject", useSQLite: true } },
     d1Databases: ["AUDIT_DB"],
@@ -100,7 +103,9 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
       SHOPIFY_APP_CLIENT_ID: "workerd-client",
       SHOPIFY_APP_CLIENT_SECRET: SECRET,
       SHOPIFY_TOKEN_ENCRYPTION_KEYS: `k1:${randomBytes(32).toString("base64")}`,
-      SHOPIFY_APP_SCOPES: scopes.join(",")
+      SHOPIFY_APP_SCOPES: scopes.join(","),
+      // An operator's extra denylist entry, set only in the Worker's env (never process.env).
+      ACTIONS_DENYLIST: "tagsAdd"
     },
     outboundService: async (request) => {
       const url = new URL(request.url);
@@ -207,6 +212,13 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
   const ruleSet = await rpc(14, "tools/call", { name: "shopify_create_collection", arguments: { store: "main", title: "Smart", ruleSet: { appliedDisjunctively: false, rules: [{ column: "TAG", relation: "EQUALS", condition: "x" }] } } });
   assert.equal(ruleSet.result.isError, true);
   assert.match(JSON.stringify(ruleSet.result.content), /shopify_run_action/);
+
+  // ACTIONS_DENYLIST comes from the Worker's env: the operator's entry is refused, dry run too.
+  const denied = await rpc(15, "tools/call", { name: "shopify_run_action", arguments: { stores: ["main"], mutation: "tagsAdd", variables: { id: "gid://shopify/Product/1", tags: ["x"] } } });
+  assert.match(JSON.stringify(denied.result), /tagsAdd is on this server's action denylist/);
+  const found = await rpc(16, "tools/call", { name: "shopify_find_actions", arguments: { query: "tagsAdd", store: "main" } });
+  const tagsAdd = body(found).actions.find((action) => action.name === "tagsAdd");
+  assert.equal(tagsAdd?.denied, true, JSON.stringify(body(found)).slice(0, 400));
 
   const ui = await rpc(6, "resources/read", { uri: "ui://shopify-multi-store/results" });
   t.diagnostic(`ui resource on workerd: ${JSON.stringify(ui).slice(0, 300)}`);

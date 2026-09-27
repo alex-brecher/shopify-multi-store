@@ -18,6 +18,9 @@ This file records notable changes to Shopify Multi-Store MCP.
 - Guided writes failed on Workers with "Expected String to be a GraphQL
   nullable type": `graphql/execution/values.js` pulled a second copy of
   `graphql` into the bundle. Every import now uses the package root.
+- `ACTIONS_DENYLIST` and `ACTIONS_DENYLIST_REPLACE` are read from the Worker's
+  env (`runtimeEnv()`), not `process.env`, so an operator's denylist applies on
+  Cloudflare whatever the compatibility date.
 
 Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
 ### Review 3: fixes and a smaller tool surface

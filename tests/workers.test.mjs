@@ -159,7 +159,8 @@ test("the Worker signs in with Shopify, keeps OAuth state in the Durable Object,
   const exchanges = interceptTokenExchange(t);
   const gz = await readFile(new URL(`../schemas/admin-${DEFAULT_API_VERSION}.json.gz`, import.meta.url));
   const worker = createWorker({ schemaGzip: gz });
-  const env = workerEnv(admin.base);
+  const env = workerEnv(admin.base, { ACTIONS_DENYLIST: "tagsAdd" });
+  assert.equal(process.env.ACTIONS_DENYLIST, undefined, "only the Worker env sets it");
   const { tokens, client, call } = await signIn(worker, env);
   assert.equal(exchanges.length, 1);
   assert.deepEqual(exchanges[0].client_id, "worker-client");
@@ -184,6 +185,9 @@ test("the Worker signs in with Shopify, keeps OAuth state in the Durable Object,
   // The bundled schema is inflated on first use.
   const schema = await mcp.callTool({ name: "shopify_graphql_schema", arguments: { store: "main", type_name: "Product" } });
   assert.notEqual(schema.isError, true, JSON.stringify(schema).slice(0, 500));
+  // The operator's ACTIONS_DENYLIST is read from the Worker env.
+  const denied = await mcp.callTool({ name: "shopify_run_action", arguments: { stores: ["main"], mutation: "tagsAdd", variables: { id: "gid://shopify/Product/1", tags: ["x"] } } });
+  assert.match(JSON.stringify(denied), /tagsAdd is on this server's action denylist/);
   // The legacy smart-collection write needs 2026-04, which the Worker does not bundle or download.
   const before = admin.requests.length;
   const ruleSet = await mcp.callTool({ name: "shopify_update_collection", arguments: { store: "main", id: "gid://shopify/Collection/1", ruleSet: { appliedDisjunctively: false, rules: [{ column: "TAG", relation: "EQUALS", condition: "x" }] } } });

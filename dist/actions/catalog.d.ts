@@ -49,7 +49,12 @@ export declare function isDestructive(name: string, args?: Arguments): boolean;
  * ACTIONS_DENYLIST_REPLACE=1 makes it replace this list instead.
  */
 export declare const DEFAULT_DENYLIST: readonly string[];
-export declare function denylist(env?: NodeJS.ProcessEnv): string[];
+/**
+ * The default denylist plus ACTIONS_DENYLIST (or only ACTIONS_DENYLIST with
+ * ACTIONS_DENYLIST_REPLACE). Read from runtimeEnv(): process.env on Node, the Worker's env on
+ * Cloudflare, where process.env does not hold the Worker's vars and secrets.
+ */
+export declare function denylist(env?: Readonly<Record<string, string | undefined>>): string[];
 export declare function isDenied(name: string, list?: readonly string[]): boolean;
 /** Mutations that already have a dedicated, guided tool. */
 export declare const DEDICATED_TOOLS: Readonly<Record<string, readonly string[]>>;

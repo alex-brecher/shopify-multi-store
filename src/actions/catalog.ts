@@ -17,6 +17,7 @@ import {
   type GraphQLSchema,
 } from "graphql";
 import { adminSchema } from "../schema.js";
+import { runtimeEnv } from "../runtime.js";
 
 /**
  * A catalog of every Admin API mutation in a bundled schema, for the generic action tools.
@@ -263,7 +264,12 @@ export const DEFAULT_DENYLIST: readonly string[] = [
   "bulkOperationRunMutation",
 ];
 
-export function denylist(env: NodeJS.ProcessEnv = process.env): string[] {
+/**
+ * The default denylist plus ACTIONS_DENYLIST (or only ACTIONS_DENYLIST with
+ * ACTIONS_DENYLIST_REPLACE). Read from runtimeEnv(): process.env on Node, the Worker's env on
+ * Cloudflare, where process.env does not hold the Worker's vars and secrets.
+ */
+export function denylist(env: Readonly<Record<string, string | undefined>> = runtimeEnv()): string[] {
   const extra = (env.ACTIONS_DENYLIST ?? "").split(",").map((item) => item.trim()).filter(Boolean);
   const replace = ["1", "true", "yes", "on"].includes((env.ACTIONS_DENYLIST_REPLACE ?? "").trim().toLowerCase());
   if (replace) return extra;

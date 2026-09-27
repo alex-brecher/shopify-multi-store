@@ -59,7 +59,7 @@ Set these as secrets (never as plain vars):
 | `SHOPIFY_TOKEN_ENCRYPTION_KEYS` | `k1:` followed by 32 random bytes in base64, for example `k1:$(openssl rand -base64 32)`. Encrypts stored Shopify tokens. Keep it; rotate by prepending a new key (`k2:...,k1:...`), waiting a day, then dropping the old one. |
 | `STORES_JSON` | The stores this Worker serves, for example `{"stores":[{"alias":"main","shop":"main-store.myshopify.com"},{"alias":"wholesale","shop":"wholesale-store.myshopify.com"}]}` |
 
-Optional settings go in `wrangler.jsonc` under `vars` (or as secrets): `MCP_PUBLIC_URL` (leave empty to use the host the Worker is reached on; set it when you add a custom domain and want one fixed address), `SERVER_DISPLAY_NAME`, `SHOPIFY_IDENTITY_STORE`, `SHOPIFY_APP_SCOPES`, and the `OAUTH_*` settings. They mean the same as in [HOSTED.md](HOSTED.md#configuration). `SHOPIFY_MULTI_STORE_DATA_DIR`, `PORT` and `HOST` do not apply to a Worker.
+Optional settings go in `wrangler.jsonc` under `vars` (or as secrets): `MCP_PUBLIC_URL` (leave empty to use the host the Worker is reached on; set it when you add a custom domain and want one fixed address), `SERVER_DISPLAY_NAME`, `SHOPIFY_IDENTITY_STORE`, `SHOPIFY_APP_SCOPES`, `ACTIONS_DENYLIST` and `ACTIONS_DENYLIST_REPLACE` (see [ACTIONS.md](ACTIONS.md)), and the `OAUTH_*` settings. They mean the same as in [HOSTED.md](HOSTED.md#configuration). `SHOPIFY_MULTI_STORE_DATA_DIR`, `PORT` and `HOST` do not apply to a Worker.
 
 ## 3. Check it
 

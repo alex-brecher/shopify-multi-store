@@ -1,5 +1,6 @@
 import { getNamedType, getNullableType, isEnumType, isInputObjectType, isInterfaceType, isListType, isNonNullType, isObjectType, isScalarType, isUnionType, } from "graphql";
 import { adminSchema } from "../schema.js";
+import { runtimeEnv } from "../runtime.js";
 /**
  * A catalog of every Admin API mutation in a bundled schema, for the generic action tools.
  * Everything here is derived from the schema at runtime, except three small hand-kept tables:
@@ -225,7 +226,12 @@ export const DEFAULT_DENYLIST = [
     "pubSubServerPixelUpdate",
     "bulkOperationRunMutation",
 ];
-export function denylist(env = process.env) {
+/**
+ * The default denylist plus ACTIONS_DENYLIST (or only ACTIONS_DENYLIST with
+ * ACTIONS_DENYLIST_REPLACE). Read from runtimeEnv(): process.env on Node, the Worker's env on
+ * Cloudflare, where process.env does not hold the Worker's vars and secrets.
+ */
+export function denylist(env = runtimeEnv()) {
     const extra = (env.ACTIONS_DENYLIST ?? "").split(",").map((item) => item.trim()).filter(Boolean);
     const replace = ["1", "true", "yes", "on"].includes((env.ACTIONS_DENYLIST_REPLACE ?? "").trim().toLowerCase());
     if (replace)
