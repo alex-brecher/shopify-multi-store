@@ -269,7 +269,7 @@ Give people `https://<host>/mcp` and add them to the policy file. Each person co
 - Only Google Workspace accounts in `ALLOWED_EMAIL_DOMAINS` can sign in. Consumer Google accounts that use a company email address are rejected because they have no `hd` claim.
 - Signing in is not enough: the user must also be in the policy file.
 - Nothing is issued until the user approves the app on the consent screen, which names the app and where it will return to.
-- Every Google sign-in (for an app or for `/tokens`) is bound to the browser that started it by a short-lived `__Secure-` cookie scoped to `/oauth/google/callback`. A callback URL opened in another browser is refused before the Google code is used, so a forwarded sign-in link cannot log someone in as another person.
+- Every Google sign-in, both OAuth client sign-ins (an app connecting) and the `/tokens` page sign-in, is bound to the browser that started it by a short-lived `__Secure-` cookie scoped to `/oauth/google/callback`. A callback URL opened in another browser is refused before the Google code is used, so a forwarded sign-in link cannot log someone in as another person.
 - Authorization codes are single use, expire after 2 minutes, and require PKCE S256.
 - Access tokens are bound to `https://<host>/mcp`. Refresh tokens rotate; reuse of an old refresh token revokes the whole token family.
 - A token family lives at most `OAUTH_SESSION_MAX_AGE_SECONDS` (7 days by default) from the Google sign-in, however often it is refreshed. Every refresh also re-checks the policy file, so a removed user cannot refresh.
