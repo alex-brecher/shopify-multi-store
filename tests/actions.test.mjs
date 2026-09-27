@@ -307,7 +307,7 @@ test("docs/ACTIONS.md covers per-user setup, the three tools with worked example
     assert.ok(doc.includes(heading), heading);
   }
   for (const text of ["variablesByStore", "\"confirm\": \"orderCancel\"", "giftCardCreate", "https://<host>/shopify/callback", "print-scopes.mjs --full", "ACTIONS_DENYLIST"]) assert.ok(doc.includes(text), text);
-  assert.ok(!doc.includes("—"), "no em dashes");
+  assert.ok(!doc.includes("\u2014"), "no em dashes");
 });
 
 test("webhook, server pixel, and bulk mutation subscriptions are denied by default", async (t) => {
