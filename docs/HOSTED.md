@@ -60,7 +60,7 @@ In `~/.codex/config.toml`:
 url = "https://<host>/mcp"
 ```
 
-Then run `codex mcp login shopify` and finish sign-in in the browser. To use a personal access token instead, add `bearer_token_env_var = "SHOPIFY_MCP_TOKEN"` to that table and export the token in that variable.
+Then run `codex mcp login shopify` and finish sign-in in the browser. This needs loopback redirects allowed on the server (`OAUTH_ALLOW_LOOPBACK_REDIRECTS=1`, the default). Not yet verified end to end against a live deployment. To use a personal access token instead, add `bearer_token_env_var = "SHOPIFY_MCP_TOKEN"` to that table and export the token in that variable.
 
 ### Claude Code
 
@@ -195,7 +195,7 @@ After Google sign-in the server shows the client name, the client_id, the redire
 | `OAUTH_REDIRECT_URIS` | no | | Extra exact redirect URIs, added to the built-in known clients |
 | `OAUTH_REDIRECT_URIS_REPLACE` | no | `0` | `1` makes `OAUTH_REDIRECT_URIS` replace the built-in list |
 | `OAUTH_ALLOW_ANY_REDIRECT` | no | `0` | `1` accepts any `https` or safe private-use-scheme redirect; consent is then always shown for unlisted redirects |
-| `OAUTH_ALLOW_LOOPBACK_REDIRECTS` | no | `1` | Allow `http://localhost`, `127.0.0.1`, `[::1]` redirects on any port. Set `0` to turn off. |
+| `OAUTH_ALLOW_LOOPBACK_REDIRECTS` | no | `1` | Allow `http://localhost`, `127.0.0.1`, `[::1]` redirects on any port. Keep `1` if anyone signs in from Codex, Claude Code, Gemini CLI or a desktop app: they all receive the OAuth code on a loopback redirect (Codex uses `http://127.0.0.1:<port>/callback/<id>`). Loopback redirects are the standard native-app pattern (RFC 8252) and are safe here because PKCE S256, Google sign-in and the consent screen still apply. Setting `0` breaks `codex mcp login` and `claude mcp` sign-in; those users would then need a personal access token, which carries no Shopify access in per-user mode unless `PERSONAL_TOKENS_SHOPIFY_ACCESS=1`. |
 | `OAUTH_CIMD_ALLOWED_HOSTS` | no | `*` | Hosts (and subdomains) allowed to serve client metadata documents. `*` allows any HTTPS host. Every fetch, for named hosts too, must resolve to public addresses (private, loopback, link-local, cloud metadata, and reserved ranges are refused at connect time), follows no redirects, stops at 16 KB, and times out after 5 seconds. |
 | `OAUTH_ACCESS_TOKEN_TTL_SECONDS` | no | `3600` | Access token lifetime |
 | `OAUTH_REFRESH_TOKEN_TTL_SECONDS` | no | `2592000` | Refresh token lifetime (30 days, renewed on each rotation, never past the session maximum age) |
