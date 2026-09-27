@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { AuditErrorInfo } from "./hosted/audit.js";
 /** Called once by `shopify-multi-store serve`. Turns off keychain and local-machine features. */
 export declare function enableHostedMode(): void;
 export declare function isHostedMode(): boolean;
@@ -35,7 +36,7 @@ export interface ActionAuditDetails {
     outcome: Array<{
         store: string;
         ok: boolean;
-        error?: string;
+        error?: AuditErrorInfo;
         userErrors?: number;
         shopifyEmail?: string;
     }>;

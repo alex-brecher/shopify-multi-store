@@ -480,6 +480,38 @@ test("shopify_run_action is open to editors in per-user mode, runs with the user
   assert.deepEqual(call.shopifyAccounts, { main: "pat@bariatricpal.com" });
 });
 
+test("action_run audit lines hold no PII when customerCreate fails preflight with customer data in its input", async (t) => {
+  const requests = await shopifyMock(t);
+  const { app, auditPath } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  await connectStore(app, cookie, { token: "pat-online-main" });
+  const client = await mcpClient(t, app, await login(app, "pat|bariatricpal.com"));
+  const pii = ["jane.doe@example.com", "+15550100199", "Janet", "Samplesworth", "12 Elm Street", "Springfield", "90210"];
+  // notAField makes variable coercion fail; GraphQL's error message quotes the whole input back.
+  const variables = { input: { email: pii[0], phone: pii[1], firstName: pii[2], lastName: pii[3], addresses: [{ address1: pii[4], city: pii[5], zip: pii[6] }], notAField: pii[2] } };
+  for (const dryRun of [false, true]) {
+    const result = await client.callTool({ name: "shopify_run_action", arguments: { stores: ["main"], mutation: "customerCreate", variables, dryRun } });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    assert.ok(result.content[0].text.includes(pii[0]), "the caller still sees the coercion error in full");
+  }
+  assert.equal(requests.length, 0, "nothing reached Shopify");
+
+  const raw = await readFile(auditPath, "utf8");
+  for (const value of pii) assert.ok(!raw.includes(value), `audit log contains ${value}`);
+  assert.ok(!raw.includes("got invalid value"), "no error text in the audit log");
+  const lines = raw.trim().split("\n").map((line) => JSON.parse(line));
+  const runs = lines.filter((line) => line.event === "action_run");
+  assert.equal(runs.length, 2);
+  const [applyRun, dryRunRun] = runs;
+  assert.equal(applyRun.outcome[0].ok, false);
+  assert.equal(applyRun.outcome[0].error.class, "preflight");
+  assert.match(applyRun.outcome[0].error.messageSha256, /^[0-9a-f]{64}$/);
+  assert.equal(dryRunRun.outcome[0].error.class, "dry_run_problems");
+  const calls = lines.filter((line) => line.tool === "shopify_run_action");
+  assert.equal(calls.length, 2);
+  for (const entry of calls) assert.equal(typeof entry.error.class, "string");
+});
+
 test("the raw mutation tool honors the action denylist on a hosted server", async (t) => {
   const requests = await shopifyMock(t);
   const { app } = await setup(t);

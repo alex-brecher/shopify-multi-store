@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { AuditErrorInfo } from "./hosted/audit.js";
 
 /**
  * Process-wide runtime switches. Stdio mode never changes these, so local
@@ -47,7 +48,7 @@ export interface ActionAuditDetails {
   stores: string[];
   dryRun: boolean;
   variablesSha256: string;
-  outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number; shopifyEmail?: string }>;
+  outcome: Array<{ store: string; ok: boolean; error?: AuditErrorInfo; userErrors?: number; shopifyEmail?: string }>;
 }
 
 /** Store aliases the current hosted caller may reach. "*" means every configured store. */

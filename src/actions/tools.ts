@@ -18,7 +18,7 @@ import { z } from "zod/v4";
 import { mapConcurrent } from "../concurrency.js";
 import { findStore, type StoreConfig } from "../config.js";
 import { DEFAULT_API_VERSION } from "../constants.js";
-import { canonicalJson, sha256Hex } from "../hosted/audit.js";
+import { auditError, canonicalJson, sha256Hex } from "../hosted/audit.js";
 import { fitMultiStoreResults } from "../result-limits.js";
 import { currentUserAccess, storeScope } from "../runtime.js";
 import { adminSchema } from "../schema.js";
@@ -317,17 +317,25 @@ export function registerActionTools(server: McpServer): void {
       const variablesSha256 = sha256Hex(canonicalJson({ variables: args.variables ?? {}, variablesByStore: args.variablesByStore ?? {} }));
       let mutations: string[] = args.mutation ? [args.mutation] : [];
       const aliases = [...new Map(args.stores.map((alias) => [alias.toLowerCase(), alias])).values()];
-      const audit = async (outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number }>) => {
+      // Audit entries never hold error text: preflight and Shopify messages can quote the
+      // input back (a customer's email in a coercion error, a userErrors message). Each
+      // failure becomes a class, codes, field paths, HTTP status and a sha256 of the message.
+      interface AuditFailure { class: string; message: string; detail?: unknown }
+      const audit = async (outcome: Array<{ store: string; ok: boolean; failure?: AuditFailure; userErrors?: number }>) => {
         if (!auditAction) return;
         const access = currentUserAccess();
-        const withAccounts = outcome.map((entry) => {
+        const entries = outcome.map(({ failure, ...entry }) => {
           const shopifyEmail = access?.tokens.get(entry.store.toLowerCase())?.shopifyEmail;
-          return shopifyEmail ? { ...entry, shopifyEmail } : entry;
+          return {
+            ...entry,
+            ...(failure ? { error: auditError(undefined, { content: [{ type: "text", text: failure.message }], structuredContent: failure.detail }, failure.class) } : {}),
+            ...(shopifyEmail ? { shopifyEmail } : {}),
+          };
         });
-        await auditAction({ mutations, stores: aliases, dryRun: args.dryRun, variablesSha256, outcome: withAccounts });
+        await auditAction({ mutations, stores: aliases, dryRun: args.dryRun, variablesSha256, outcome: entries });
       };
       const refuse = async (message: string, details?: Data) => {
-        await audit(aliases.map((store) => ({ store, ok: false, error: message.slice(0, 300) })));
+        await audit(aliases.map((store) => ({ store, ok: false, failure: { class: "refused", message, detail: details } })));
         return fail(message, details);
       };
       try {
@@ -454,7 +462,11 @@ export function registerActionTools(server: McpServer): void {
               ...(plan.warnings.length ? { warnings: plan.warnings } : {}),
             };
           }, RUN_CONCURRENCY);
-          await audit(previews.map((preview) => ({ store: preview.store, ok: preview.ok, ...(preview.ok ? {} : { error: "dry run found problems" }) })));
+          await audit(previews.map((preview) => ({
+            store: preview.store,
+            ok: preview.ok,
+            ...(preview.ok ? {} : { failure: { class: "dry_run_problems", message: JSON.stringify(preview), detail: preview } }),
+          })));
           const incomplete = previews.some((preview) => "preview" in preview && preview.preview && !preview.preview.complete);
           const applyArgs = `dryRun: false${destructive.length ? `, confirm: "${expectedConfirm}"` : ""}`;
           const value: Data = {
@@ -483,7 +495,13 @@ export function registerActionTools(server: McpServer): void {
         }
 
         if (invalid.length) {
-          await audit(plans.map((plan) => ({ store: plan.alias, ok: false, ...(plan.errors.length ? { error: plan.errors[0]!.slice(0, 300) } : { error: "not run: another store failed preflight" }) })));
+          await audit(plans.map((plan) => ({
+            store: plan.alias,
+            ok: false,
+            failure: plan.errors.length
+              ? { class: "preflight", message: plan.errors.join("\n") }
+              : { class: "not_run", message: "not run: another store failed preflight" },
+          })));
           return fail("Nothing was changed: some stores failed preflight. Fix these and run again.", {
             results: plans.map((plan) => ({ store: plan.alias, ok: plan.errors.length === 0, errors: plan.errors, warnings: plan.warnings })),
           });
@@ -529,7 +547,9 @@ export function registerActionTools(server: McpServer): void {
         await audit(outcomes.map((outcome) => ({
           store: outcome.store,
           ok: outcome.ok,
-          ...("error" in outcome && outcome.error ? { error: String(outcome.error).slice(0, 300) } : {}),
+          ...(!outcome.ok
+            ? { failure: { class: outcome.outcome, message: "error" in outcome && outcome.error ? String(outcome.error) : `outcome ${outcome.outcome}`, detail: { userErrors: "userErrors" in outcome ? outcome.userErrors : undefined, errors: "errors" in outcome ? outcome.errors : undefined } } }
+            : {}),
           ...("userErrors" in outcome && outcome.userErrors ? { userErrors: outcome.userErrors.length } : {}),
         })));
         const fitted = fitMultiStoreResults(outcomes, RESULT_CHARACTER_LIMIT);

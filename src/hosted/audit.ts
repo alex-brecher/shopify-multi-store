@@ -50,6 +50,8 @@ export interface AuthAuditEntry {
   tokenId?: string;
   status?: number;
   reason?: string;
+  /** Structured failure detail (never the error text). */
+  error?: AuditErrorInfo;
   /** Store alias for Shopify connection events. */
   store?: string;
   /** Shopify staff account for Shopify connection events: user id and email as Shopify reported them. */
@@ -69,7 +71,7 @@ export interface ActionAuditEntry {
   dryRun: boolean;
   variablesSha256: string;
   /** Per store; shopifyEmail is the Shopify staff account the call ran as (per-user mode). */
-  outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number; shopifyEmail?: string }>;
+  outcome: Array<{ store: string; ok: boolean; error?: AuditErrorInfo; userErrors?: number; shopifyEmail?: string }>;
 }
 
 export type AuditRecord = AuditEntry | AuthAuditEntry | ActionAuditEntry;
@@ -85,7 +87,11 @@ export interface AuditLog {
  * sha256 of the full message so an operator can match a line against a message they hold.
  */
 export interface AuditErrorInfo {
-  /** access_denied, http_error, throttled, timeout, graphql_errors, user_errors, exception or tool_error. */
+  /**
+   * access_denied, http_error, throttled, timeout, graphql_errors, user_errors, exception or
+   * tool_error; action_run lines also use preflight, refused, dry_run_problems, not_run and
+   * the store's outcome (rejected, partial, unknown, failed).
+   */
   class: string;
   /** JavaScript error name when the tool threw (Error, TypeError, ...). */
   exception?: string;
@@ -126,7 +132,7 @@ function collectErrorDetail(value: unknown, codes: Set<string>, fields: Set<stri
  * (and from JSON embedded in the message); free text only contributes the HTTP status and
  * upper-case error codes. The full message is kept only as a sha256.
  */
-export function auditError(thrown: unknown, result?: unknown): AuditErrorInfo {
+export function auditError(thrown: unknown, result?: unknown, errorClass?: string): AuditErrorInfo {
   const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
   const message = thrown !== undefined
     ? (thrown instanceof Error ? thrown.message : String(thrown))
@@ -149,7 +155,7 @@ export function auditError(thrown: unknown, result?: unknown): AuditErrorInfo {
   const status = /\bHTTP (\d{3})\b/.exec(message)?.[1];
   const httpStatus = status ? Number(status) : undefined;
   const exception = thrown instanceof Error && /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(thrown.name) ? thrown.name : undefined;
-  const errorClass = /^Access denied:/.test(message) ? "access_denied"
+  const derivedClass = /^Access denied:/.test(message) ? "access_denied"
     : codes.has("THROTTLED") || /\bthrottled\b/i.test(message) ? "throttled"
       : /did not respond within/.test(message) ? "timeout"
         : httpStatus !== undefined ? "http_error"
@@ -157,7 +163,7 @@ export function auditError(thrown: unknown, result?: unknown): AuditErrorInfo {
             : flags.graphql ? "graphql_errors"
               : thrown !== undefined ? "exception" : "tool_error";
   return {
-    class: errorClass,
+    class: errorClass ?? derivedClass,
     ...(exception ? { exception } : {}),
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     ...(codes.size ? { codes: [...codes].sort().slice(0, MAX_ERROR_ITEMS) } : {}),

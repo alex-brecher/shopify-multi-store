@@ -34,7 +34,7 @@ function collectErrorDetail(value, codes, fields, flags, depth = 0) {
  * (and from JSON embedded in the message); free text only contributes the HTTP status and
  * upper-case error codes. The full message is kept only as a sha256.
  */
-export function auditError(thrown, result) {
+export function auditError(thrown, result, errorClass) {
     const content = result?.content;
     const message = thrown !== undefined
         ? (thrown instanceof Error ? thrown.message : String(thrown))
@@ -60,7 +60,7 @@ export function auditError(thrown, result) {
     const status = /\bHTTP (\d{3})\b/.exec(message)?.[1];
     const httpStatus = status ? Number(status) : undefined;
     const exception = thrown instanceof Error && /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(thrown.name) ? thrown.name : undefined;
-    const errorClass = /^Access denied:/.test(message) ? "access_denied"
+    const derivedClass = /^Access denied:/.test(message) ? "access_denied"
         : codes.has("THROTTLED") || /\bthrottled\b/i.test(message) ? "throttled"
             : /did not respond within/.test(message) ? "timeout"
                 : httpStatus !== undefined ? "http_error"
@@ -68,7 +68,7 @@ export function auditError(thrown, result) {
                         : flags.graphql ? "graphql_errors"
                             : thrown !== undefined ? "exception" : "tool_error";
     return {
-        class: errorClass,
+        class: errorClass ?? derivedClass,
         ...(exception ? { exception } : {}),
         ...(httpStatus !== undefined ? { httpStatus } : {}),
         ...(codes.size ? { codes: [...codes].sort().slice(0, MAX_ERROR_ITEMS) } : {}),

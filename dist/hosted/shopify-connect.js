@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { auditError } from "./audit.js";
 import { cookie, escapeHtml, htmlPage, readCookie, sameOrigin } from "./html.js";
 import { PAGE_SIGN_IN_CLIENT, sha256 } from "./oauth.js";
 /**
@@ -446,7 +447,7 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
                 throw new Error(`HTTP ${response.status}`);
         }
         catch (error) {
-            await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: `token exchange failed: ${error instanceof Error ? error.message : String(error)}` });
+            await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: "token exchange failed", error: auditError(error) });
             return page(502, "Connection failed", "Shopify did not issue a token. Try again.");
         }
         // Only an online token carries the person's own permissions. An offline token would act as the app.

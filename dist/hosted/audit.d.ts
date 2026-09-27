@@ -30,6 +30,8 @@ export interface AuthAuditEntry {
     tokenId?: string;
     status?: number;
     reason?: string;
+    /** Structured failure detail (never the error text). */
+    error?: AuditErrorInfo;
     /** Store alias for Shopify connection events. */
     store?: string;
     /** Shopify staff account for Shopify connection events: user id and email as Shopify reported them. */
@@ -51,7 +53,7 @@ export interface ActionAuditEntry {
     outcome: Array<{
         store: string;
         ok: boolean;
-        error?: string;
+        error?: AuditErrorInfo;
         userErrors?: number;
         shopifyEmail?: string;
     }>;
@@ -67,7 +69,11 @@ export interface AuditLog {
  * sha256 of the full message so an operator can match a line against a message they hold.
  */
 export interface AuditErrorInfo {
-    /** access_denied, http_error, throttled, timeout, graphql_errors, user_errors, exception or tool_error. */
+    /**
+     * access_denied, http_error, throttled, timeout, graphql_errors, user_errors, exception or
+     * tool_error; action_run lines also use preflight, refused, dry_run_problems, not_run and
+     * the store's outcome (rejected, partial, unknown, failed).
+     */
     class: string;
     /** JavaScript error name when the tool threw (Error, TypeError, ...). */
     exception?: string;
@@ -84,7 +90,7 @@ export interface AuditErrorInfo {
  * (and from JSON embedded in the message); free text only contributes the HTTP status and
  * upper-case error codes. The full message is kept only as a sha256.
  */
-export declare function auditError(thrown: unknown, result?: unknown): AuditErrorInfo;
+export declare function auditError(thrown: unknown, result?: unknown, errorClass?: string): AuditErrorInfo;
 /** Longest string kept for any logged argument value. */
 export declare const AUDIT_MAX_STRING = 2000;
 /** Longest audit line, in bytes. */

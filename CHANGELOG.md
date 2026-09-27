@@ -55,6 +55,9 @@ person to their own staff permissions.
 - Mutations are never resent after Shopify throttles them; the result says the
   change was not applied and is safe to retry.
 - Docs: add `docs/ACTIONS.md`.
+- Hosted audit: `action_run` outcomes and failed Shopify token exchanges no
+  longer store error text (a preflight coercion error quotes the input back,
+  customer data included). They use the structured `error` of tool calls.
 - Fix: `shopify_update_prices` no longer reports a write as `applied` when the
   read-back that verifies it fails. Such items are `applied_unverified` and the
   store status is `unverified` (not `ok`); `shopify_update_prices_many` counts

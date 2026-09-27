@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { StoreConfig } from "../config.js";
 import type { ShopifyUserToken, UserShopifyAccess } from "../runtime.js";
+import { auditError } from "./audit.js";
 import { cookie, escapeHtml, htmlPage, readCookie, sameOrigin } from "./html.js";
 import { PAGE_SIGN_IN_CLIENT, sha256, type AuthorizationServer } from "./oauth.js";
 import type { Principal, PolicySource } from "./policy.js";
@@ -528,7 +529,7 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
       payload = await response.json().catch(() => ({})) as Record<string, unknown>;
       if (!response.ok || typeof payload.access_token !== "string") throw new Error(`HTTP ${response.status}`);
     } catch (error) {
-      await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: `token exchange failed: ${error instanceof Error ? error.message : String(error)}` });
+      await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: "token exchange failed", error: auditError(error) });
       return page(502, "Connection failed", "Shopify did not issue a token. Try again.");
     }
 
