@@ -205,6 +205,43 @@ export function deriveStatus(outcomes: string[]): "ok" | "unverified" | "partial
   return "partial";
 }
 
+type ItemOutcome = "applied" | "rejected" | "unknown";
+
+function itemOutcome(outcome: ItemOutcome): Data {
+  return { outcome, ok: outcome === "applied" };
+}
+
+/**
+ * The outcome of one write that threw: "unknown" when the request may have reached Shopify
+ * (network error or timeout after sending), otherwise "rejected".
+ */
+function failedItem(error: unknown): Data {
+  const unknown = error instanceof WorkflowError && error.details?.outcome === "unknown";
+  return {
+    ...itemOutcome(unknown ? "unknown" : "rejected"),
+    error: error instanceof Error ? error.message : String(error),
+    ...(unknown
+      ? { doNotBlindlyRetry: "The write may or may not have applied. Read it back before retrying." }
+      : {}),
+  };
+}
+
+/** Store status and counts for per-item writes, derived like shopify_update_prices. */
+function itemSummary(results: Data[]): Data {
+  const status = deriveStatus(results.map((r) => r.outcome as string));
+  return {
+    dryRun: false,
+    status,
+    results,
+    succeeded: results.filter((r) => r.outcome === "applied").length,
+    failed: results.filter((r) => r.outcome === "rejected").length,
+    unknown: results.filter((r) => r.outcome === "unknown").length,
+    ...(status === "unknown" || status === "partial"
+      ? { notice: "Items with outcome unknown may have applied. Read them back before retrying; retry only rejected items." }
+      : {}),
+  };
+}
+
 async function updatePricesCore(
   w: Workflow,
   a: {
@@ -738,21 +775,12 @@ export function registerParityTools(server: McpServer) {
       for (const r of a.redirects) {
         try {
           const d = await w.run(PDOCS.createRedirect, { urlRedirect: r });
-          results.push({ ...r, ok: true, urlRedirect: d.urlRedirectCreate?.urlRedirect });
+          results.push({ ...r, ...itemOutcome("applied"), urlRedirect: d.urlRedirectCreate?.urlRedirect });
         } catch (error) {
-          results.push({
-            ...r,
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          results.push({ ...r, ...failedItem(error) });
         }
       }
-      return {
-        dryRun: false,
-        results,
-        succeeded: results.filter((r) => r.ok).length,
-        failed: results.filter((r) => !r.ok).length,
-      };
+      return itemSummary(results);
     },
   );
   register(
@@ -774,23 +802,14 @@ export function registerParityTools(server: McpServer) {
           const d = await w.run(PDOCS.deleteRedirect, { id });
           results.push({
             id,
-            ok: true,
+            ...itemOutcome("applied"),
             deletedUrlRedirectId: d.urlRedirectDelete?.deletedUrlRedirectId,
           });
         } catch (error) {
-          results.push({
-            id,
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          results.push({ id, ...failedItem(error) });
         }
       }
-      return {
-        dryRun: false,
-        results,
-        succeeded: results.filter((r) => r.ok).length,
-        failed: results.filter((r) => !r.ok).length,
-      };
+      return itemSummary(results);
     },
   );
 

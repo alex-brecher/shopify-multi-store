@@ -971,3 +971,34 @@ test("fitWriteResult trims applied items but keeps status, counts and every non-
   const small = { status: "ok", results: [{ sku: "A", outcome: "applied" }] };
   assert.equal(fitWriteResult(small), small);
 });
+
+test("create_redirects and delete_redirects carry applied, rejected and unknown per item and derive status", async (t) => {
+  const { call } = await fixture(t);
+  const mocked = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    const path = body.variables?.urlRedirect?.path;
+    const id = body.variables?.id;
+    if (path === "/net" || id === gid("UrlRedirect", 99)) throw new Error("simulated network reset");
+    if (path === "/rej") return Response.json({ data: { urlRedirectCreate: { urlRedirect: null, userErrors: [{ field: ["path"], message: "Path already taken" }] } } });
+    return mocked(url, options);
+  };
+  const created = await call("create_redirects", {
+    redirects: [{ path: "/ok", target: "/new" }, { path: "/rej", target: "/new" }, { path: "/net", target: "/new" }],
+    dryRun: false,
+  });
+  const body = created.structuredContent;
+  assert.deepEqual(body.results.map((r) => r.outcome), ["applied", "rejected", "unknown"]);
+  assert.deepEqual(body.results.map((r) => r.ok), [true, false, false]);
+  assert.equal(body.status, "partial");
+  assert.equal(body.succeeded, 1);
+  assert.equal(body.failed, 1);
+  assert.equal(body.unknown, 1);
+  assert.ok(body.results[2].doNotBlindlyRetry);
+
+  const onlyUnknown = await call("delete_redirects", { ids: [gid("UrlRedirect", 99)], dryRun: false });
+  assert.equal(onlyUnknown.structuredContent.status, "unknown", "an unknown outcome is not flattened into failed");
+  const deleted = await call("delete_redirects", { ids: [gid("UrlRedirect", 1)], dryRun: false });
+  assert.equal(deleted.structuredContent.status, "ok");
+  assert.equal(deleted.structuredContent.results[0].outcome, "applied");
+});

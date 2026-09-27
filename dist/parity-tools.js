@@ -176,6 +176,38 @@ export function deriveStatus(outcomes) {
     }
     return "partial";
 }
+function itemOutcome(outcome) {
+    return { outcome, ok: outcome === "applied" };
+}
+/**
+ * The outcome of one write that threw: "unknown" when the request may have reached Shopify
+ * (network error or timeout after sending), otherwise "rejected".
+ */
+function failedItem(error) {
+    const unknown = error instanceof WorkflowError && error.details?.outcome === "unknown";
+    return {
+        ...itemOutcome(unknown ? "unknown" : "rejected"),
+        error: error instanceof Error ? error.message : String(error),
+        ...(unknown
+            ? { doNotBlindlyRetry: "The write may or may not have applied. Read it back before retrying." }
+            : {}),
+    };
+}
+/** Store status and counts for per-item writes, derived like shopify_update_prices. */
+function itemSummary(results) {
+    const status = deriveStatus(results.map((r) => r.outcome));
+    return {
+        dryRun: false,
+        status,
+        results,
+        succeeded: results.filter((r) => r.outcome === "applied").length,
+        failed: results.filter((r) => r.outcome === "rejected").length,
+        unknown: results.filter((r) => r.outcome === "unknown").length,
+        ...(status === "unknown" || status === "partial"
+            ? { notice: "Items with outcome unknown may have applied. Read them back before retrying; retry only rejected items." }
+            : {}),
+    };
+}
 async function updatePricesCore(w, a) {
     const needsCost = a.skus.some((s) => s.unitCost !== undefined);
     await w.requireScopes([
@@ -619,22 +651,13 @@ export function registerParityTools(server) {
         for (const r of a.redirects) {
             try {
                 const d = await w.run(PDOCS.createRedirect, { urlRedirect: r });
-                results.push({ ...r, ok: true, urlRedirect: d.urlRedirectCreate?.urlRedirect });
+                results.push({ ...r, ...itemOutcome("applied"), urlRedirect: d.urlRedirectCreate?.urlRedirect });
             }
             catch (error) {
-                results.push({
-                    ...r,
-                    ok: false,
-                    error: error instanceof Error ? error.message : String(error),
-                });
+                results.push({ ...r, ...failedItem(error) });
             }
         }
-        return {
-            dryRun: false,
-            results,
-            succeeded: results.filter((r) => r.ok).length,
-            failed: results.filter((r) => !r.ok).length,
-        };
+        return itemSummary(results);
     });
     register("delete_redirects", "Delete up to 100 URL redirects by ID with per-ID outcomes. Requires write_online_store_navigation. Defaults to dryRun:true.", { ids: z.array(gid("UrlRedirect")).min(1).max(100) }, true, async (w, a) => {
         await w.requireScopes(["write_online_store_navigation"]);
@@ -650,24 +673,15 @@ export function registerParityTools(server) {
                 const d = await w.run(PDOCS.deleteRedirect, { id });
                 results.push({
                     id,
-                    ok: true,
+                    ...itemOutcome("applied"),
                     deletedUrlRedirectId: d.urlRedirectDelete?.deletedUrlRedirectId,
                 });
             }
             catch (error) {
-                results.push({
-                    id,
-                    ok: false,
-                    error: error instanceof Error ? error.message : String(error),
-                });
+                results.push({ id, ...failedItem(error) });
             }
         }
-        return {
-            dryRun: false,
-            results,
-            succeeded: results.filter((r) => r.ok).length,
-            failed: results.filter((r) => !r.ok).length,
-        };
+        return itemSummary(results);
     });
     // 5. Delivery profiles
     register("list_delivery_profiles", "List delivery profiles with their zones, method definitions and current flat rates. Requires read_shipping.", { ...page }, false, async (w, a) => {
