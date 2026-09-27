@@ -533,6 +533,26 @@ test("without the Admin schema, aliased userErrors are still found per root and 
   assert.equal(empty.outcome, "unknown");
 });
 
+test("shopify_run_action refuses two aliases that resolve to the same shop, before anything is sent", async (t) => {
+  const { callTool, requests } = await fixture(t);
+  await writeFile(process.env.SHOPIFY_MULTI_STORE_CONFIG, JSON.stringify({ stores: [
+    { alias: "main", shop: "main.myshopify.com", apiVersion: "2026-04" },
+    { alias: "main-copy", shop: "MAIN.myshopify.com", apiVersion: "2026-04" },
+    { alias: "wholesale", shop: "wholesale.myshopify.com", apiVersion: "2026-04" }
+  ] }));
+  const args = { stores: ["main", "main-copy"], mutation: "tagsAdd", variables: { id: "gid://shopify/Product/1", tags: ["x"] } };
+  for (const dryRun of [true, false]) {
+    const result = await callTool("shopify_run_action", { ...args, dryRun });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /"main" and "main-copy" both point to/);
+  }
+  assert.equal(requests.length, 0, "nothing reached Shopify");
+  // Case variants of one alias are still one store, and distinct shops still run.
+  const ok = await callTool("shopify_run_action", { ...args, stores: ["main", "MAIN", "wholesale"], dryRun: true });
+  assert.notEqual(ok.isError, true, ok.content[0].text);
+  assert.equal(ok.structuredContent.results.length, 2);
+});
+
 // ---------- Dry-run completeness ----------
 
 const dry = (callTool, args) => callTool("shopify_run_action", { stores: ["main"], ...args });

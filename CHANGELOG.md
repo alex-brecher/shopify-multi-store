@@ -55,6 +55,9 @@ person to their own staff permissions.
 - Mutations are never resent after Shopify throttles them; the result says the
   change was not applied and is safe to retry.
 - Docs: add `docs/ACTIONS.md`.
+- `shopify_run_action` refuses two requested aliases that resolve to the same
+  shop, naming both, before any lookup or write, so a mutation never runs twice
+  on one shop.
 - `shopify_graphql_mutation` no longer falls back to the non-alias-aware
   userErrors check when the Admin schema cannot be loaded (or the document does
   not validate). It scans each top-level response key for lists of objects

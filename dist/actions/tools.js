@@ -2,7 +2,7 @@ import { getNamedType, isEnumType, isObjectType, isScalarType, Kind, parse, vali
 import { getVariableValues } from "graphql/execution/values.js";
 import { z } from "zod/v4";
 import { mapConcurrent } from "../concurrency.js";
-import { findStore } from "../config.js";
+import { findStore, resolveStoreTargets } from "../config.js";
 import { DEFAULT_API_VERSION } from "../constants.js";
 import { auditError, canonicalJson, sha256Hex } from "../hosted/audit.js";
 import { fitMultiStoreResults } from "../result-limits.js";
@@ -300,6 +300,14 @@ export function registerActionTools(server) {
             return fail(message, details);
         };
         try {
+            // Two aliases for one shop would run the mutation twice there. Refused before anything
+            // else, naming both; unknown aliases are reported per store by the preflight below.
+            try {
+                await resolveStoreTargets(aliases);
+            }
+            catch (error) {
+                return await refuse(`Nothing was changed: ${error instanceof Error ? error.message : String(error)}`);
+            }
             if (!args.mutation && !args.document)
                 return await refuse("Give a mutation name or a document.");
             const byStoreKeys = Object.keys(args.variablesByStore ?? {});
