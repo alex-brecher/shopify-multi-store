@@ -7,7 +7,9 @@ import {
   Kind,
   parse,
   validate,
+  valueFromASTUntyped,
   type DocumentNode,
+  type FieldNode,
   type FragmentDefinitionNode,
   type GraphQLSchema,
   type OperationDefinitionNode,
@@ -32,6 +34,7 @@ import {
   findMutation,
   isDenied,
   isDestructive,
+  LABEL_FIELDS,
   scopeHint,
   searchCatalog,
 } from "./catalog.js";
@@ -44,7 +47,6 @@ const Variables = z.record(z.string(), z.unknown());
 const RUN_CONCURRENCY = 4;
 const RESULT_CHARACTER_LIMIT = 100_000;
 const MAX_RESOLVED_IDS = 250;
-const LABEL_FIELDS = ["title", "name", "displayName", "email", "handle", "sku", "status"];
 const GID = /^gid:\/\/shopify\/([A-Za-z][A-Za-z0-9]*)\/[^\s]+$/;
 
 type Data = Record<string, unknown>;
@@ -74,6 +76,8 @@ interface ParsedAction {
   operation: OperationDefinitionNode;
   /** Root mutation fields in document order, fragments included. */
   rootFields: string[];
+  /** Every root field call (an aliased field called twice appears twice), for argument checks. */
+  rootNodes: FieldNode[];
 }
 
 /** Parse a caller-supplied document: exactly one operation, a mutation, executable definitions only. */
@@ -91,10 +95,13 @@ export function parseActionDocument(document: string): ParsedAction {
   const fragments = new Map<string, FragmentDefinitionNode>();
   for (const definition of ast.definitions) if (definition.kind === Kind.FRAGMENT_DEFINITION) fragments.set(definition.name.value, definition);
   const rootFields: string[] = [];
+  const rootNodes: FieldNode[] = [];
   const walk = (set: SelectionSetNode, active: Set<string>) => {
     for (const selection of set.selections) {
       if (selection.kind === Kind.FIELD) {
-        if (selection.name.value !== "__typename" && !rootFields.includes(selection.name.value)) rootFields.push(selection.name.value);
+        if (selection.name.value === "__typename") continue;
+        rootNodes.push(selection);
+        if (!rootFields.includes(selection.name.value)) rootFields.push(selection.name.value);
       } else if (selection.kind === Kind.INLINE_FRAGMENT) {
         walk(selection.selectionSet, active);
       } else {
@@ -107,7 +114,36 @@ export function parseActionDocument(document: string): ParsedAction {
   };
   walk(operation.selectionSet, new Set());
   if (!rootFields.length) throw new Error("The mutation selects no fields.");
-  return { ast, operation, rootFields };
+  return { ast, operation, rootFields, rootNodes };
+}
+
+/**
+ * The destructive mutations a document calls, in document order: by name, and by the resolved
+ * argument values (inline literals with each variable set substituted) under the argument rules
+ * in DESTRUCTIVE_ARGUMENT_RULES. Several variable sets (one per store) are checked together, and
+ * a mutation destructive under any of them is included.
+ */
+export function destructiveMutations(parsed: ParsedAction, variableSets: readonly Data[] = [{}]): string[] {
+  const hit = new Set<string>();
+  for (const node of parsed.rootNodes) {
+    const name = node.name.value;
+    if (hit.has(name)) continue;
+    for (const variables of variableSets.length ? variableSets : [{}]) {
+      const args: Data = {};
+      for (const argument of node.arguments ?? []) {
+        try {
+          args[argument.name.value] = valueFromASTUntyped(argument.value, variables);
+        } catch {
+          args[argument.name.value] = undefined;
+        }
+      }
+      if (isDestructive(name, args)) {
+        hit.add(name);
+        break;
+      }
+    }
+  }
+  return parsed.rootFields.filter((name) => hit.has(name));
 }
 
 /** Every Shopify GID string anywhere in a value. */
@@ -173,12 +209,12 @@ function lacksMessage(scopes: string[], alias: string): string {
  * refuse denylisted mutations, and require confirm equal to the destructive mutation names
  * (comma-separated, in document order) before applying. Returns the refusal, or undefined.
  */
-export function actionPolicyError(mutations: string[], confirm: unknown, applying: boolean): string | undefined {
+export function actionPolicyError(mutations: string[], confirm: unknown, applying: boolean, destructiveNames?: string[]): string | undefined {
   const denied = mutations.filter((name) => isDenied(name, denylist()));
   if (denied.length) {
     return `Refused: ${denied.join(", ")} ${denied.length === 1 ? "is" : "are"} on this server's action denylist (mutations that mint credentials, change this app's own installation or billing, create lasting subscriptions, or hide other mutations).`;
   }
-  const destructive = mutations.filter(isDestructive);
+  const destructive = destructiveNames ?? mutations.filter((name) => isDestructive(name));
   const expected = destructive.join(",");
   if (applying && destructive.length && confirm !== expected) {
     return `${expected} is destructive. Run a dry run first, then pass confirm: "${expected}" with dryRun: false.`;
@@ -360,9 +396,18 @@ export function registerActionTools(server: McpServer): void {
             return await refuse(`The document does not call ${args.mutation}; it calls ${parsed.rootFields.join(", ")}.`);
           }
         }
-        const policyError = actionPolicyError(mutations, args.confirm, !args.dryRun);
+        // Destructive by name, or by argument values (a status of ARCHIVED, notifyCustomer true...)
+        // under any store's merged variables. A name-only call uses the default document, whose
+        // variables are named after the arguments.
+        const variableSets = aliases.map((alias) => ({
+          ...(args.variables ?? {}),
+          ...(Object.entries(args.variablesByStore ?? {}).find(([key]) => key.toLowerCase() === alias.toLowerCase())?.[1] ?? {}),
+        }));
+        const destructive = parsed
+          ? destructiveMutations(parsed, variableSets)
+          : mutations.filter((name) => variableSets.some((variables) => isDestructive(name, variables)));
+        const policyError = actionPolicyError(mutations, args.confirm, !args.dryRun, destructive);
         if (policyError) return await refuse(policyError);
-        const destructive = mutations.filter(isDestructive);
         const expectedConfirm = destructive.join(",");
 
         // Preflight every store before any change: connection, schema validation, variables.

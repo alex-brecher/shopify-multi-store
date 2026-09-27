@@ -43,7 +43,8 @@ Notes:
 - Each store's `preview` says whether it is `complete`. It is incomplete, with `reasons`, when the targets cannot all be listed in advance: a search, saved-search, filter, or `where` argument (such as `urlRedirectBulkDeleteBySearch` or `discountCodeBulkDelete` with `search`), a `*BySearch`, `*BySavedSearch`, or `*DeleteAll` mutation, an "all" flag set to `true` (such as `deleteAllAssociatedMetafields`), more than 250 IDs (only the first 250 are looked up), IDs that `nodes` does not return (listed in `unresolved`), or a failed lookup. An incomplete preview's `recommendation` is "Do not apply without narrowing". A preview only ever lists the records the document names by ID; it is not a guarantee of the full effect of a mutation.
 - Applying a document whose preview is incomplete for a search, filter, "all" flag, or more than 250 IDs needs `acknowledgeIncompletePreview: true` in addition to `dryRun: false` and any `confirm`. These are checked again when applying. Applying also looks up every record ID again (in the variables and written inline, per store) with `nodes(ids:)` before sending anything; if any ID does not resolve, or the lookup fails, nothing is changed unless `acknowledgeIncompletePreview: true` is set.
 - `dryRun: false` applies it. Every store is checked first; if any store fails validation, nothing runs anywhere.
-- Destructive mutations (names containing delete, remove, cancel, refund, void, debit, deactivate, revoke, close, archive, disable, erasure, uninstall, destroy, merge, expire, dispose, or unpublish; the list is `DESTRUCTIVE_WORDS` in `src/actions/catalog.ts`) need `confirm` set to the mutation name. So do mutations that replace data wholesale or move money even though their names do not say so, such as `productSet`, `customerSet`, `themePublish`, `themeFilesUpsert`, `inventorySetQuantities`, `orderCapture`, and `draftOrderComplete` (`DESTRUCTIVE_MUTATIONS` in the same file).
+- Destructive mutations (names containing delete, remove, cancel, refund, void, debit, deactivate, revoke, close, archive, disable, erasure, uninstall, destroy, merge, expire, dispose, or unpublish; the list is `DESTRUCTIVE_WORDS` in `src/actions/catalog.ts`) need `confirm` set to the mutation name. So do mutations that replace data wholesale or move money even though their names do not say so, such as `productSet`, `customerSet`, `themePublish`, `themeFilesUpsert`, `inventorySetQuantities`, `orderCapture`, and `draftOrderComplete`, and mutations that change what customers see at once, email customers, or issue value, such as `publishablePublish`, `discountCodeActivate`, `orderInvoiceSend`, `giftCardCreate`, and `storeCreditAccountCredit` (`DESTRUCTIVE_MUTATIONS` in the same file).
+- Some mutations are destructive only with certain arguments, judged from the resolved values (inline literals and variables, per store): `productUpdate` or `productChangeStatus` with status `ARCHIVED` or `DRAFT`, `productVariantsBulkCreate` with strategy `REMOVE_STANDALONE_VARIANT`, and any mutation with `notifyCustomer: true`. The rules live in one table, `DESTRUCTIVE_ARGUMENT_RULES` in `src/actions/catalog.ts`; `shopify_describe_action` lists them as `destructiveWhen`.
 - Queries, subscriptions, and documents with more than one operation are refused. Root fields hidden in fragments are checked too.
 - A mutation is never retried or resent. If Shopify throttles it before running it, the result is `throttled`: not applied, safe to retry after the time given. If the request fails in a way where it might have applied, the result says so.
 - Every top-level mutation field (each "root", named by its alias if it has one) is judged on its own. Before sending, the server adds each root payload's error lists (`userErrors` and any other `*Errors` list of objects with a `message`) under a reserved alias, `smsUserErrors_<field>`, such as `smsUserErrors_userErrors: userErrors { field message }`. Detection therefore does not depend on whether or how you selected or aliased the error list. The injected keys are removed from the returned data, and aliases starting with `smsUserErrors` are refused in your own documents.
@@ -52,7 +53,7 @@ Notes:
 - `ACCESS_DENIED` becomes "Your Shopify account or the app lacks write_x on <store>".
 - On the hosted server, every call writes an `action_run` audit line with the user, stores, mutations, a hash of the variables, and each store's outcome.
 
-In app mode, `shopify_run_action` and `shopify_graphql_mutation` are admin-only. In per-user mode they are available to every signed-in user who is not a `viewer`, because Shopify enforces permissions. In per-user mode `shopify_graphql_mutation` applies the same denylist and destructive confirm check as `shopify_run_action`: a destructive mutation needs `confirm` set to its name instead of `true`. `shopify_graphql_mutation` also injects the same error lists and reports the same per-root `outcome`, `roots`, and advice. If the schema for the store's API version cannot be loaded, or the document or variables do not validate against it, the document is sent unchanged and judged structurally, with an `outcomeNotice`: under each top-level response key, any list of objects with a `message` key counts as that root's user errors, whatever its alias. A root is `applied` only when its payload came back with an empty list under a key ending in `errors` and no errors on its path; a root with nothing to go on is `unknown`, never `applied`.
+In app mode, `shopify_run_action` and `shopify_graphql_mutation` are admin-only. In per-user mode they are available to every signed-in user who is not a `viewer`, because Shopify enforces permissions. In every mode (local, hosted app token, hosted per-user) `shopify_graphql_mutation` applies the same denylist and destructive confirm check as `shopify_run_action`: a destructive mutation needs `confirm` set to its name instead of `true`. `shopify_graphql_mutation` also injects the same error lists and reports the same per-root `outcome`, `roots`, and advice. If the schema for the store's API version cannot be loaded, or the document or variables do not validate against it, the document is sent unchanged and judged structurally, with an `outcomeNotice`: under each top-level response key, any list of objects with a `message` key counts as that root's user errors, whatever its alias. A root is `applied` only when its payload came back with an empty list under a key ending in `errors` and no errors on its path; a root with nothing to go on is `unknown`, never `applied`.
 
 ### Denylist
 
@@ -62,7 +63,7 @@ In app mode, `shopify_run_action` and `shopify_graphql_mutation` are admin-only.
 - webhook and server-pixel subscriptions (`webhookSubscriptionCreate`, `webhookSubscriptionUpdate`, `webhookSubscriptionDelete`, `pubSubWebhookSubscription*`, `eventBridgeWebhookSubscription*`, `eventBridgeServerPixelUpdate`, `pubSubServerPixelUpdate`), because they keep delivering data with the app's scopes after the caller's own token has expired;
 - `bulkOperationRunMutation`, which would hide the inner mutation from the denylist and the confirm check.
 
-`ACTIONS_DENYLIST` (comma list, `*` suffix for a prefix) adds to this list. `ACTIONS_DENYLIST_REPLACE=1` makes `ACTIONS_DENYLIST` replace it instead. `shopify_find_actions` marks denied mutations `denied`. On a hosted server, `shopify_graphql_mutation` refuses the same mutations.
+`ACTIONS_DENYLIST` (comma list, `*` suffix for a prefix) adds to this list. `ACTIONS_DENYLIST_REPLACE=1` makes `ACTIONS_DENYLIST` replace it instead. `shopify_find_actions` marks denied mutations `denied`. `shopify_graphql_mutation` refuses the same mutations in every mode.
 
 ## Worked examples
 
@@ -108,11 +109,12 @@ The dry run reports `confirmRequired: "orderCancel"`. Apply with `"dryRun": fals
   "stores": ["netrition"],
   "mutation": "giftCardCreate",
   "variables": { "input": { "initialValue": "25.00", "note": "Service recovery", "customerId": "gid://shopify/Customer/901" } },
-  "dryRun": false
+  "dryRun": false,
+  "confirm": "giftCardCreate"
 }
 ```
 
-Not destructive, so no confirm. It needs `write_gift_cards`; if the app or the person lacks it, the result says so. The default selection returns `giftCardCode`, which Shopify shows only once.
+It issues money-equivalent value, so it counts as destructive and needs `confirm`. It needs `write_gift_cards`; if the app or the person lacks it, the result says so. The default selection returns `giftCardCode`, which Shopify shows only once.
 
 ## What no third-party app can do
 

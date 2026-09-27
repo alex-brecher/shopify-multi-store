@@ -142,10 +142,96 @@ export const DESTRUCTIVE_MUTATIONS: ReadonlySet<string> = new Set([
   "subscriptionContractPause",
   // Runs arbitrary mutations in bulk; denylisted by default, destructive if an operator allows it.
   "bulkOperationRunMutation",
+  // Change what customers see at once: publish to a sales channel, or make a discount live.
+  "publishablePublish",
+  "publishablePublishToCurrentChannel",
+  "productPublish",
+  "collectionPublish",
+  "discountAutomaticActivate",
+  "discountCodeActivate",
+  "discountCodeBulkActivate",
+  // Email customers; a sent message cannot be recalled.
+  "orderInvoiceSend",
+  "draftOrderInvoiceSend",
+  "paymentReminderSend",
+  "customerSendAccountInviteEmail",
+  "customerPaymentMethodSendUpdateEmail",
+  "companyContactSendWelcomeEmail",
+  "giftCardSendNotificationToCustomer",
+  "giftCardSendNotificationToRecipient",
+  // Issue money or money-equivalent value.
+  "giftCardCreate",
+  "giftCardCredit",
+  "storeCreditAccountCredit",
 ]);
 
-export function isDestructive(name: string): boolean {
-  return DESTRUCTIVE_MUTATIONS.has(name) || DESTRUCTIVE_PATTERN.test(name);
+type Arguments = Readonly<Record<string, unknown>>;
+
+/** One argument-driven rule: the mutation is destructive only when `when` holds for its arguments. */
+export interface DestructiveArgumentRule {
+  /** Mutation name, or "*" for every mutation. */
+  mutation: string;
+  /** Why the call is destructive, shown by shopify_describe_action. */
+  reason: string;
+  when: (args: Arguments) => boolean;
+}
+
+const record = (value: unknown): Arguments | undefined =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Arguments) : undefined;
+const hidesProduct = (status: unknown) => status === "ARCHIVED" || status === "DRAFT";
+
+/** True when key holds `true` anywhere in value (nested inputs and lists included). */
+function deepTrue(value: unknown, key: string, depth = 0): boolean {
+  if (depth > 8 || !value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((item) => deepTrue(item, key, depth + 1));
+  return Object.entries(value).some(([name, item]) => (name === key && item === true) || deepTrue(item, key, depth + 1));
+}
+
+/**
+ * Mutations whose names look safe but whose arguments can make them destructive. The arguments
+ * are the call's resolved values: inline literals with variables substituted. Keep this the only
+ * table of argument rules.
+ */
+export const DESTRUCTIVE_ARGUMENT_RULES: readonly DestructiveArgumentRule[] = [
+  {
+    mutation: "productChangeStatus",
+    reason: "status ARCHIVED or DRAFT takes the product off every sales channel.",
+    when: (args) => hidesProduct(args.status),
+  },
+  {
+    mutation: "productUpdate",
+    reason: "product.status (or legacy input.status) ARCHIVED or DRAFT takes the product off every sales channel.",
+    when: (args) => hidesProduct(record(args.product)?.status) || hidesProduct(record(args.input)?.status),
+  },
+  {
+    mutation: "productVariantsBulkCreate",
+    reason: "strategy REMOVE_STANDALONE_VARIANT deletes the product's default variant.",
+    when: (args) => args.strategy === "REMOVE_STANDALONE_VARIANT",
+  },
+  {
+    mutation: "*",
+    reason: "notifyCustomer true emails the customer; a sent message cannot be recalled.",
+    when: (args) => deepTrue(args, "notifyCustomer"),
+  },
+];
+
+function argumentRules(name: string): DestructiveArgumentRule[] {
+  return DESTRUCTIVE_ARGUMENT_RULES.filter((rule) => rule.mutation === name || rule.mutation === "*");
+}
+
+/** Reasons a call to `name` can be destructive depending on its arguments (for describe output). */
+export function destructiveWhen(name: string): string[] {
+  return DESTRUCTIVE_ARGUMENT_RULES.filter((rule) => rule.mutation === name).map((rule) => rule.reason);
+}
+
+/**
+ * Whether a mutation is destructive. By name alone when args is omitted; with args (the call's
+ * resolved argument values), argument rules from DESTRUCTIVE_ARGUMENT_RULES apply as well.
+ */
+export function isDestructive(name: string, args?: Arguments): boolean {
+  if (DESTRUCTIVE_MUTATIONS.has(name) || DESTRUCTIVE_PATTERN.test(name)) return true;
+  if (!args) return false;
+  return argumentRules(name).some((rule) => rule.when(args));
 }
 
 /**
@@ -438,7 +524,8 @@ function describeInput(type: GraphQLInputType, depth: number, seen: Set<string>)
   };
 }
 
-const LABEL_FIELDS = ["title", "name", "displayName", "handle", "sku", "email", "status", "code"];
+/** Scalar fields that label a record in previews and default selections. */
+export const LABEL_FIELDS = ["title", "name", "displayName", "handle", "sku", "email", "status", "code"] as const;
 
 function simpleField(type: GraphQLObjectType | ReturnType<typeof getNamedType>, name: string): boolean {
   if (!isObjectType(type) && !isInterfaceType(type)) return false;
@@ -543,6 +630,7 @@ export async function describeAction(name: string, version: string, depth = 3) {
     category: classifyMutation(field.name) ?? "platform",
     destructive: isDestructive(field.name),
     ...(isDestructive(field.name) ? { confirmRequired: field.name } : {}),
+    ...(destructiveWhen(field.name).length ? { destructiveWhen: destructiveWhen(field.name), confirmRequiredWhen: field.name } : {}),
     denied: isDenied(field.name),
     ...(field.deprecationReason != null ? { deprecated: field.deprecationReason } : {}),
     dedicatedTools: [...(DEDICATED_TOOLS[field.name] ?? [])],

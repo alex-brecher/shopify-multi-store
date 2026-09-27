@@ -120,9 +120,82 @@ export const DESTRUCTIVE_MUTATIONS = new Set([
     "subscriptionContractPause",
     // Runs arbitrary mutations in bulk; denylisted by default, destructive if an operator allows it.
     "bulkOperationRunMutation",
+    // Change what customers see at once: publish to a sales channel, or make a discount live.
+    "publishablePublish",
+    "publishablePublishToCurrentChannel",
+    "productPublish",
+    "collectionPublish",
+    "discountAutomaticActivate",
+    "discountCodeActivate",
+    "discountCodeBulkActivate",
+    // Email customers; a sent message cannot be recalled.
+    "orderInvoiceSend",
+    "draftOrderInvoiceSend",
+    "paymentReminderSend",
+    "customerSendAccountInviteEmail",
+    "customerPaymentMethodSendUpdateEmail",
+    "companyContactSendWelcomeEmail",
+    "giftCardSendNotificationToCustomer",
+    "giftCardSendNotificationToRecipient",
+    // Issue money or money-equivalent value.
+    "giftCardCreate",
+    "giftCardCredit",
+    "storeCreditAccountCredit",
 ]);
-export function isDestructive(name) {
-    return DESTRUCTIVE_MUTATIONS.has(name) || DESTRUCTIVE_PATTERN.test(name);
+const record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+const hidesProduct = (status) => status === "ARCHIVED" || status === "DRAFT";
+/** True when key holds `true` anywhere in value (nested inputs and lists included). */
+function deepTrue(value, key, depth = 0) {
+    if (depth > 8 || !value || typeof value !== "object")
+        return false;
+    if (Array.isArray(value))
+        return value.some((item) => deepTrue(item, key, depth + 1));
+    return Object.entries(value).some(([name, item]) => (name === key && item === true) || deepTrue(item, key, depth + 1));
+}
+/**
+ * Mutations whose names look safe but whose arguments can make them destructive. The arguments
+ * are the call's resolved values: inline literals with variables substituted. Keep this the only
+ * table of argument rules.
+ */
+export const DESTRUCTIVE_ARGUMENT_RULES = [
+    {
+        mutation: "productChangeStatus",
+        reason: "status ARCHIVED or DRAFT takes the product off every sales channel.",
+        when: (args) => hidesProduct(args.status),
+    },
+    {
+        mutation: "productUpdate",
+        reason: "product.status (or legacy input.status) ARCHIVED or DRAFT takes the product off every sales channel.",
+        when: (args) => hidesProduct(record(args.product)?.status) || hidesProduct(record(args.input)?.status),
+    },
+    {
+        mutation: "productVariantsBulkCreate",
+        reason: "strategy REMOVE_STANDALONE_VARIANT deletes the product's default variant.",
+        when: (args) => args.strategy === "REMOVE_STANDALONE_VARIANT",
+    },
+    {
+        mutation: "*",
+        reason: "notifyCustomer true emails the customer; a sent message cannot be recalled.",
+        when: (args) => deepTrue(args, "notifyCustomer"),
+    },
+];
+function argumentRules(name) {
+    return DESTRUCTIVE_ARGUMENT_RULES.filter((rule) => rule.mutation === name || rule.mutation === "*");
+}
+/** Reasons a call to `name` can be destructive depending on its arguments (for describe output). */
+export function destructiveWhen(name) {
+    return DESTRUCTIVE_ARGUMENT_RULES.filter((rule) => rule.mutation === name).map((rule) => rule.reason);
+}
+/**
+ * Whether a mutation is destructive. By name alone when args is omitted; with args (the call's
+ * resolved argument values), argument rules from DESTRUCTIVE_ARGUMENT_RULES apply as well.
+ */
+export function isDestructive(name, args) {
+    if (DESTRUCTIVE_MUTATIONS.has(name) || DESTRUCTIVE_PATTERN.test(name))
+        return true;
+    if (!args)
+        return false;
+    return argumentRules(name).some((rule) => rule.when(args));
 }
 /**
  * Mutations refused by default: ones that mint credentials or change this app's own installation
@@ -379,7 +452,8 @@ function describeInput(type, depth, seen) {
         })),
     };
 }
-const LABEL_FIELDS = ["title", "name", "displayName", "handle", "sku", "email", "status", "code"];
+/** Scalar fields that label a record in previews and default selections. */
+export const LABEL_FIELDS = ["title", "name", "displayName", "handle", "sku", "email", "status", "code"];
 function simpleField(type, name) {
     if (!isObjectType(type) && !isInterfaceType(type))
         return false;
@@ -495,6 +569,7 @@ export async function describeAction(name, version, depth = 3) {
         category: classifyMutation(field.name) ?? "platform",
         destructive: isDestructive(field.name),
         ...(isDestructive(field.name) ? { confirmRequired: field.name } : {}),
+        ...(destructiveWhen(field.name).length ? { destructiveWhen: destructiveWhen(field.name), confirmRequiredWhen: field.name } : {}),
         denied: isDenied(field.name),
         ...(field.deprecationReason != null ? { deprecated: field.deprecationReason } : {}),
         dedicatedTools: [...(DEDICATED_TOOLS[field.name] ?? [])],
