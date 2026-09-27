@@ -39,6 +39,18 @@ export class MemoryStore {
         await this.changed();
         return entry.value;
     }
+    async update(kind, key, change) {
+        // Read and write with no await in between, so no other operation can run in the gap.
+        const entry = this.live(kind, key);
+        if (!entry)
+            return undefined;
+        const next = change(entry.value);
+        if (next === undefined)
+            return undefined;
+        this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
+        await this.changed();
+        return next;
+    }
     async delete(kind, key) {
         if (!Object.hasOwn(this.data[kind], key))
             return;

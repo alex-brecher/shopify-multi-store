@@ -11,6 +11,12 @@ export interface OAuthStore {
   /** Read and delete in one step. Used for single-use authorization codes and login state. */
   take<T>(kind: RecordKind, key: string): Promise<T | undefined>;
   delete(kind: RecordKind, key: string): Promise<void>;
+  /**
+   * Conditional update in one step: read the live record and, only if it still exists, replace
+   * it with what `change` returns (keeping its expiry). Returns the new value, or undefined when
+   * there was no record or `change` returned undefined. `change` must be synchronous.
+   */
+  update<T>(kind: RecordKind, key: string, change: (current: T) => T | undefined): Promise<T | undefined>;
   /** Delete every record of a kind that matches. Returns the number removed. */
   deleteWhere<T>(kind: RecordKind, predicate: (value: T) => boolean): Promise<number>;
   count(kind: RecordKind): Promise<number>;
@@ -63,6 +69,17 @@ export class MemoryStore implements OAuthStore {
     delete this.data[kind][key];
     await this.changed();
     return entry.value as T;
+  }
+
+  async update<T>(kind: RecordKind, key: string, change: (current: T) => T | undefined): Promise<T | undefined> {
+    // Read and write with no await in between, so no other operation can run in the gap.
+    const entry = this.live(kind, key);
+    if (!entry) return undefined;
+    const next = change(entry.value as T);
+    if (next === undefined) return undefined;
+    this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
+    await this.changed();
+    return next;
   }
 
   async delete(kind: RecordKind, key: string): Promise<void> {

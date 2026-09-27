@@ -1076,6 +1076,75 @@ test("tokens page enforces CSRF, same origin, ownership, and gives admins every 
   assert.equal(consumer.denied.status, 403);
 });
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+/** A store that can pause one personal-token read after it has read the record, to order a race exactly. */
+class GatedStore extends MemoryStore {
+  gate;
+  async get(kind, key) {
+    const value = await super.get(kind, key);
+    if (kind === "pat" && this.gate) {
+      const gate = this.gate;
+      this.gate = undefined;
+      gate.arrived.resolve();
+      await gate.release.promise;
+    }
+    return value;
+  }
+}
+
+const EXAMPLE_POLICY = { users: { "editor@example.com": { role: "editor", stores: ["main"] } }, domains: {} };
+
+test("a personal token revoked while a request is being verified is not written back or accepted", async (t) => {
+  const store = new GatedStore();
+  const { app } = await setup(t, { store, allowedDomains: ["example.com"], policy: staticPolicy(EXAMPLE_POLICY) });
+  const session = await tokensSession(app, "editor|example.com");
+  const created = await session.create("Race");
+  assert.ok(created.token);
+
+  // Verification reads the record, then pauses; the token is revoked; then verification resumes.
+  const gate = { arrived: deferred(), release: deferred() };
+  store.gate = gate;
+  const verifying = app.tokens.verify(created.token);
+  await gate.arrived.promise;
+  assert.equal((await session.post({ action: "revoke", id: created.id })).status, 303);
+  assert.equal((await store.entries("pat")).length, 0);
+  gate.release.resolve();
+
+  assert.equal(await verifying, undefined, "the revoked token is refused");
+  assert.equal((await store.entries("pat")).length, 0, "the last-used write did not recreate the revoked token");
+  assert.equal((await mcpPost(app, created.token)).status, 401);
+
+  // Without a revoke in the gap, the same ordering records the last use.
+  const other = await session.create("Kept");
+  const gate2 = { arrived: deferred(), release: deferred() };
+  store.gate = gate2;
+  const verifying2 = app.tokens.verify(other.token);
+  await gate2.arrived.promise;
+  gate2.release.resolve();
+  const record = await verifying2;
+  assert.equal(record.id, other.id);
+  assert.equal(typeof (await store.entries("pat"))[0][1].lastUsedAt, "number");
+});
+
+test("store update is conditional on the live record and keeps its expiry", async () => {
+  let now = 1_000;
+  const store = new MemoryStore(() => now);
+  assert.equal(await store.update("pat", "missing", (value) => ({ ...value, touched: true })), undefined);
+  assert.equal(await store.get("pat", "missing"), undefined, "update never creates a record");
+  await store.put("pat", "k", { id: "a" }, 2_000);
+  assert.deepEqual(await store.update("pat", "k", (value) => ({ ...value, touched: true })), { id: "a", touched: true });
+  assert.equal(await store.update("pat", "k", () => undefined), undefined);
+  assert.deepEqual(await store.get("pat", "k"), { id: "a", touched: true });
+  now = 2_000;
+  assert.equal(await store.update("pat", "k", (value) => ({ ...value, late: true })), undefined, "expired records are not revived");
+  assert.equal(await store.get("pat", "k"), undefined);
+});
+
 test("PERSONAL_TOKENS_ENABLED=0 turns off the page and bearer use", async (t) => {
   const { app } = await setup(t, { personalTokensEnabled: false });
   assert.equal((await call(app, "/tokens")).status, 404);

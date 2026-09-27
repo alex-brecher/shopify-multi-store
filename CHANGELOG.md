@@ -4,6 +4,9 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Hosted: a personal access token revoked while a request was being verified
+  could be written back by the last-used update. The update is now conditional
+  on the stored record, and the request is refused.
 - Hosted: fix the OAuth store failing on Windows with EPERM. The temporary file is
   synced through the handle it was written with, then renamed; the directory is
   synced after the rename except on Windows. Write errors are no longer hidden.

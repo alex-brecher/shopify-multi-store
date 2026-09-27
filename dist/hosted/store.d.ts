@@ -6,6 +6,12 @@ export interface OAuthStore {
     /** Read and delete in one step. Used for single-use authorization codes and login state. */
     take<T>(kind: RecordKind, key: string): Promise<T | undefined>;
     delete(kind: RecordKind, key: string): Promise<void>;
+    /**
+     * Conditional update in one step: read the live record and, only if it still exists, replace
+     * it with what `change` returns (keeping its expiry). Returns the new value, or undefined when
+     * there was no record or `change` returned undefined. `change` must be synchronous.
+     */
+    update<T>(kind: RecordKind, key: string, change: (current: T) => T | undefined): Promise<T | undefined>;
     /** Delete every record of a kind that matches. Returns the number removed. */
     deleteWhere<T>(kind: RecordKind, predicate: (value: T) => boolean): Promise<number>;
     count(kind: RecordKind): Promise<number>;
@@ -29,6 +35,7 @@ export declare class MemoryStore implements OAuthStore {
     get<T>(kind: RecordKind, key: string): Promise<T | undefined>;
     put<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<void>;
     take<T>(kind: RecordKind, key: string): Promise<T | undefined>;
+    update<T>(kind: RecordKind, key: string, change: (current: T) => T | undefined): Promise<T | undefined>;
     delete(kind: RecordKind, key: string): Promise<void>;
     deleteWhere<T>(kind: RecordKind, predicate: (value: T) => boolean): Promise<number>;
     count(kind: RecordKind): Promise<number>;
