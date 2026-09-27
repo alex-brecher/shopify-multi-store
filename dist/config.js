@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { z } from "zod/v4";
 import { DEFAULT_API_VERSION } from "./constants.js";
 import { accessTokenAccount, clientSecretAccount, readCredential } from "./credentials.js";
+import { isHostedMode, storeAllowed } from "./runtime.js";
 const AccessTokenAuthSchema = z.object({
     type: z.literal("access_token")
 }).strict();
@@ -32,27 +33,48 @@ export function configPath() {
     return configured ? resolve(configured) : resolve(homedir(), ".config", "codex-shopify-multi-store", "stores.json");
 }
 export async function loadStores() {
+    const stores = await loadAllStores();
+    // Hosted mode: restrict to the caller's allowlist. Outside a hosted tool call this is a no-op.
+    return stores.filter((store) => storeAllowed(store.alias));
+}
+async function loadAllStores() {
+    const hosted = isHostedMode();
     let raw;
-    try {
-        raw = await readFile(configPath(), "utf8");
+    let source;
+    if (process.env.STORES_JSON) {
+        raw = process.env.STORES_JSON;
+        source = "STORES_JSON";
     }
-    catch (error) {
-        const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
-        if (code === "ENOENT") {
-            const previews = await previewStores();
-            if (previews.length)
-                return previews;
-            throw new Error(`No Shopify stores are configured. Run \"npm run configure -- add\" in the plugin directory. Config path: ${configPath()}`);
+    else {
+        source = configPath();
+        try {
+            raw = await readFile(configPath(), "utf8");
         }
-        throw error;
+        catch (error) {
+            const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
+            if (code === "ENOENT") {
+                if (!hosted) {
+                    const previews = await previewStores();
+                    if (previews.length)
+                        return previews;
+                }
+                throw new Error(`No Shopify stores are configured. Run \"npm run configure -- add\" in the plugin directory. Config path: ${configPath()}`);
+            }
+            throw error;
+        }
     }
     const parsed = JSON.parse(raw);
     const config = ConfigSchema.parse(parsed);
-    config.stores.push(...await previewStores());
+    // Preview stores are created with the local Shopify CLI and never exist on a hosted server.
+    if (!hosted)
+        config.stores.push(...await previewStores());
     const aliases = new Set();
     for (const store of config.stores) {
         if (aliases.has(store.alias)) {
-            throw new Error(`Duplicate store alias in ${configPath()}: ${store.alias}`);
+            throw new Error(`Duplicate store alias in ${source}: ${store.alias}`);
+        }
+        if (hosted && store.auth.type === "shopify_cli") {
+            throw new Error(`Store ${store.alias} uses Shopify CLI auth, which is not available on a hosted server.`);
         }
         aliases.add(store.alias);
         validateStoreEndpoint(store);
@@ -91,6 +113,9 @@ export async function getAccessToken(store) {
     if (store.auth.type === "client_credentials") {
         return getClientCredentialsToken(store);
     }
+    // Hosted mode reads credentials only from the environment (or files mounted into it).
+    if (isHostedMode())
+        throw new Error(`No credential is available for ${store.alias}. Set ${envName} on the server.`);
     const token = await readCredential(accessTokenAccount(store.alias));
     if (token)
         return token;
@@ -100,7 +125,7 @@ async function getClientCredentialsToken(store) {
     if (store.auth.type !== "client_credentials")
         throw new Error("Client credentials are not configured.");
     const secretEnv = `SHOPIFY_CLIENT_SECRET_${store.alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
-    const clientSecret = process.env[secretEnv] ?? await readCredential(clientSecretAccount(store.alias));
+    const clientSecret = process.env[secretEnv] ?? (isHostedMode() ? null : await readCredential(clientSecretAccount(store.alias)));
     if (!clientSecret) {
         throw new Error(`No OAuth client secret is available for ${store.alias}. Set ${secretEnv} or reconnect the store.`);
     }
