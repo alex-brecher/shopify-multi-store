@@ -39,6 +39,11 @@ This file records notable changes to Shopify Multi-Store MCP.
 - Hosted: fix a race where concurrent requests with the same refresh token
   could all succeed. Uses of one refresh token are now serialized, so exactly
   one succeeds and the rest trigger family revocation.
+- Fix `shopify_update_prices` SKU resolution: Shopify's `sku:` search is a
+  prefix match and only 5 results were read. The tool now reads up to 250
+  candidates per page, follows full pages, keeps only exact (case-sensitive,
+  trimmed) SKU matches, and skips SKUs shared by several variants unless
+  `allowDuplicates: true` is passed.
 
 ## [1.6.0] - 2026-09-07
 

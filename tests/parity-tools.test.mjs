@@ -58,6 +58,7 @@ async function fixture(t) {
       "write_fulfillments", "read_content", "write_content", "read_markets",
     ],
     reject: undefined,
+    byId: new Map(),
     deliveryRatePersists: true,
     themeRole: "UNPUBLISHED",
     variants: {
@@ -96,9 +97,16 @@ async function fixture(t) {
           currentAppInstallation: { id: gid("AppInstallation"), accessScopes: state.scopes.map((handle) => ({ handle })) },
         };
         break;
+      case "VariantsForPricing":
+        data = { nodes: v.ids.map((id) => state.byId.get(id) ?? null) };
+        break;
       case "FindVariantsBySku": {
         const match = /sku:"([^"]*)"/.exec(v.query)?.[1];
-        if (match === "SKU-AMBIGUOUS") {
+        if (state.skuPages?.[match]) {
+          const pages = state.skuPages[match];
+          const index = v.after ? Number(v.after) : 0;
+          data = { productVariants: { nodes: pages[index], pageInfo: { hasNextPage: index + 1 < pages.length, endCursor: index + 1 < pages.length ? String(index + 1) : null } } };
+        } else if (match === "SKU-AMBIGUOUS") {
           data = { productVariants: connection([
             { ...state.variants["SKU-FOUND"], id: gid("ProductVariant", 8), sku: "SKU-AMBIGUOUS" },
             { ...state.variants["SKU-FOUND"], id: gid("ProductVariant", 9), sku: "SKU-AMBIGUOUS" },
@@ -108,6 +116,8 @@ async function fixture(t) {
         } else {
           data = { productVariants: connection([]) };
         }
+        for (const node of data.productVariants.nodes) state.byId.set(node.id, node);
+        data.productVariants.nodes = data.productVariants.nodes.map(({ id, sku }) => ({ id, sku }));
         break;
       }
       case "UpdatePricesBulk":
@@ -506,4 +516,57 @@ test("upsert_page: dryRun:false create and update send only page input fields", 
   const updated = await call("upsert_page", { id: gid("Page", 1), isPublished: false, dryRun: false });
   assert.equal(updated.isError, undefined, updated.content[0].text);
   assert.deepEqual(sentVariables(state, "UpdatePage"), [{ id: gid("Page", 1), page: { isPublished: false } }]);
+});
+
+const variantWithSku = (id, sku, productId = 1) => ({
+  id: gid("ProductVariant", id),
+  sku,
+  price: "10.00",
+  compareAtPrice: null,
+  product: { id: gid("Product", productId), title: "Fixture product" },
+  inventoryItem: { id: gid("InventoryItem", id), sku, unitCost: { amount: "5.00", currencyCode: "USD" } },
+});
+
+test("update_prices: SKU lookup fetches 250 per page and keeps only exact, case-sensitive matches", async (t) => {
+  const { call, state } = await fixture(t);
+  state.skuPages = {
+    "AB-1": [[variantWithSku(1, "AB-10"), variantWithSku(2, "ab-1"), variantWithSku(3, " AB-1 "), variantWithSku(4, "AB-1X")]],
+  };
+  const result = await call("update_prices", { skus: [{ sku: " AB-1", price: "12.00" }] });
+  const [lookup] = sentVariables(state, "FindVariantsBySku");
+  assert.equal(lookup.query, 'sku:"AB-1"');
+  assert.match(state.requests.find((r) => r.query.includes("FindVariantsBySku")).query, /first:250/);
+  assert.deepEqual(result.structuredContent.wouldApply.map((p) => p.variantId), [gid("ProductVariant", 3)]);
+  assert.deepEqual(result.structuredContent.ambiguousSkus, []);
+});
+
+test("update_prices: a full page is paginated so a later exact match is found", async (t) => {
+  const { call, state } = await fixture(t);
+  state.skuPages = {
+    "PG": [
+      Array.from({ length: 250 }, (_, i) => variantWithSku(100 + i, `PG-${i}`)),
+      [variantWithSku(7, "PG")],
+    ],
+  };
+  const result = await call("update_prices", { skus: [{ sku: "PG", price: "12.00" }] });
+  const lookups = sentVariables(state, "FindVariantsBySku");
+  assert.equal(lookups.length, 2, JSON.stringify(result.structuredContent).slice(0, 500));
+  assert.equal(lookups[1].after, "1");
+  assert.deepEqual(result.structuredContent.wouldApply.map((p) => p.variantId), [gid("ProductVariant", 7)]);
+});
+
+test("update_prices: duplicate exact SKUs are reported and only updated with allowDuplicates:true", async (t) => {
+  const { call, state } = await fixture(t);
+  state.skuPages = { DUP: [[variantWithSku(8, "DUP", 1), variantWithSku(9, "DUP", 2)]] };
+  const refused = await call("update_prices", { skus: [{ sku: "DUP", price: "12.00" }], dryRun: false });
+  assert.deepEqual(refused.structuredContent.ambiguousSkus, ["DUP"]);
+  assert.equal(refused.structuredContent.results.length, 0);
+  assert.equal(sentVariables(state, "UpdatePricesBulk").length, 0);
+
+  const allowed = await call("update_prices", { skus: [{ sku: "DUP", price: "12.00" }], allowDuplicates: true, dryRun: false });
+  assert.deepEqual(allowed.structuredContent.ambiguousSkus, []);
+  assert.deepEqual(
+    sentVariables(state, "UpdatePricesBulk").map((v) => [v.productId, v.variants.map((x) => x.id)]),
+    [[gid("Product", 1), [gid("ProductVariant", 8)]], [gid("Product", 2), [gid("ProductVariant", 9)]]],
+  );
 });

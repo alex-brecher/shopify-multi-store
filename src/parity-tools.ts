@@ -46,6 +46,12 @@ const skuEntry = z
   })
   .strict();
 const skusField = z.array(skuEntry).min(1).max(250);
+const allowDuplicatesField = z
+  .boolean()
+  .default(false)
+  .describe(
+    "When a SKU exactly matches more than one variant it is reported in ambiguousSkus and skipped. Pass true to update every exact match instead.",
+  );
 
 // Builds a Shopify mutation input from an explicit allowlist of tool arguments so
 // tool-only fields (dryRun, allowLiveTheme, ...) never leak into GraphQL inputs.
@@ -59,15 +65,60 @@ const ORDER_INPUT_FIELDS = ["tags", "note", "email", "shippingAddress"] as const
 const CUSTOMER_INPUT_FIELDS = ["tags", "note", "email"] as const;
 const PAGE_INPUT_FIELDS = ["title", "handle", "body", "isPublished"] as const;
 
+const SKU_LOOKUP_MAX_PAGES = 20;
+
+/**
+ * Every variant whose SKU exactly equals `sku` (case-sensitive, surrounding whitespace
+ * ignored). Shopify's `sku:` search is a prefix match, so results are filtered here, and
+ * a full page is followed to the next one so no exact match is missed.
+ */
+async function findVariantsByExactSku(w: Workflow, sku: string): Promise<Data[]> {
+  const wanted = sku.trim();
+  const ids = await findVariantIdsByExactSku(w, wanted);
+  const variants: Data[] = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + 100) });
+    for (const v of d.nodes ?? [])
+      if (v?.id && typeof v.sku === "string" && v.sku.trim() === wanted) variants.push(v);
+  }
+  return variants;
+}
+
+async function findVariantIdsByExactSku(w: Workflow, wanted: string): Promise<string[]> {
+  const matches: string[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < SKU_LOOKUP_MAX_PAGES; page++) {
+    const d = await w.run(PDOCS.findVariantsBySku, {
+      query: `sku:${JSON.stringify(wanted)}`,
+      ...(after ? { after } : {}),
+    });
+    const connection = d.productVariants ?? {};
+    for (const v of connection.nodes ?? [])
+      if (typeof v.sku === "string" && v.sku.trim() === wanted) matches.push(v.id);
+    if (!connection.pageInfo?.hasNextPage || !connection.pageInfo.endCursor)
+      return matches;
+    after = connection.pageInfo.endCursor;
+  }
+  throw new WorkflowError(
+    `SKU lookup for "${wanted}" returned more than ${SKU_LOOKUP_MAX_PAGES * 250} candidate variants; refusing to guess.`,
+    { sku: wanted },
+  );
+}
+
 async function updatePricesCore(
   w: Workflow,
-  a: { skus: z.infer<typeof skuEntry>[]; dryRun: boolean },
+  a: {
+    skus: z.infer<typeof skuEntry>[];
+    dryRun: boolean;
+    allowDuplicates?: boolean;
+  },
 ): Promise<Data> {
   await w.requireScopes(["write_products", "write_inventory"]);
   const seen = new Set<string>();
   const duplicates = new Set<string>();
   const uniqueEntries: (typeof a.skus)[number][] = [];
-  for (const entry of a.skus) {
+  for (const raw of a.skus) {
+    const entry = { ...raw, sku: raw.sku.trim() };
     if (seen.has(entry.sku)) {
       duplicates.add(entry.sku);
       continue;
@@ -83,18 +134,13 @@ async function updatePricesCore(
       notFound.push(entry.sku); // nothing requested; treated the same as not actionable
       continue;
     }
-    const d = await w.run(PDOCS.findVariantsBySku, {
-      query: `sku:${JSON.stringify(entry.sku)}`,
-    });
-    const matches = (d.productVariants?.nodes ?? []).filter(
-      (v: Data) => v.sku === entry.sku,
-    );
+    const matches = await findVariantsByExactSku(w, entry.sku);
     if (matches.length === 0) {
       notFound.push(entry.sku);
-    } else if (matches.length > 1) {
+    } else if (matches.length > 1 && !a.allowDuplicates) {
       ambiguous.push(entry.sku);
     } else {
-      resolved.push({ entry, variant: matches[0] });
+      for (const variant of matches) resolved.push({ entry, variant });
     }
   }
   const preview = resolved.map(({ entry, variant }) => ({
@@ -121,7 +167,9 @@ async function updatePricesCore(
       notFound,
       duplicateSkus: [...duplicates],
       ambiguousSkus: ambiguous,
-      notice: "Pass dryRun:false to apply these changes.",
+      notice: ambiguous.length
+        ? "Pass dryRun:false to apply these changes. SKUs in ambiguousSkus match more than one variant and are skipped unless allowDuplicates:true."
+        : "Pass dryRun:false to apply these changes.",
     };
   }
   const byProduct = new Map<string, typeof resolved>();
@@ -249,10 +297,14 @@ export function registerParityTools(server: McpServer) {
   // 1. Prices
   register(
     "update_prices",
-    "Set price, compareAtPrice and/or unit cost for up to 250 SKUs on one store. Resolves SKU to variant and groups writes by product. Defaults to dryRun:true.",
-    { skus: skusField },
+    "Set price, compareAtPrice and/or unit cost for up to 250 SKUs on one store. Resolves each SKU to the variants whose SKU matches exactly (Shopify search is a prefix match) and groups writes by product. A SKU shared by several variants is skipped unless allowDuplicates:true. Defaults to dryRun:true.",
+    { skus: skusField, allowDuplicates: allowDuplicatesField },
     true,
-    (w, a) => updatePricesCore(w, a as { skus: z.infer<typeof skuEntry>[]; dryRun: boolean }),
+    (w, a) =>
+      updatePricesCore(
+        w,
+        a as { skus: z.infer<typeof skuEntry>[]; dryRun: boolean; allowDuplicates?: boolean },
+      ),
   );
   server.registerTool(
     "shopify_update_prices_many",
@@ -263,6 +315,7 @@ export function registerParityTools(server: McpServer) {
         .object({
           stores: z.array(store).min(1).max(50),
           skus: skusField,
+          allowDuplicates: allowDuplicatesField,
           dryRun: dryRunField,
         })
         .strict(),
@@ -291,6 +344,7 @@ export function registerParityTools(server: McpServer) {
               const result = await updatePricesCore(w, {
                 skus: a.skus,
                 dryRun: a.dryRun,
+                allowDuplicates: a.allowDuplicates,
               });
               return { store: w.store.alias, ok: true, ...result };
             } catch (error) {

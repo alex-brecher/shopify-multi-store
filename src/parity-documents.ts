@@ -6,7 +6,10 @@ export const PDOCS = {
   capabilities: `query ParityCapabilities { shop { id myshopifyDomain } currentAppInstallation { id accessScopes { handle } } }`,
 
   // Prices
-  findVariantsBySku: `query FindVariantsBySku($query:String!) { productVariants(first:5, query:$query) { nodes { id sku price compareAtPrice product { id title } inventoryItem { id sku unitCost { amount currencyCode } } } } }`,
+  // Candidate pass: Shopify's sku: search is a prefix match, so fetch a full page of slim
+  // candidates, filter to exact SKUs in code, then load details for the exact matches only.
+  findVariantsBySku: `query FindVariantsBySku($query:String!, $after:String) { productVariants(first:250, after:$after, query:$query) { nodes { id sku } ${PAGE} } }`,
+  variantsForPricing: `query VariantsForPricing($ids:[ID!]!) { nodes(ids:$ids) { ... on ProductVariant { id sku price compareAtPrice product { id title } inventoryItem { id sku unitCost { amount currencyCode } } } } }`,
   variantsBulkUpdatePrices: `mutation UpdatePricesBulk($productId:ID!, $variants:[ProductVariantsBulkInput!]!) { productVariantsBulkUpdate(productId:$productId, variants:$variants) { productVariants { id sku price compareAtPrice inventoryItem { id sku unitCost { amount currencyCode } } } userErrors { field message } } }`,
 
   // Metafields
