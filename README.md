@@ -9,8 +9,8 @@ Query, compare, report, and make guarded updates across Shopify stores from Clau
 <img src="docs/assets/shopify-multi-store-hero.png" alt="One MCP server connected to multiple ecommerce stores" width="1200">
 
 [![CI](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-brecher/shopify-multi-store/actions/workflows/ci.yml)
-[![npm v1.5.0](https://img.shields.io/badge/npm-v1.5.0-CB3837?logo=npm&logoColor=white&cacheSeconds=300)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
-[![npm provenance](https://img.shields.io/badge/npm-provenance-verified-2E8555?logo=npm&logoColor=white&cacheSeconds=300)](https://registry.npmjs.org/-/npm/v1/attestations/shopify-multi-store-mcp-server@1.5.0)
+[![npm version](https://img.shields.io/npm/v/shopify-multi-store-mcp-server?logo=npm&logoColor=white&color=CB3837&cacheSeconds=300)](https://www.npmjs.com/package/shopify-multi-store-mcp-server)
+[![npm provenance](https://img.shields.io/badge/npm-provenance-verified-2E8555?logo=npm&logoColor=white&cacheSeconds=300)](https://www.npmjs.com/package/shopify-multi-store-mcp-server#provenance)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white&cacheSeconds=300)](package.json)
 [![MCP ready](https://img.shields.io/badge/MCP-ready-7C3AED?cacheSeconds=300)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4C430?cacheSeconds=300)](LICENSE)
@@ -55,7 +55,7 @@ Each store gets a permanent alias and a separate secure credential. Every store 
 | --- | --- |
 | Multiple active stores | Keep every Shopify store available in one AI conversation. |
 | Cross-store reports | Search products, compare catalogs, find stock gaps, and report fulfillment SLA breaches. |
-| Parallel GraphQL | Run one read-only query across up to ten stores. |
+| Parallel GraphQL | Run one read-only query across up to one hundred stores. |
 | Guarded mutations | Target one store and pass an explicit confirmation for each update. |
 | Secure credentials | Use macOS Keychain, Windows Credential Manager, or Linux Secret Service. |
 | Portable skills | Guide Claude, Codex, Cursor, and other compatible agents. |
@@ -204,13 +204,34 @@ See [Connect from your AI app](docs/HOSTED.md#connect-from-your-ai-app) for per-
 
 | Method | Command | Best fit |
 | --- | --- | --- |
-| Admin API access token | `shopify-multi-store setup` | An existing Shopify admin-created app and token. |
-| Client credentials | `shopify-multi-store oauth` | Stores in the same organization as the app. |
-| Authorization code | `shopify-multi-store oauth` | Standalone app installations. |
+| Admin API access token | `shopify-multi-store setup` | A custom app you already created in the store admin, with its `shpat_` token. |
+| Client credentials | `shopify-multi-store oauth` | A Dev Dashboard app installed on stores in the same Shopify organization as the app. |
+| Authorization code | `shopify-multi-store oauth` | A Dev Dashboard app installed on a store outside that organization. |
 
 Authorization code setup uses `http://127.0.0.1:3456/oauth/callback`. Add it as an allowed redirect URL first.
 
 The default authorization code scopes are read-only. Grant only the Admin API scopes required for the task.
+
+### Connect your first store
+
+Each store needs an alias (lowercase letters, digits and hyphens, such as `main`) and its permanent `*.myshopify.com` domain, which the store admin shows under Settings > Domains. The credential depends on how you get Admin API access. Shopify now creates new apps in the Dev Dashboard; custom apps made in the store admin keep working where they already exist.
+
+With a Dev Dashboard app (new setups):
+
+1. Open the Dev Dashboard (dev.shopify.com), choose Apps > Create app, and name it (for example "Multi-Store MCP").
+2. Create a version. Under access scopes, add the scopes you need. `read_products,read_orders,read_inventory,read_locations,read_customers` covers the read tools; for everything the tools can do, print the full list with `node "$(npm root -g)/shopify-multi-store-mcp-server/scripts/print-scopes.mjs" --full` and remove any scope your app is not approved for. For the authorization code method, also add the redirect URL `http://127.0.0.1:3456/oauth/callback`.
+3. Release the version, then install the app on your store from the Dev Dashboard, approving the scopes.
+4. Copy the app's client ID and client secret from its settings.
+5. Run `shopify-multi-store oauth`. Choose `client-credentials` if the store is in the same Shopify organization as the app, otherwise `authorization-code` (a browser window opens to approve). Enter the alias, the `*.myshopify.com` domain, the client ID and the client secret. With client credentials the server gets and refreshes tokens itself.
+
+With a custom app created in the store admin:
+
+1. In the store admin, open Settings > Apps (Apps and sales channels in some admins) > Develop apps and open your app. If your admin still offers it, you can create one there.
+2. Under Configuration, give the Admin API the scopes you need, then install the app.
+3. Under API credentials, reveal the Admin API access token (it starts with `shpat_`; Shopify shows it once).
+4. Run `shopify-multi-store setup` and enter the alias, the `*.myshopify.com` domain and the token.
+
+Then run `shopify-multi-store doctor` to check every store, and repeat for each further store. Secrets go to the operating system credential store, never to the configuration file.
 
 ### Manage stores
 
@@ -315,6 +336,8 @@ Secrets never enter the main configuration file.
 
 The configuration stores aliases, domains, API versions, and non-secret OAuth client IDs. Its default path is `~/.config/codex-shopify-multi-store/stores.json`.
 
+The `codex-shopify-multi-store` name, in that path and as the credential store's service name, is a legacy name from the project's first version. It stays so existing installs keep their stores and credentials; it does not mean the server works only with Codex.
+
 Set `SHOPIFY_MULTI_STORE_CONFIG` to use another configuration path.
 
 - Never commit access tokens, OAuth client secrets, `.env` files, or credential-bearing configuration files.
@@ -332,7 +355,7 @@ Run a health check without a global install:
 npx -y shopify-multi-store-mcp-server doctor
 ```
 
-Install directly from GitHub:
+Install directly from GitHub (npm runs the `prepare` script, which builds the server):
 
 ```bash
 npm install --global github:alex-brecher/shopify-multi-store

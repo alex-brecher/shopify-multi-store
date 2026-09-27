@@ -88,6 +88,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
     "start": "node dist/index.js",
     "configure": "node scripts/configure-store.mjs",
     "import-legacy": "node scripts/import-legacy-stores.mjs",

@@ -1125,6 +1125,26 @@ test("SERVER_DISPLAY_NAME names the MCP server, resource metadata, sign-in, cons
   await assert.rejects(buildHostedAppFromEnv({ ...base, SERVER_DISPLAY_NAME: "bad\nname" }), /SERVER_DISPLAY_NAME/);
 });
 
+test("README: live version badge, real store limit, local setup steps, GitHub install builds, legacy name explained", async () => {
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const server = await readFile(new URL("../src/server.ts", import.meta.url), "utf8");
+  assert.match(readme, /img\.shields\.io\/npm\/v\/shopify-multi-store-mcp-server/, "the version badge reads npm");
+  assert.doesNotMatch(readme, /badge\/npm-v\d/, "no hard-coded version badge");
+  assert.doesNotMatch(readme, /@\d+\.\d+\.\d+\)/, "no link pinned to an old version");
+  const max = Number(/StoreAliasesSchema = z\.array\(StoreAliasSchema\)\.min\(1\)\.max\((\d+)\)/.exec(server)[1]);
+  assert.equal(max, 100);
+  assert.match(readme, /across up to one hundred stores/);
+  assert.doesNotMatch(readme, /up to ten stores/);
+  assert.match(readme, /^### Connect your first store$/m);
+  for (const text of ["dev.shopify.com", "client ID and client secret", "shopify-multi-store oauth", "client-credentials", "authorization-code", "Develop apps", "shpat_", "shopify-multi-store setup", "Settings > Domains"]) assert.ok(readme.includes(text), text);
+  assert.equal(pkg.scripts.prepare, "npm run build");
+  assert.match(readme, /npm install --global github:alex-brecher\/shopify-multi-store/);
+  assert.match(readme, /`codex-shopify-multi-store` name[\s\S]*legacy name/);
+  const deploy = await readFile(new URL("../docs/DEPLOY-CLOUDFLARE.md", import.meta.url), "utf8");
+  assert.doesNotMatch(deploy, /ui:\/\//, "the MCP Apps UI was removed");
+});
+
 test("hosted docs cover every client and every serve setting", async () => {
   const hosted = await readFile(new URL("../docs/HOSTED.md", import.meta.url), "utf8");
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");

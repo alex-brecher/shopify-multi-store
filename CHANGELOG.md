@@ -41,6 +41,12 @@ This file records notable changes to Shopify Multi-Store MCP.
 - The `/stores` page names the server it belongs to (issuer and MCP URL), so a
   person with more than one deployment knows which connections they are
   looking at.
+- README: the npm badge reads the live version; "up to ten stores" is now the
+  real limit (one hundred); a "Connect your first store" section walks a new
+  merchant through a Dev Dashboard app (client credentials or authorization
+  code) or an admin-created custom app token; `prepare` builds the server so
+  `npm install github:...` works; the `codex-shopify-multi-store` config and
+  credential name is explained as a legacy name kept for existing installs.
 
 Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
 ### Review 3: fixes and a smaller tool surface
