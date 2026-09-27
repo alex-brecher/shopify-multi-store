@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile, open } from "node:fs/promises";
 import { dirname } from "node:path";
 function emptyData() {
-    return { client: {}, pending: {}, code: {}, access: {}, refresh: {} };
+    return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {} };
 }
 /**
  * In-memory store. All operations are synchronous against the map, so take() is atomic

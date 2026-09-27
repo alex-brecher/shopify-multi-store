@@ -24,6 +24,9 @@ const CORS_HEADERS = {
   "access-control-max-age": "600"
 };
 
+/** Browser-facing pages. They get no CORS headers. */
+const BROWSER_PAGES = new Set(["/authorize", "/oauth/google/callback", "/consent"]);
+
 function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
   for (const [key, value] of Object.entries(CORS_HEADERS)) headers.set(key, value);
@@ -114,6 +117,7 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
     }
     if (path === "/authorize") return method === "GET" ? auth.authorize(url) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/oauth/google/callback") return method === "GET" ? auth.googleCallback(url) : jsonResponse({ error: "method_not_allowed" }, 405);
+    if (path === "/consent") return method === "POST" ? auth.consent(request) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/token") return method === "POST" ? auth.token(request) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/register") return method === "POST" ? auth.register(request) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === mcpPath) return handleMcp(request);
@@ -132,7 +136,7 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
       }
       const path = new URL(request.url).pathname;
       // Browser-facing sign-in pages do not need CORS; API endpoints use bearer tokens, not cookies.
-      return path === "/authorize" || path === "/oauth/google/callback" ? response : withCors(response);
+      return BROWSER_PAGES.has(path) ? response : withCors(response);
     },
     close: () => mcp.close()
   };

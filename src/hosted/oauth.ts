@@ -6,7 +6,8 @@ import { checkGoogleIdentity, type GoogleLogin } from "./google.js";
 import type { Principal, PolicySource } from "./policy.js";
 import type { OAuthStore } from "./store.js";
 import type { AuditLog, AuthAuditEntry } from "./audit.js";
-import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, type RedirectClass } from "./known-clients.js";
+import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDisplayHost, type RedirectClass } from "./known-clients.js";
+import { cookie, escapeHtml, formActionSource, htmlPage, readCookie, sameOrigin } from "./html.js";
 
 export { isLoopbackRedirect };
 export const SCOPE = "mcp";
@@ -16,6 +17,9 @@ export const DEFAULT_CIMD_HOSTS = ["claude.ai", "claude.com"];
 
 const PENDING_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 2 * 60_000;
+const CONSENT_TTL_MS = 5 * 60_000;
+const APPROVAL_TTL_MS = 30 * 24 * 3600_000;
+const CONSENT_COOKIE = "__Host-sms_consent";
 const CIMD_CACHE_MS = 5 * 60_000;
 const CIMD_MAX_BYTES = 16 * 1024;
 const AUTH_METHODS = ["none", "client_secret_post", "client_secret_basic"] as const;
@@ -55,6 +59,8 @@ export interface AuthServerOptions {
   log?: (message: string) => void;
   /** Receives sign-in and token events. Tokens and codes are never passed. */
   audit?: AuditLog;
+  /** Name shown on the consent page and in resource metadata. */
+  displayName?: string;
 }
 
 export interface ClientRecord {
@@ -69,6 +75,7 @@ export interface ClientRecord {
 
 interface PendingRecord {
   clientId: string;
+  clientName?: string;
   redirectUri: string;
   redirectUriExplicit: boolean;
   clientState?: string;
@@ -132,20 +139,30 @@ function oauthError(error: string, description: string, status = 400, headers: R
   return json({ error, error_description: description }, status, headers);
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-}
-
 export function errorPage(status: number, message: string): Response {
-  const body = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign-in problem</title><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1>Sign-in problem</h1><p>${escapeHtml(message)}</p></body>`;
-  return new Response(body, {
-    status,
-    headers: { "content-type": "text/html; charset=utf-8", ...NO_STORE, "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", "x-frame-options": "DENY" }
-  });
+  return htmlPage({ status, title: "Sign-in problem", body: `<div class="card"><h1>Sign-in problem</h1><p>${escapeHtml(message)}</p></div>` });
 }
 
-function redirect(location: string): Response {
-  return new Response(null, { status: 302, headers: { location, ...NO_STORE } });
+function redirect(location: string, status = 302, headers: Record<string, string> = {}): Response {
+  return new Response(null, { status, headers: { location, ...NO_STORE, ...headers } });
+}
+
+/** A pending authorization waiting for the signed-in user to approve or deny it. */
+interface ConsentRecord {
+  pending: PendingRecord;
+  email: string;
+  csrfSha256: string;
+  /** Hash of the consent cookie, which binds the decision to the browser that signed in. */
+  bindingSha256: string;
+  redirectClass: RedirectClass;
+}
+
+function approvalKey(email: string, clientId: string, redirectUri: string): string {
+  return sha256(`${email}\n${clientId}\n${redirectUri}`);
+}
+
+function describeStores(stores: Principal["stores"]): string {
+  return stores === "*" ? "All stores" : stores.length ? stores.join(", ") : "None";
 }
 
 export class AuthorizationServer {
@@ -153,6 +170,7 @@ export class AuthorizationServer {
   readonly resource: string;
   readonly googleRedirectUri: string;
   readonly redirects: RedirectPolicy;
+  readonly displayName: string;
   private readonly cimdHosts: string[];
   private readonly accessTtlMs: number;
   private readonly refreshTtlMs: number;
@@ -168,6 +186,7 @@ export class AuthorizationServer {
     this.issuer = trimSlash(options.issuer);
     this.resource = trimSlash(options.resource);
     this.googleRedirectUri = `${this.issuer}/oauth/google/callback`;
+    this.displayName = options.displayName ?? "Shopify Multi-Store";
     this.redirects = new RedirectPolicy({
       exact: options.redirectAllowlist ?? KNOWN_REDIRECT_URIS,
       allowLoopback: options.allowLoopbackRedirects ?? true,
@@ -392,6 +411,7 @@ export class AuthorizationServer {
     const loginState = randomBytes(32).toString("base64url");
     const pending: PendingRecord = {
       clientId,
+      ...(client.client_name ? { clientName: client.client_name } : {}),
       redirectUri,
       redirectUriExplicit: requestedRedirect !== null,
       ...(state !== undefined ? { clientState: state } : {}),
@@ -446,12 +466,24 @@ export class AuthorizationServer {
       return back({ error: "access_denied", error_description: "Google sign-in could not be verified." });
     }
 
-    if (!this.options.policy.current().resolve(email)) {
+    const principal = this.options.policy.current().resolve(email);
+    if (!principal) {
       this.log(`Sign-in refused: ${email} is not in the access policy.`);
       await this.auditAuth({ event: "sign_in_denied", user: email, clientId: pending.clientId, reason: "not in the access policy" });
       return back({ error: "access_denied", error_description: `${email} has not been granted access. Ask an administrator.` });
     }
 
+    const redirectClass = this.redirectUriClass(pending.redirectUri);
+    if (!redirectClass) return back({ error: "access_denied", error_description: "The redirect URI is no longer allowed on this server." });
+    // A remembered approval skips the consent screen, except for redirects admitted only by
+    // OAUTH_ALLOW_ANY_REDIRECT, which always ask.
+    if (redirectClass !== "open" && await this.options.store.get("approval", approvalKey(email, pending.clientId, pending.redirectUri))) {
+      return redirect(await this.issueCode(pending, email));
+    }
+    return this.consentPage(pending, email, principal, redirectClass);
+  }
+
+  private async issueCode(pending: PendingRecord, email: string): Promise<string> {
     const authorizationCode = secret("sms_ac_");
     const record: CodeRecord = {
       clientId: pending.clientId,
@@ -464,7 +496,87 @@ export class AuthorizationServer {
     };
     await this.options.store.put("code", sha256(authorizationCode), record, this.now() + CODE_TTL_MS);
     await this.auditAuth({ event: "sign_in", user: email, clientId: pending.clientId });
-    return back({ code: authorizationCode });
+    return this.clientRedirect(pending.redirectUri, { code: authorizationCode, state: pending.clientState });
+  }
+
+  // ---------- Consent ----------
+
+  private async consentPage(pending: PendingRecord, email: string, principal: Principal, redirectClass: RedirectClass): Promise<Response> {
+    const consentId = randomBytes(32).toString("base64url");
+    const csrf = randomBytes(32).toString("base64url");
+    const binding = randomBytes(32).toString("base64url");
+    const record: ConsentRecord = { pending, email, csrfSha256: sha256(csrf), bindingSha256: sha256(binding), redirectClass };
+    await this.options.store.put("consent", sha256(consentId), record, this.now() + CONSENT_TTL_MS);
+
+    const server = escapeHtml(this.displayName);
+    const clientName = pending.clientName ? escapeHtml(pending.clientName) : "An unnamed app";
+    const host = escapeHtml(redirectDisplayHost(pending.redirectUri));
+    const open = redirectClass === "open";
+    const body = `<div class="card">
+<h1>Allow ${clientName} to use ${server}?</h1>
+${open ? `<div class="warn"><p>This app's return address is not on this server's list of known apps.</p><p>Approve only if you started this connection yourself, just now, from an app you trust.</p></div>` : ""}
+<p class="muted">After you decide, you will be sent to</p>
+<p class="target">${host}</p>
+<dl>
+<dt>App</dt><dd>${clientName}</dd>
+<dt>Client ID</dt><dd><code>${escapeHtml(pending.clientId)}</code></dd>
+<dt>Redirect</dt><dd><code>${escapeHtml(pending.redirectUri)}</code></dd>
+<dt>Signed in as</dt><dd>${escapeHtml(email)}</dd>
+<dt>Your role</dt><dd>${escapeHtml(principal.role)}</dd>
+<dt>Stores</dt><dd>${escapeHtml(describeStores(principal.stores))}</dd>
+</dl>
+<p class="muted">The app can call ${server} tools as you, limited to your role and stores.${open ? "" : " Approval is remembered for 30 days for this app."}</p>
+<form method="post" action="/consent">
+<input type="hidden" name="consent" value="${consentId}">
+<input type="hidden" name="csrf" value="${csrf}">
+<div class="actions"><button class="primary" type="submit" name="decision" value="approve">Approve</button><button type="submit" name="decision" value="deny">Deny</button></div>
+</form></div>`;
+    return htmlPage({
+      title: `Approve access - ${this.displayName}`,
+      body,
+      formAction: `'self' ${formActionSource(pending.redirectUri)}`,
+      headers: { "set-cookie": cookie(CONSENT_COOKIE, binding, CONSENT_TTL_MS / 1000) }
+    });
+  }
+
+  /** POST /consent: the user's Approve or Deny decision. */
+  async consent(request: Request): Promise<Response> {
+    if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+      return errorPage(400, "Unsupported form submission.");
+    }
+    if (!sameOrigin(request, this.issuer)) return errorPage(403, "This form was submitted from another site.");
+    const form = new URLSearchParams(await request.text());
+    const consentId = form.get("consent") ?? "";
+    const csrf = form.get("csrf") ?? "";
+    const binding = readCookie(request, CONSENT_COOKIE) ?? "";
+    const key = sha256(consentId);
+    const record = consentId ? await this.options.store.get<ConsentRecord>("consent", key) : undefined;
+    const expired = "This approval request expired or was already used. Start again from your AI app.";
+    if (!record) return errorPage(400, expired);
+    if (!csrf || !binding || !safeEqual(sha256(csrf), record.csrfSha256) || !safeEqual(sha256(binding), record.bindingSha256)) {
+      return errorPage(403, "This approval request could not be verified. Start again from your AI app.");
+    }
+    // Single use: only the request that removes the record may act on it.
+    if (!await this.options.store.take<ConsentRecord>("consent", key)) return errorPage(400, expired);
+    const { pending, email } = record;
+    const clearCookie = { "set-cookie": cookie(CONSENT_COOKIE, "", 0) };
+    const back = (params: Record<string, string>) => redirect(this.clientRedirect(pending.redirectUri, { ...params, state: pending.clientState }), 303, clearCookie);
+
+    if (form.get("decision") !== "approve") {
+      await this.auditAuth({ event: "consent_denied", user: email, clientId: pending.clientId });
+      return back({ error: "access_denied", error_description: "The user denied access." });
+    }
+    if (!this.options.policy.current().resolve(email)) {
+      await this.auditAuth({ event: "sign_in_denied", user: email, clientId: pending.clientId, reason: "removed from the access policy before approval" });
+      return back({ error: "access_denied", error_description: `${email} has not been granted access. Ask an administrator.` });
+    }
+    const redirectClass = this.redirectUriClass(pending.redirectUri);
+    if (!redirectClass) return back({ error: "access_denied", error_description: "The redirect URI is no longer allowed on this server." });
+    if (redirectClass !== "open") {
+      await this.options.store.put("approval", approvalKey(email, pending.clientId, pending.redirectUri), { approvedAt: this.now() }, this.now() + APPROVAL_TTL_MS);
+    }
+    await this.auditAuth({ event: "consent_approved", user: email, clientId: pending.clientId });
+    return redirect(await this.issueCode(pending, email), 303, clearCookie);
   }
 
   // ---------- Token endpoint ----------

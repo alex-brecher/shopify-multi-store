@@ -44,6 +44,8 @@ export interface AuthServerOptions {
     log?: (message: string) => void;
     /** Receives sign-in and token events. Tokens and codes are never passed. */
     audit?: AuditLog;
+    /** Name shown on the consent page and in resource metadata. */
+    displayName?: string;
 }
 export interface ClientRecord {
     client_id: string;
@@ -72,6 +74,7 @@ export declare class AuthorizationServer {
     readonly resource: string;
     readonly googleRedirectUri: string;
     readonly redirects: RedirectPolicy;
+    readonly displayName: string;
     private readonly cimdHosts;
     private readonly accessTtlMs;
     private readonly refreshTtlMs;
@@ -97,6 +100,10 @@ export declare class AuthorizationServer {
     authorize(url: URL): Promise<Response>;
     private clientRedirect;
     googleCallback(url: URL): Promise<Response>;
+    private issueCode;
+    private consentPage;
+    /** POST /consent: the user's Approve or Deny decision. */
+    consent(request: Request): Promise<Response>;
     token(request: Request): Promise<Response>;
     private authenticateClient;
     private authorizationCodeGrant;

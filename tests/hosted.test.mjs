@@ -83,7 +83,7 @@ async function registerClient(app, body = {}) {
   return { response, body: await response.json() };
 }
 
-async function authorize(app, { clientId, redirectUri = CLAUDE_CALLBACK, challenge, account, state = "client-state" }) {
+async function authorize(app, { clientId, redirectUri = CLAUDE_CALLBACK, challenge, account, state = "client-state", decision = "approve" }) {
   const query = new URLSearchParams({
     response_type: "code", client_id: clientId, redirect_uri: redirectUri, code_challenge: challenge,
     code_challenge_method: "S256", state, resource: RESOURCE, scope: "mcp"
@@ -93,8 +93,42 @@ async function authorize(app, { clientId, redirectUri = CLAUDE_CALLBACK, challen
   const google = new URL(start.headers.get("location"));
   assert.equal(google.host, "accounts.google.test");
   const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  if (back.status === 200) {
+    const decided = await submitConsent(app, back, decision);
+    assert.equal(decided.status, 303, await decided.clone().text());
+    return new URL(decided.headers.get("location"));
+  }
   assert.equal(back.status, 302);
   return new URL(back.headers.get("location"));
+}
+
+/** Read the consent form out of a consent page. */
+async function consentForm(page) {
+  const html = await page.text();
+  const field = (name) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)?.[1];
+  const cookie = /^(__Host-sms_consent=[^;]+)/.exec(page.headers.get("set-cookie") ?? "")?.[1];
+  return { html, consent: field("consent"), csrf: field("csrf"), cookie };
+}
+
+async function submitConsent(app, page, decision = "approve", tamper = {}) {
+  const form = await consentForm(page);
+  return call(app, "/consent", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, ...(form.cookie ? { cookie: form.cookie } : {}), ...(tamper.headers ?? {}) },
+    body: new URLSearchParams({ consent: form.consent, csrf: form.csrf, decision, ...(tamper.body ?? {}) })
+  });
+}
+
+/** Start an authorization and return the Google callback response (a consent page or a redirect). */
+async function startToCallback(app, { clientId, redirectUri = CLAUDE_CALLBACK, challenge = pkce().challenge, account, state = "client-state" }) {
+  const query = new URLSearchParams({
+    response_type: "code", client_id: clientId, redirect_uri: redirectUri, code_challenge: challenge,
+    code_challenge_method: "S256", state, resource: RESOURCE, scope: "mcp"
+  });
+  const start = await call(app, `/authorize?${query}`);
+  assert.equal(start.status, 302, await start.clone().text());
+  const google = new URL(start.headers.get("location"));
+  return call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
 }
 
 async function tokenRequest(app, params) {
@@ -680,4 +714,101 @@ test("OAUTH_REDIRECT_URIS adds to the built-ins unless OAUTH_REDIRECT_URIS_REPLA
   const open = (await buildHostedAppFromEnv({ ...base, OAUTH_ALLOW_ANY_REDIRECT: "1" })).app;
   t.after(() => open.close());
   assert.equal(open.auth.redirectUriClass("https://other.example.com/cb"), "open");
+});
+
+test("consent screen shows the client, redirect host, user, role and stores, and escapes the client name", async (t) => {
+  const { app } = await setup(t);
+  const { body: client } = await registerClient(app, { client_name: "<script>alert(1)</script> Tool" });
+  const page = await startToCallback(app, { clientId: client.client_id, account: "viewer|bariatricpal.com" });
+  assert.equal(page.status, 200);
+  const csp = page.headers.get("content-security-policy");
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /form-action 'self' https:\/\/claude\.ai/);
+  assert.equal(page.headers.get("x-frame-options"), "DENY");
+  assert.match(page.headers.get("cache-control"), /no-store/);
+  assert.match(page.headers.get("set-cookie"), /__Host-sms_consent=.+; Path=\/; HttpOnly; Secure; SameSite=Lax/);
+  const { html } = await consentForm(page);
+  assert.ok(!html.includes("<script>alert(1)</script>"));
+  assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; Tool"));
+  for (const text of [client.client_id, "claude.ai", "viewer@bariatricpal.com", "viewer", "main", "Shopify Multi-Store", "Approve", "Deny"]) assert.ok(html.includes(text), text);
+  assert.ok(!/<(script|img|link|iframe)\b/i.test(html), "no external assets or scripts");
+});
+
+test("consent deny returns access_denied and approve is remembered for 30 days", async (t) => {
+  const { app, advance } = await setup(t);
+  const { body: client } = await registerClient(app);
+  const denied = await authorize(app, { clientId: client.client_id, challenge: pkce().challenge, account: "admin|bariatricpal.com", decision: "deny" });
+  assert.equal(denied.searchParams.get("error"), "access_denied");
+  assert.equal(denied.searchParams.get("state"), "client-state");
+  assert.equal(denied.searchParams.get("code"), null);
+
+  const approved = await authorize(app, { clientId: client.client_id, challenge: pkce().challenge, account: "admin|bariatricpal.com" });
+  assert.ok(approved.searchParams.get("code"));
+  // Remembered: the next sign-in goes straight back with a code.
+  const again = await startToCallback(app, { clientId: client.client_id, account: "admin|bariatricpal.com" });
+  assert.equal(again.status, 302);
+  assert.ok(new URL(again.headers.get("location")).searchParams.get("code"));
+  // Another user, or after 30 days, sees the screen again.
+  assert.equal((await startToCallback(app, { clientId: client.client_id, account: "editor|bariatricpal.com" })).status, 200);
+  advance(30 * 24 * 3600_000 + 1);
+  assert.equal((await startToCallback(app, { clientId: client.client_id, account: "admin|bariatricpal.com" })).status, 200);
+});
+
+test("consent CSRF token and cookie are bound, single use, and short-lived", async (t) => {
+  const { app, advance } = await setup(t);
+  const { body: client } = await registerClient(app);
+  const account = "admin|bariatricpal.com";
+
+  const wrongCsrf = await submitConsent(app, await startToCallback(app, { clientId: client.client_id, account }), "approve", { body: { csrf: "x".repeat(43) } });
+  assert.equal(wrongCsrf.status, 403);
+  const noCookie = await submitConsent(app, await startToCallback(app, { clientId: client.client_id, account }), "approve", { headers: { cookie: "__Host-sms_consent=other" } });
+  assert.equal(noCookie.status, 403);
+  const crossSite = await submitConsent(app, await startToCallback(app, { clientId: client.client_id, account }), "approve", { headers: { origin: "https://evil.example" } });
+  assert.equal(crossSite.status, 403);
+
+  const page = await startToCallback(app, { clientId: client.client_id, account });
+  const form = await consentForm(page);
+  const post = () => call(app, "/consent", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: form.cookie },
+    body: new URLSearchParams({ consent: form.consent, csrf: form.csrf, decision: "approve" })
+  });
+  assert.equal((await post()).status, 303);
+  assert.equal((await post()).status, 400, "single use");
+
+  const { body: cli } = await registerClient(app, { redirect_uris: ["http://127.0.0.1:5555/cb"] });
+  const late = await consentForm(await startToCallback(app, { clientId: cli.client_id, redirectUri: "http://127.0.0.1:5555/cb", account }));
+  advance(5 * 60_000 + 1);
+  const expired = await call(app, "/consent", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: late.cookie },
+    body: new URLSearchParams({ consent: late.consent, csrf: late.csrf, decision: "approve" })
+  });
+  assert.equal(expired.status, 400);
+});
+
+test("with OAUTH_ALLOW_ANY_REDIRECT, unlisted redirects always show consent with a warning", async (t) => {
+  const { app } = await setup(t, { allowAnyRedirect: true });
+  const redirectUri = "https://tools.example.com/oauth/cb";
+  const { body: client } = await registerClient(app, { redirect_uris: [redirectUri], client_name: "Example Tool" });
+  const first = await startToCallback(app, { clientId: client.client_id, redirectUri, account: "admin|bariatricpal.com" });
+  assert.equal(first.status, 200);
+  const { html } = await consentForm(first.clone());
+  assert.ok(html.includes("tools.example.com"));
+  assert.match(html, /not on this server's list of known apps/);
+  assert.ok(!html.includes("remembered for 30 days"));
+  const decided = await submitConsent(app, first);
+  assert.equal(decided.status, 303);
+  assert.equal(new URL(decided.headers.get("location")).host, "tools.example.com");
+  // Never remembered.
+  assert.equal((await startToCallback(app, { clientId: client.client_id, redirectUri, account: "admin|bariatricpal.com" })).status, 200);
+
+  const custom = "vendorapp://ide.example/mcp/callback";
+  const { body: desktop } = await registerClient(app, { redirect_uris: [custom] });
+  const page = await startToCallback(app, { clientId: desktop.client_id, redirectUri: custom, account: "admin|bariatricpal.com" });
+  assert.match(page.headers.get("content-security-policy"), /form-action 'self' vendorapp:/);
+  const back = await submitConsent(app, page);
+  assert.equal(back.status, 303);
+  assert.match(back.headers.get("location"), /^vendorapp:\/\/ide\.example\/mcp\/callback\?code=/);
 });

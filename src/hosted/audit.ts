@@ -26,6 +26,8 @@ export interface AuthAuditEntry {
   event:
     | "sign_in"
     | "sign_in_denied"
+    | "consent_approved"
+    | "consent_denied"
     | "token_issued"
     | "token_refreshed"
     | "refresh_denied"
