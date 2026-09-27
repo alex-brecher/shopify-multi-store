@@ -341,7 +341,7 @@ test("graphql is imported from its package root only, so a bundle never holds tw
 });
 
 test("the D1 database is created explicitly in the CLI steps, and the Deploy button metadata describes every binding", async () => {
-  const deploy = await readFile(new URL("../docs/DEPLOY-CLOUDFLARE.md", import.meta.url), "utf8");
+  const deploy = (await readFile(new URL("../docs/DEPLOY-CLOUDFLARE.md", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
   const cli = /### With the CLI\n\n```bash\n([\s\S]*?)```/.exec(deploy)[1];
   const create = cli.indexOf("npx wrangler d1 create shopify-multi-store-audit");
   assert.ok(create > 0 && create < cli.indexOf("npx wrangler deploy"), "d1 create comes before deploy");

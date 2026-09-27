@@ -13,8 +13,10 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const wrangler = join(root, "node_modules", ".bin", process.platform === "win32" ? "wrangler.cmd" : "wrangler");
-const available = process.env.SKIP_WORKERD !== "1" && await access(wrangler).then(() => true, () => false) && await import("miniflare").then(() => true, () => false);
+// Run wrangler's JS entry with this Node, so Windows never has to spawn a .cmd shim.
+const wrangler = join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+const nodeMajor = Number(process.versions.node.split(".")[0]);
+const available = process.env.SKIP_WORKERD !== "1" && nodeMajor >= 22 && await access(wrangler).then(() => true, () => false) && await import("miniflare").then(() => true, () => false);
 
 const ORIGIN = "https://shopify-multi-store-mcp.example.workers.dev";
 const SECRET = "shpss_workerd_secret";
@@ -52,10 +54,10 @@ function cookieOf(response, prefix) {
   return response.headers.getSetCookie().find((value) => value.startsWith(prefix))?.split(";")[0];
 }
 
-test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state, D1 audit, one bundled schema", { skip: !available && "wrangler or miniflare not installed", timeout: 240_000 }, async (t) => {
+test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state, D1 audit, one bundled schema", { skip: !available && (nodeMajor < 22 ? "wrangler needs Node 22 or later" : "wrangler or miniflare not installed"), timeout: 240_000 }, async (t) => {
   const outdir = await mkdtemp(join(tmpdir(), "sms-wbuild-"));
   t.after(() => rm(outdir, { recursive: true, force: true }));
-  await promisify(execFile)(wrangler, ["deploy", "--dry-run", "--outdir", outdir], { cwd: root, env: { ...process.env, WRANGLER_SEND_METRICS: "false" }, maxBuffer: 16 * 1024 * 1024 });
+  await promisify(execFile)(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", outdir], { cwd: root, env: { ...process.env, WRANGLER_SEND_METRICS: "false" }, maxBuffer: 16 * 1024 * 1024 });
   const files = await readdir(outdir);
   const schemaFiles = files.filter((name) => name.endsWith(".json.gz"));
   assert.equal(schemaFiles.length, 1, "exactly one schema in the bundle");
