@@ -185,9 +185,9 @@ Copy `skills/shopify-multi-store/SKILL.md` into the client's skills directory wh
 
 ## Host it for your team
 
-Run `shopify-multi-store serve` (or the included Dockerfile) once and share `https://<host>/mcp`. Each person connects from the AI app they already use, on any plan: Claude (personal custom connector), ChatGPT, Codex, Claude Code, Cursor, VS Code, Gemini CLI, Windsurf, or any MCP client that supports remote servers. They sign in with Google Workspace and approve the app on a consent screen; apps that only send a fixed header can use a personal access token from `/tokens`. Shopify tokens stay on the server. Roles, per-store access, and an audit log are built in.
+Run `shopify-multi-store serve` (or the included Dockerfile) once and share `https://<host>/mcp`. Each person connects from the AI app they already use, on any plan: Claude (personal custom connector), ChatGPT, Codex, Claude Code, Cursor, VS Code, Gemini CLI, Windsurf, or any MCP client that supports remote servers. They sign in with Google Workspace and approve the app on a consent screen; apps that only send a fixed header can use a personal access token from `/tokens`. By default each person also connects each store with their own Shopify staff account at `/stores`, so every call runs with their own Shopify permissions and Shopify decides what they can do. Shopify tokens stay on the server, encrypted. Optional roles, per-store access, and an audit log are built in.
 
-See [Connect from your AI app](docs/HOSTED.md#connect-from-your-ai-app) for per-client steps and [docs/HOSTED.md](docs/HOSTED.md) for setup.
+See [Connect from your AI app](docs/HOSTED.md#connect-from-your-ai-app) for per-client steps, [docs/HOSTED.md](docs/HOSTED.md) for setup, and [docs/ACTIONS.md](docs/ACTIONS.md) for per-user access and the generic action tools.
 
 ## Store authentication
 
@@ -287,6 +287,18 @@ reporting success.
 | `shopify_list_blog_articles` | List a blog's articles. |
 | `shopify_list_markets` | List markets. |
 | `shopify_check_access` | Compare granted access scopes against every tool's requirement, across one or many stores. |
+
+## Generic action tools
+
+Three tools reach every Shopify Admin API mutation (514 in API 2026-04), including the 483 without a dedicated tool:
+
+| Tool | Action |
+| --- | --- |
+| `shopify_find_actions` | Search all mutations by keyword and category; flags destructive ones and existing dedicated tools. |
+| `shopify_describe_action` | Show one mutation's arguments, input fields, payload, a ready-to-edit document, and a scope hint. |
+| `shopify_run_action` | Run a mutation on 1 to 100 stores, with per-store variables. Dry run by default, resolving every record ID it would touch; destructive mutations need `confirm` set to the mutation name. |
+
+A denylist blocks mutations that mint credentials or change the app's own billing. Request the full scope set with `node scripts/print-scopes.mjs --full`. See [docs/ACTIONS.md](docs/ACTIONS.md) for worked examples and what no third-party app can do.
 
 ## Shopify companion skills
 

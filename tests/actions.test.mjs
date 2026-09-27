@@ -290,3 +290,13 @@ test("userErrors from any *UserErrors list mark the store as rejected", async (t
   assert.equal(outcome.outcome, "rejected");
   assert.equal(outcome.userErrors[0].error.message, "Order is already cancelled");
 });
+
+test("docs/ACTIONS.md covers per-user setup, the three tools with worked examples, and honest limits", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const doc = await readFile(new URL("../docs/ACTIONS.md", import.meta.url), "utf8");
+  for (const heading of ["## Per-user access", "### Denylist", "### 1. Change a price in two stores", "### 2. Cancel an order", "### 3. Create a gift card", "## What no third-party app can do", "## Shopify Admin setup"]) {
+    assert.ok(doc.includes(heading), heading);
+  }
+  for (const text of ["variablesByStore", "\"confirm\": \"orderCancel\"", "giftCardCreate", "https://<host>/shopify/callback", "print-scopes.mjs --full", "ACTIONS_DENYLIST"]) assert.ok(doc.includes(text), text);
+  assert.ok(!doc.includes("—"), "no em dashes");
+});

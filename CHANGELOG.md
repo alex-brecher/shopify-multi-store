@@ -4,6 +4,25 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Hosted: per-user Shopify access (`SHOPIFY_ACCESS_MODE=per_user`, the new
+  serve default). Each person connects each store with their own Shopify staff
+  account at `/stores` (Shopify online tokens, `grant_options[]=per-user`), and
+  every tool call uses that person's token, so Shopify enforces their
+  permissions. Tokens are encrypted with AES-256-GCM
+  (`SHOPIFY_TOKEN_ENCRYPTION_KEY`). Missing or expired connections return the
+  exact connect URL; there is no fallback to the app token. The policy file is
+  optional in this mode. New settings: `SHOPIFY_APP_CLIENT_ID`,
+  `SHOPIFY_APP_CLIENT_SECRET`, `SHOPIFY_APP_SCOPES`,
+  `SHOPIFY_REQUIRE_EMAIL_MATCH`. `SHOPIFY_ACCESS_MODE=app` keeps the previous
+  behavior.
+- Add `shopify_find_actions`, `shopify_describe_action`, and
+  `shopify_run_action`: search, describe, and run any Admin API mutation on up
+  to 100 stores, with dry runs that resolve every record ID, confirm for
+  destructive mutations, per-store variables, a denylist (`ACTIONS_DENYLIST`),
+  and an `action_run` audit line.
+- Add a full scope set: `node scripts/print-scopes.mjs --full`.
+- Docs: add `docs/ACTIONS.md`.
+
 - Hosted: work with any MCP client on any plan, not only Claude. Built-in
   redirect URIs for Claude, ChatGPT, VS Code, VS Code Insiders, and Cursor
   live in `src/hosted/known-clients.ts`, plus loopback on any port for Claude
