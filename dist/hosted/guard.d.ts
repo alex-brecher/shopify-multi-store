@@ -10,6 +10,8 @@ export declare const ADMIN_ONLY_TOOLS: ReadonlySet<string>;
 export declare const HOSTED_DISABLED_TOOLS: ReadonlySet<string>;
 /** Arguments that refer to the server's local filesystem and are refused in hosted mode. */
 export declare const HOSTED_DISABLED_ARGUMENTS: Readonly<Record<string, readonly string[]>>;
+/** Tools whose named arguments hold a GraphQL document. The audit log keeps only a summary of it. */
+export declare const GRAPHQL_DOCUMENT_ARGUMENTS: Readonly<Record<string, readonly string[]>>;
 export declare function toolAllowedForRole(role: Role, tool: string, readOnly: boolean): boolean;
 export declare function requestedStores(args: unknown): string[];
 export interface GuardOptions {

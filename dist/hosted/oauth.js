@@ -17,6 +17,13 @@ const CODE_TTL_MS = 2 * 60_000;
 const CONSENT_TTL_MS = 5 * 60_000;
 const APPROVAL_TTL_MS = 30 * 24 * 3600_000;
 const CONSENT_COOKIE = "__Host-sms_consent";
+const GOOGLE_CALLBACK_PATH = "/oauth/google/callback";
+/**
+ * Browser binding for a Google sign-in. One cookie per sign-in, named from its state, so two
+ * sign-ins in one browser do not overwrite each other. `__Secure-` rather than `__Host-`
+ * because the cookie is scoped to the callback path.
+ */
+const LOGIN_COOKIE_PREFIX = "__Secure-sms_login_";
 const CIMD_CACHE_MS = 5 * 60_000;
 const CIMD_MAX_BYTES = 16 * 1024;
 const AUTH_METHODS = ["none", "client_secret_post", "client_secret_basic"];
@@ -48,6 +55,19 @@ export function errorPage(status, message) {
 }
 function redirect(location, status = 302, headers = {}) {
     return new Response(null, { status, headers: { location, ...NO_STORE, ...headers } });
+}
+function loginCookieName(loginState) {
+    return `${LOGIN_COOKIE_PREFIX}${sha256(loginState).slice(0, 24)}`;
+}
+/** HttpOnly, Secure, SameSite=Lax (it must survive the top-level redirect back from Google), callback path only. */
+function loginCookie(name, value, maxAgeSeconds) {
+    return `${name}=${value}; Path=${GOOGLE_CALLBACK_PATH}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+}
+/** Add a Set-Cookie header to a response, keeping any it already has. */
+function appendSetCookie(response, value) {
+    const headers = new Headers(response.headers);
+    headers.append("set-cookie", value);
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 function approvalKey(email, clientId, redirectUri) {
     return sha256(`${email}\n${clientId}\n${redirectUri}`);
@@ -295,10 +315,7 @@ export class AuthorizationServer {
         if (resources.length > 1 || (resources.length === 1 && !this.resourceMatches(resources[0]))) {
             return fail("invalid_target", `This server only issues tokens for ${this.resource}.`);
         }
-        const nonce = randomBytes(16).toString("base64url");
-        const googleVerifier = randomBytes(48).toString("base64url");
-        const loginState = randomBytes(32).toString("base64url");
-        const pending = {
+        return this.redirectToGoogle((login) => ({
             clientId,
             ...(client.client_name ? { clientName: client.client_name } : {}),
             redirectUri,
@@ -307,16 +324,27 @@ export class AuthorizationServer {
             codeChallenge: challenge,
             resource: this.resource,
             scope: SCOPE,
-            nonce,
-            googleVerifier
-        };
-        await this.options.store.put("pending", loginState, pending, this.now() + PENDING_TTL_MS);
+            ...login
+        }));
+    }
+    /**
+     * Store a pending sign-in and send the browser to Google. The browser also gets a binding
+     * cookie; only its sha256 is stored, and the callback must present it, so a callback URL
+     * forwarded to another browser cannot complete there (login CSRF).
+     */
+    async redirectToGoogle(build) {
+        const nonce = randomBytes(16).toString("base64url");
+        const googleVerifier = randomBytes(48).toString("base64url");
+        const loginState = randomBytes(32).toString("base64url");
+        const binding = randomBytes(32).toString("base64url");
+        const record = build({ nonce, googleVerifier, bindingSha256: sha256(binding) });
+        await this.options.store.put("pending", loginState, record, this.now() + PENDING_TTL_MS);
         return redirect(this.options.google.authorizationUrl({
             state: loginState,
             nonce,
             codeChallenge: createHash("sha256").update(googleVerifier).digest("base64url"),
             redirectUri: this.googleRedirectUri
-        }));
+        }), 302, { "set-cookie": loginCookie(loginCookieName(loginState), binding, PENDING_TTL_MS / 1000) });
     }
     clientRedirect(redirectUri, params) {
         const url = new URL(redirectUri);
@@ -332,25 +360,42 @@ export class AuthorizationServer {
      * than for an OAuth client. The same domain and policy checks apply.
      */
     async startPageSignIn(purpose) {
-        const nonce = randomBytes(16).toString("base64url");
-        const googleVerifier = randomBytes(48).toString("base64url");
-        const loginState = randomBytes(32).toString("base64url");
-        const pending = { purpose, nonce, googleVerifier };
-        await this.options.store.put("pending", loginState, pending, this.now() + PENDING_TTL_MS);
-        return redirect(this.options.google.authorizationUrl({
-            state: loginState,
-            nonce,
-            codeChallenge: createHash("sha256").update(googleVerifier).digest("base64url"),
-            redirectUri: this.googleRedirectUri
-        }));
+        return this.redirectToGoogle((login) => ({ purpose, ...login }));
     }
     /** Receives page sign-ins (see startPageSignIn) after the domain and policy checks pass. */
     onPageSignIn;
-    async googleCallback(url) {
+    /**
+     * GET /oauth/google/callback. The binding cookie is checked before the login state is
+     * consumed or the Google code is exchanged. A callback without the matching cookie (for
+     * example a callback URL forwarded from another browser) is refused and leaves the state
+     * unconsumed, so it can neither create a session nor burn the real sign-in. Once the check
+     * passes, the state is taken (single use) and every outcome clears the cookie.
+     */
+    async googleCallback(request) {
+        const url = new URL(request.url);
         const loginState = url.searchParams.get("state");
-        const stored = loginState ? await this.options.store.take("pending", loginState) : undefined;
-        if (!stored)
-            return errorPage(400, "This sign-in link expired or was already used. Start again from your AI app.");
+        const expired = () => errorPage(400, "This sign-in link expired or was already used. Start again from your AI app.");
+        if (!loginState || loginState.length > 200 || url.searchParams.getAll("state").length > 1)
+            return expired();
+        const cookieName = loginCookieName(loginState);
+        const clear = (response) => appendSetCookie(response, loginCookie(cookieName, "", 0));
+        const pending = await this.options.store.get("pending", loginState);
+        if (!pending)
+            return clear(expired());
+        const binding = readCookie(request, cookieName);
+        if (!binding || typeof pending.bindingSha256 !== "string" || !safeEqual(sha256(binding), pending.bindingSha256)) {
+            const clientId = "purpose" in pending ? PAGE_SIGN_IN_CLIENT : pending.clientId;
+            this.log("Sign-in refused: the Google callback did not come from the browser that started the sign-in.");
+            await this.auditAuth({ event: "sign_in_denied", clientId, reason: "sign-in callback not bound to this browser" });
+            return errorPage(403, "This sign-in was started in a different browser. Start again from your AI app, in this browser.");
+        }
+        // Single use, and only after the binding check passed.
+        const stored = await this.options.store.take("pending", loginState);
+        if (!stored || stored.bindingSha256 !== pending.bindingSha256)
+            return clear(expired());
+        return clear(await this.completeGoogleSignIn(url, stored));
+    }
+    async completeGoogleSignIn(url, stored) {
         const page = "purpose" in stored ? stored : undefined;
         const pending = page ? undefined : stored;
         const clientId = pending?.clientId ?? PAGE_SIGN_IN_CLIENT;

@@ -90,8 +90,12 @@ export class PersonalTokens {
     if (!record || record.expiresAt <= this.now()) return undefined;
     const now = this.now();
     // Record last use, at most every few minutes so busy clients do not rewrite the store constantly.
+    // Conditional on the stored record: a token revoked (deleted) since the read above is never
+    // written back, and the request is refused.
     if (record.lastUsedAt === undefined || now - record.lastUsedAt >= LAST_USED_WRITE_INTERVAL_MS) {
-      await this.options.store.put<PersonalTokenRecord>("pat", key, { ...record, lastUsedAt: now }, record.expiresAt);
+      const updated = await this.options.store.update<PersonalTokenRecord>("pat", key, (current) =>
+        current.id === record.id && current.expiresAt > now ? { ...current, lastUsedAt: now } : undefined);
+      return updated;
     }
     return record;
   }

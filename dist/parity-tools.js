@@ -2,7 +2,7 @@ import { z } from "zod/v4";
 import { workflow, textResult, toolError, WorkflowError, } from "./admin-workflows.js";
 import { PDOCS } from "./parity-documents.js";
 import { mapConcurrent } from "./concurrency.js";
-import { loadStores } from "./config.js";
+import { resolveStoreTargets } from "./config.js";
 import { REQUIRED_SCOPES, VARIABLE_SCOPE_TOOLS } from "./scope-requirements.js";
 // These tools pin their Admin GraphQL operations to 2026-04 (the newest quarterly
 // version bundled with the server at the time they were written) rather than
@@ -300,7 +300,8 @@ export function registerParityTools(server) {
     }, async (args) => {
         const a = args;
         try {
-            const requested = a.stores.filter((s, i) => a.stores.findIndex((c) => c.toLowerCase() === s.toLowerCase()) === i);
+            // Refuses two aliases for one shop, so no price change runs twice.
+            const requested = (await resolveStoreTargets(a.stores)).map((target) => target.store?.alias ?? target.requestedAlias);
             const results = await mapConcurrent(requested, async (alias) => {
                 try {
                     const w = await workflow(alias);
@@ -898,10 +899,7 @@ export function registerParityTools(server) {
     }, async (args) => {
         const a = args;
         try {
-            const configured = await loadStores();
-            const aliases = a.stores?.length
-                ? a.stores
-                : configured.map((s) => s.alias);
+            const aliases = (await resolveStoreTargets(a.stores)).map((target) => target.store?.alias ?? target.requestedAlias);
             const results = await mapConcurrent(aliases, async (alias) => {
                 try {
                     const w = await workflow(alias);

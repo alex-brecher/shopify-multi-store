@@ -4,6 +4,27 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Multi-store tools refuse two requested aliases that point to the same shop,
+  naming both, so an action never runs twice on one shop; with no stores named,
+  each shop is used once. Hosted mode refuses a store configuration that lists
+  one shop under two aliases.
+- Hosted: fix login CSRF in Google sign-in. Each sign-in sets a binding cookie
+  (HttpOnly, Secure, SameSite=Lax, callback path only, 10 minutes) and stores
+  only its hash. The callback checks it before using the login state or the
+  Google code, so a callback URL forwarded to another browser creates no
+  session. Applies to app sign-ins and the `/tokens` page. The node adapter now
+  keeps every Set-Cookie header.
+- Hosted audit log: stop storing raw GraphQL documents, search expressions, and
+  free-text arguments. Documents are summarized (operation types, root fields,
+  argument names, sha256), variables are hashed, and only ids, store aliases,
+  enums, numbers and booleans are kept; other strings become a sha256. Customer
+  data inside inline GraphQL literals or search strings no longer reaches the log.
+- Hosted: a personal access token revoked while a request was being verified
+  could be written back by the last-used update. The update is now conditional
+  on the stored record, and the request is refused.
+- Hosted: fix the OAuth store failing on Windows with EPERM. The temporary file is
+  synced through the handle it was written with, then renamed; the directory is
+  synced after the rename except on Windows. Write errors are no longer hidden.
 - Hosted: work with any MCP client on any plan, not only Claude. Built-in
   redirect URIs for Claude, ChatGPT, VS Code, VS Code Insiders, and Cursor
   live in `src/hosted/known-clients.ts`, plus loopback on any port for Claude

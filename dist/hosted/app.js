@@ -129,7 +129,7 @@ export function createHostedApp(options) {
         if (path === "/authorize")
             return method === "GET" ? auth.authorize(url) : jsonResponse({ error: "method_not_allowed" }, 405);
         if (path === "/oauth/google/callback")
-            return method === "GET" ? auth.googleCallback(url) : jsonResponse({ error: "method_not_allowed" }, 405);
+            return method === "GET" ? auth.googleCallback(request) : jsonResponse({ error: "method_not_allowed" }, 405);
         if (path === "/tokens")
             return tokens.handle(request);
         if (path === "/consent")

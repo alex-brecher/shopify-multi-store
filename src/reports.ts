@@ -1,5 +1,5 @@
 import { mapConcurrent } from "./concurrency.js";
-import { loadStores, type StoreConfig } from "./config.js";
+import { resolveStoreTargets, type StoreConfig } from "./config.js";
 import { adminGraphql, type GraphqlEnvelope } from "./shopify.js";
 
 const REPORT_CHARACTER_LIMIT = 150_000;
@@ -36,25 +36,11 @@ function addSerializedItems(currentSize: number, items: Array<Record<string, unk
   return items.reduce((size, item) => size + JSON.stringify(item).length + 1, currentSize);
 }
 
-async function selectedStores(aliases?: string[]): Promise<Array<{ requestedAlias: string; store?: StoreConfig; error?: string }>> {
-  const configured = await loadStores();
-  const byAlias = new Map(configured.map((store) => [store.alias.toLowerCase(), store]));
-  const requested = aliases?.length
-    ? aliases.filter((alias, index) => aliases.findIndex((candidate) => candidate.toLowerCase() === alias.toLowerCase()) === index)
-    : configured.map((store) => store.alias);
-  return requested.map((alias) => {
-    const store = byAlias.get(alias.toLowerCase());
-    return store
-      ? { requestedAlias: alias, store }
-      : { requestedAlias: alias, error: `Unknown store "${alias}". Available stores: ${configured.map((item) => item.alias).join(", ")}` };
-  });
-}
-
 async function runReport(
   aliases: string[] | undefined,
   operation: (store: StoreConfig) => Promise<GraphqlEnvelope>
 ): Promise<MultiStoreReport> {
-  const selected = await selectedStores(aliases);
+  const selected = await resolveStoreTargets(aliases);
   const results = await mapConcurrent(selected, async ({ requestedAlias, store, error }) => {
     if (!store) return { store: requestedAlias, ok: false, error: error ?? "Unknown store." };
     try {
