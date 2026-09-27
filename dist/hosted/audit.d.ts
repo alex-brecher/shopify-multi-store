@@ -8,7 +8,8 @@ export interface AuditEntry {
     stores: string[];
     readOnly: boolean;
     ok: boolean;
-    error?: string;
+    /** Structured failure detail. Never free-form error text, which can echo customer data. */
+    error?: AuditErrorInfo;
     durationMs: number;
     argsSha256?: string;
     /** The arguments as auditArguments() reduces them: no free text, documents summarized. */
@@ -32,6 +33,31 @@ export type AuditRecord = AuditEntry | AuthAuditEntry;
 export interface AuditLog {
     write(entry: AuditRecord): Promise<void>;
 }
+/**
+ * What the audit log keeps about a failed tool call. Error messages can echo customer data
+ * (a userErrors message quoting an email, an HTTP body with an address), so the text itself is
+ * never stored: only a class, machine-readable codes, schema field paths, the HTTP status, and a
+ * sha256 of the full message so an operator can match a line against a message they hold.
+ */
+export interface AuditErrorInfo {
+    /** access_denied, http_error, throttled, timeout, graphql_errors, user_errors, exception or tool_error. */
+    class: string;
+    /** JavaScript error name when the tool threw (Error, TypeError, ...). */
+    exception?: string;
+    httpStatus?: number;
+    /** Shopify error codes, e.g. ACCESS_DENIED, THROTTLED, TAKEN, INVALID. */
+    codes?: string[];
+    /** userErrors field paths, e.g. input.email. Schema names and list indexes only. */
+    fields?: string[];
+    messageSha256: string;
+}
+/**
+ * Reduce a tool failure to structured, PII-free audit detail. `thrown` is an exception the tool
+ * raised; `result` is an isError tool result. Codes and field paths come from structured content
+ * (and from JSON embedded in the message); free text only contributes the HTTP status and
+ * upper-case error codes. The full message is kept only as a sha256.
+ */
+export declare function auditError(thrown: unknown, result?: unknown): AuditErrorInfo;
 /** Longest string kept for any logged argument value. */
 export declare const AUDIT_MAX_STRING = 2000;
 /** Longest audit line, in bytes. */

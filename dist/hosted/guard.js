@@ -1,5 +1,5 @@
 import { storeAllowed, storeScope } from "../runtime.js";
-import { auditArguments, canonicalJson, sha256Hex } from "./audit.js";
+import { auditArguments, auditError, canonicalJson, sha256Hex } from "./audit.js";
 /** Tools only an admin may call in hosted mode, whatever their annotations say. */
 export const ADMIN_ONLY_TOOLS = new Set([
     "shopify_graphql_mutation",
@@ -105,9 +105,8 @@ export function guardServer(server, { principal, audit, tokenId }) {
             }
             finally {
                 const isError = Boolean(failure) || Boolean(result && typeof result === "object" && result.isError);
-                const errorText = failure
-                    ? (failure instanceof Error ? failure.message : String(failure))
-                    : isError ? errorMessage(result) : undefined;
+                // Never the message text: it can quote customer data back from Shopify.
+                const errorInfo = failure ? auditError(failure) : isError ? auditError(undefined, result) : undefined;
                 try {
                     await audit.write({
                         event: "tool_call",
@@ -119,7 +118,7 @@ export function guardServer(server, { principal, audit, tokenId }) {
                         stores,
                         readOnly,
                         ok: !isError,
-                        ...(errorText ? { error: errorText.slice(0, 500) } : {}),
+                        ...(errorInfo ? { error: errorInfo } : {}),
                         durationMs: Date.now() - started,
                         // Every call records a hash of its arguments and the arguments reduced by
                         // auditArguments(): GraphQL documents summarized, variables and free text hashed,
@@ -138,10 +137,5 @@ export function guardServer(server, { principal, audit, tokenId }) {
         return register(name, config, wrapped);
     };
     server.registerTool = guarded;
-}
-function errorMessage(result) {
-    const content = result?.content;
-    const text = content?.find((item) => item.type === "text")?.text;
-    return typeof text === "string" ? text : "Tool returned an error.";
 }
 //# sourceMappingURL=guard.js.map

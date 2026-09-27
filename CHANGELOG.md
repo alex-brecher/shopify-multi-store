@@ -4,6 +4,11 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Hosted audit log: failed tool calls no longer store the error message, which
+  could quote customer data back from Shopify. `error` is now structured:
+  class, exception name, HTTP status, Shopify error codes (ACCESS_DENIED,
+  THROTTLED, userErrors codes), userErrors field paths, and a sha256 of the
+  full message.
 - Multi-store tools refuse two requested aliases that point to the same shop,
   naming both, so an action never runs twice on one shop; with no stores named,
   each shop is used once. Hosted mode refuses a store configuration that lists
