@@ -259,6 +259,15 @@ test("denylisted mutations are refused, including behind a fragment, and ACTIONS
   const custom = await callTool("shopify_run_action", { stores: ["main"], mutation: "giftCardCreate" });
   assert.equal(custom.isError, true);
   assert.match(custom.content[0].text, /denylist/);
+  // ACTIONS_DENYLIST adds to the defaults; the defaults still apply.
+  assert.match((await callTool("shopify_run_action", { stores: ["main"], mutation: "appUninstall" })).content[0].text, /denylist/);
+  // Only ACTIONS_DENYLIST_REPLACE=1 replaces them.
+  process.env.ACTIONS_DENYLIST_REPLACE = "1";
+  const replaced = await callTool("shopify_run_action", { stores: ["main"], mutation: "tagsAdd", variables: { id: "gid://shopify/Product/1", tags: ["x"] } });
+  assert.notEqual(replaced.isError, true, replaced.content[0].text);
+  assert.doesNotMatch((await callTool("shopify_run_action", { stores: ["main"], mutation: "appUninstall" })).content[0].text, /denylist/);
+  delete process.env.ACTIONS_DENYLIST_REPLACE;
+  delete process.env.ACTIONS_DENYLIST;
 
   const query = await callTool("shopify_run_action", { stores: ["main"], document: "query { shop { name } }" });
   assert.equal(query.isError, true);
@@ -299,4 +308,23 @@ test("docs/ACTIONS.md covers per-user setup, the three tools with worked example
   }
   for (const text of ["variablesByStore", "\"confirm\": \"orderCancel\"", "giftCardCreate", "https://<host>/shopify/callback", "print-scopes.mjs --full", "ACTIONS_DENYLIST"]) assert.ok(doc.includes(text), text);
   assert.ok(!doc.includes("—"), "no em dashes");
+});
+
+test("webhook, server pixel, and bulk mutation subscriptions are denied by default", async (t) => {
+  const { callTool, requests } = await fixture(t);
+  for (const mutation of ["webhookSubscriptionCreate", "webhookSubscriptionUpdate", "webhookSubscriptionDelete", "pubSubWebhookSubscriptionCreate", "pubSubWebhookSubscriptionUpdate", "eventBridgeWebhookSubscriptionCreate", "eventBridgeWebhookSubscriptionUpdate", "eventBridgeServerPixelUpdate", "pubSubServerPixelUpdate", "bulkOperationRunMutation"]) {
+    const refused = await callTool("shopify_run_action", { stores: ["main"], mutation });
+    assert.equal(refused.isError, true, mutation);
+    assert.match(refused.content[0].text, /denylist/, mutation);
+  }
+  assert.equal(requests.length, 0);
+});
+
+test("non-obvious destructive mutations need confirm", async (t) => {
+  const { callTool, requests } = await fixture(t);
+  for (const name of ["productSet", "themePublish", "customerSet", "inventorySetQuantities", "orderCapture", "draftOrderComplete"]) assert.ok(isDestructive(name), name);
+  const refused = await callTool("shopify_run_action", { stores: ["main"], mutation: "themePublish", dryRun: false, variables: { id: "gid://shopify/OnlineStoreTheme/1" } });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /confirm: "themePublish"/);
+  assert.equal(requests.length, 0);
 });

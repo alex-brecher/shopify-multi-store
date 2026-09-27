@@ -13,10 +13,19 @@ export declare function classifyMutation(name: string): Category | undefined;
  * equal to the mutation name. Keep this the only list.
  */
 export declare const DESTRUCTIVE_WORDS: readonly ["delete", "remove", "cancel", "refund", "void", "debit", "deactivate", "revoke", "close", "archive", "disable", "erasure", "uninstall", "destroy", "merge", "expire", "dispose", "unpublish"];
+/**
+ * Mutations whose names do not say so but that overwrite or replace data wholesale, move money,
+ * or change what customers see at once. They need confirm like the name-matched ones.
+ */
+export declare const DESTRUCTIVE_MUTATIONS: ReadonlySet<string>;
 export declare function isDestructive(name: string): boolean;
 /**
- * Mutations that mint credentials or change this app's own installation or billing.
- * Overridable with ACTIONS_DENYLIST (comma list; a trailing * matches a prefix).
+ * Mutations refused by default: ones that mint credentials or change this app's own installation
+ * or billing; webhook and server-pixel subscriptions, which deliver data to an endpoint with the
+ * app's scopes long after the caller's own token has expired; and bulkOperationRunMutation, which
+ * hides the inner mutation from the denylist and the confirm check.
+ * ACTIONS_DENYLIST adds entries (comma list; a trailing * matches a prefix);
+ * ACTIONS_DENYLIST_REPLACE=1 makes it replace this list instead.
  */
 export declare const DEFAULT_DENYLIST: readonly string[];
 export declare function denylist(env?: NodeJS.ProcessEnv): string[];

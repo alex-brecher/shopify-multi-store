@@ -40,7 +40,7 @@ Notes:
 
 - `dryRun` defaults to `true`. A dry run validates the document against each store's API version, checks the variables against the input types, and looks up every `gid://shopify/...` ID in the variables with `nodes(ids:)`, so the preview lists exactly which records (with title, name, SKU, or email where the type has one) would be touched. Nothing is changed.
 - `dryRun: false` applies it. Every store is checked first; if any store fails validation, nothing runs anywhere.
-- Destructive mutations (names containing delete, remove, cancel, refund, void, debit, deactivate, revoke, close, archive, disable, erasure, uninstall, destroy, merge, expire, dispose, or unpublish; the list is `DESTRUCTIVE_WORDS` in `src/actions/catalog.ts`) need `confirm` set to the mutation name.
+- Destructive mutations (names containing delete, remove, cancel, refund, void, debit, deactivate, revoke, close, archive, disable, erasure, uninstall, destroy, merge, expire, dispose, or unpublish; the list is `DESTRUCTIVE_WORDS` in `src/actions/catalog.ts`) need `confirm` set to the mutation name. So do mutations that replace data wholesale or move money even though their names do not say so, such as `productSet`, `customerSet`, `themePublish`, `themeFilesUpsert`, `inventorySetQuantities`, `orderCapture`, and `draftOrderComplete` (`DESTRUCTIVE_MUTATIONS` in the same file).
 - Queries, subscriptions, and documents with more than one operation are refused. Root fields hidden in fragments are checked too.
 - A mutation is never retried. If the request fails in a way where it might have applied, the result says so. (Only a request Shopify throttled before running it is waited out and sent again.)
 - Each store's result is `applied`, `rejected` (Shopify returned user errors), `partial`, `failed`, or `unknown`. `ACCESS_DENIED` becomes "Your Shopify account or the app lacks write_x on <store>".
@@ -50,7 +50,13 @@ In app mode, `shopify_run_action` and `shopify_graphql_mutation` are admin-only.
 
 ### Denylist
 
-`shopify_run_action` refuses mutations that mint credentials or change this app's own installation or billing: `delegateAccessTokenCreate`, `delegateAccessTokenDestroy`, `storefrontAccessTokenCreate`, `storefrontAccessTokenDelete`, `appUninstall`, `appRevokeAccessScopes`, `appSubscription*`, `appPurchaseOneTimeCreate`, `appUsageRecordCreate`, and `mobilePlatformApplication*`. Set `ACTIONS_DENYLIST` (comma list, `*` suffix for a prefix) to replace the list. `shopify_find_actions` marks these `denied`. On a hosted server, `shopify_graphql_mutation` refuses the same mutations.
+`shopify_run_action` refuses, by default:
+
+- mutations that mint credentials or change this app's own installation or billing: `delegateAccessTokenCreate`, `delegateAccessTokenDestroy`, `storefrontAccessTokenCreate`, `storefrontAccessTokenDelete`, `appUninstall`, `appRevokeAccessScopes`, `appSubscription*`, `appPurchaseOneTimeCreate`, `appUsageRecordCreate`, `mobilePlatformApplication*`;
+- webhook and server-pixel subscriptions (`webhookSubscriptionCreate`, `webhookSubscriptionUpdate`, `webhookSubscriptionDelete`, `pubSubWebhookSubscription*`, `eventBridgeWebhookSubscription*`, `eventBridgeServerPixelUpdate`, `pubSubServerPixelUpdate`), because they keep delivering data with the app's scopes after the caller's own token has expired;
+- `bulkOperationRunMutation`, which would hide the inner mutation from the denylist and the confirm check.
+
+`ACTIONS_DENYLIST` (comma list, `*` suffix for a prefix) adds to this list. `ACTIONS_DENYLIST_REPLACE=1` makes `ACTIONS_DENYLIST` replace it instead. `shopify_find_actions` marks denied mutations `denied`. On a hosted server, `shopify_graphql_mutation` refuses the same mutations.
 
 ## Worked examples
 

@@ -88,12 +88,49 @@ export const DESTRUCTIVE_WORDS = [
     "archive", "disable", "erasure", "uninstall", "destroy", "merge", "expire", "dispose", "unpublish",
 ];
 const DESTRUCTIVE_PATTERN = new RegExp(DESTRUCTIVE_WORDS.join("|"), "i");
+/**
+ * Mutations whose names do not say so but that overwrite or replace data wholesale, move money,
+ * or change what customers see at once. They need confirm like the name-matched ones.
+ */
+export const DESTRUCTIVE_MUTATIONS = new Set([
+    // Replace whole records or lists: fields, options, variants, addresses, or files left out are removed or overwritten.
+    "productSet",
+    "customerSet",
+    "customerReplaceTaxExemptions",
+    "themeFilesUpsert",
+    "themeFilesCopy",
+    "inventorySetQuantities",
+    "inventorySetOnHandQuantities",
+    "priceListFixedPricesByProductUpdate",
+    "urlRedirectImportSubmit",
+    // Change the live storefront at once.
+    "themePublish",
+    // Commit irreversible order or money changes.
+    "orderEditCommit",
+    "orderCapture",
+    "orderMarkAsPaid",
+    "orderCreateMandatePayment",
+    "orderCreateManualPayment",
+    "paymentScheduleCapture",
+    "draftOrderComplete",
+    "shippingLabelPurchase",
+    "subscriptionBillingAttemptCreate",
+    "subscriptionBillingCycleCharge",
+    "subscriptionBillingCycleBulkCharge",
+    "subscriptionContractPause",
+    // Runs arbitrary mutations in bulk; denylisted by default, destructive if an operator allows it.
+    "bulkOperationRunMutation",
+]);
 export function isDestructive(name) {
-    return DESTRUCTIVE_PATTERN.test(name);
+    return DESTRUCTIVE_MUTATIONS.has(name) || DESTRUCTIVE_PATTERN.test(name);
 }
 /**
- * Mutations that mint credentials or change this app's own installation or billing.
- * Overridable with ACTIONS_DENYLIST (comma list; a trailing * matches a prefix).
+ * Mutations refused by default: ones that mint credentials or change this app's own installation
+ * or billing; webhook and server-pixel subscriptions, which deliver data to an endpoint with the
+ * app's scopes long after the caller's own token has expired; and bulkOperationRunMutation, which
+ * hides the inner mutation from the denylist and the confirm check.
+ * ACTIONS_DENYLIST adds entries (comma list; a trailing * matches a prefix);
+ * ACTIONS_DENYLIST_REPLACE=1 makes it replace this list instead.
  */
 export const DEFAULT_DENYLIST = [
     "delegateAccessTokenCreate",
@@ -106,12 +143,21 @@ export const DEFAULT_DENYLIST = [
     "appPurchaseOneTimeCreate",
     "appUsageRecordCreate",
     "mobilePlatformApplication*",
+    "webhookSubscriptionCreate",
+    "webhookSubscriptionUpdate",
+    "webhookSubscriptionDelete",
+    "pubSubWebhookSubscription*",
+    "eventBridgeWebhookSubscription*",
+    "eventBridgeServerPixelUpdate",
+    "pubSubServerPixelUpdate",
+    "bulkOperationRunMutation",
 ];
 export function denylist(env = process.env) {
-    const raw = env.ACTIONS_DENYLIST;
-    if (raw === undefined || raw.trim() === "")
-        return [...DEFAULT_DENYLIST];
-    return raw.split(",").map((item) => item.trim()).filter(Boolean);
+    const extra = (env.ACTIONS_DENYLIST ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+    const replace = ["1", "true", "yes", "on"].includes((env.ACTIONS_DENYLIST_REPLACE ?? "").trim().toLowerCase());
+    if (replace)
+        return extra;
+    return [...new Set([...DEFAULT_DENYLIST, ...extra])];
 }
 export function isDenied(name, list = denylist()) {
     return list.some((entry) => entry.endsWith("*") ? name.startsWith(entry.slice(0, -1)) : entry === name);

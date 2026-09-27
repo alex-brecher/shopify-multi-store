@@ -202,7 +202,7 @@ After Google sign-in the server shows the client name, the client_id, the redire
 | `PERSONAL_TOKENS_ENABLED` | no | `1` | `0` turns off `/tokens` and refuses `smsp_` bearer tokens |
 | `PERSONAL_TOKEN_MAX_DAYS` | no | `180` | Longest personal access token lifetime a user may choose |
 
-`ACTIONS_DENYLIST` (all modes, stdio too) replaces the list of mutations `shopify_run_action` refuses. See [ACTIONS.md](ACTIONS.md#denylist).
+`ACTIONS_DENYLIST` (all modes, stdio too) adds mutations to the list `shopify_run_action` refuses; `ACTIONS_DENYLIST_REPLACE=1` makes it replace the default list. See [ACTIONS.md](ACTIONS.md#denylist).
 
 Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, `SHOPIFY_CLIENT_SECRET_*`, `SHOPIFY_APP_CLIENT_SECRET`, and `SHOPIFY_TOKEN_ENCRYPTION_KEY`, you can set `<NAME>_FILE=/run/secrets/...` instead. In serve mode the OS keychain is never used.
 
