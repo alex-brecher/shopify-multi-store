@@ -21,7 +21,7 @@ function header(init, name) {
 
 /**
  * Two stores on 2026-04 and a mocked Shopify. `respond` gets each GraphQL request and returns the
- * JSON body; by default nodes() echoes each id as a Product and mutations succeed.
+ * JSON body; by default nodes() resolves each id (except ones ending in /404) and mutations succeed.
  */
 async function fixture(t, respond) {
   const directory = await mkdtemp(join(tmpdir(), "shopify-actions-"));
@@ -60,7 +60,8 @@ async function fixture(t, respond) {
 
 function defaultResponse(request) {
   if (/nodes\(ids:/.test(request.query)) {
-    return { data: { nodes: request.variables.ids.map((id) => ({ __typename: id.split("/")[3], id, title: `Title of ${id}` })) } };
+    // IDs ending in /404 do not exist, so nodes() returns null for them, as Shopify does.
+    return { data: { nodes: request.variables.ids.map((id) => id.endsWith("/404") ? null : { __typename: id.split("/")[3], id, title: `Title of ${id}` }) } };
   }
   if (/productVariantsBulkUpdate/.test(request.query)) {
     return { data: { productVariantsBulkUpdate: { product: { id: request.variables.productId }, productVariants: [], userErrors: [] } } };
@@ -490,4 +491,97 @@ test("shopify_graphql_mutation judges each root the same way", async (t) => {
   const invalid = await sendMutationWithOutcome(store, "mutation { tagsAdd(id: 1) { node { id } } }", {});
   assert.equal(invalid.outcome, undefined);
   assert.match(invalid.outcomeNotice, /not analyzed/);
+});
+
+// ---------- Dry-run completeness ----------
+
+const dry = (callTool, args) => callTool("shopify_run_action", { stores: ["main"], ...args });
+
+test("a small dry run naming every target by ID is complete", async (t) => {
+  const { callTool } = await fixture(t);
+  const result = await dry(callTool, { mutation: "tagsAdd", variables: { id: "gid://shopify/Product/1", tags: ["x"] } });
+  assert.notEqual(result.isError, true, result.content[0].text);
+  const { preview } = result.structuredContent.results[0];
+  assert.equal(preview.complete, true);
+  assert.equal(preview.targets, 1);
+  assert.equal(preview.resolved, 1);
+  assert.equal(preview.reasons, undefined);
+  assert.equal(result.structuredContent.complete, true);
+  assert.doesNotMatch(JSON.stringify(result.structuredContent), /exact/i);
+  assert.match(result.structuredContent.nextStep, /dryRun: false/);
+});
+
+test("IDs written inline in the document are looked up too", async (t) => {
+  const { callTool, requests } = await fixture(t);
+  const result = await dry(callTool, { document: "mutation { tagsAdd(id: \"gid://shopify/Product/77\", tags: [\"x\"]) { node { id } } }" });
+  assert.deepEqual(requests[0].variables.ids, ["gid://shopify/Product/77"]);
+  const store = result.structuredContent.results[0];
+  assert.equal(store.preview.targets, 1);
+  assert.equal(store.touchedRecords[0].title, "Title of gid://shopify/Product/77");
+});
+
+test("an ID that does not resolve is listed and makes the preview incomplete", async (t) => {
+  const { callTool } = await fixture(t);
+  const result = await dry(callTool, { mutation: "productVariantsBulkUpdate", variables: { productId: "gid://shopify/Product/1", variants: [{ id: "gid://shopify/ProductVariant/404", price: "1.00" }] } });
+  const store = result.structuredContent.results[0];
+  assert.equal(store.ok, false);
+  assert.equal(store.preview.complete, false);
+  assert.deepEqual(store.preview.unresolved, ["gid://shopify/ProductVariant/404"]);
+  assert.match(store.preview.reasons.join(" "), /did not resolve/);
+  assert.match(store.preview.recommendation, /Do not apply without narrowing/);
+  assert.equal(result.structuredContent.complete, false);
+});
+
+test("more than 250 targets is incomplete and applying needs acknowledgeIncompletePreview", async (t) => {
+  const { callTool, requests } = await fixture(t);
+  const variants = Array.from({ length: 300 }, (_, index) => ({ id: `gid://shopify/ProductVariant/${index + 1}`, price: "1.00" }));
+  const args = { mutation: "productVariantsBulkUpdate", variables: { productId: "gid://shopify/Product/1", variants } };
+  const result = await dry(callTool, args);
+  const store = result.structuredContent.results[0];
+  assert.equal(requests[0].variables.ids.length, 250);
+  assert.equal(store.preview.complete, false);
+  assert.equal(store.preview.targets, 301);
+  assert.match(store.preview.reasons.join(" "), /301 record IDs; only the first 250/);
+  assert.match(result.structuredContent.recommendation, /Do not apply without narrowing/);
+  assert.match(result.structuredContent.nextStep, /acknowledgeIncompletePreview: true/);
+
+  const refused = await dry(callTool, { ...args, dryRun: false });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /acknowledgeIncompletePreview/);
+  assert.equal(mutationRequests(requests).length, 0);
+  const applied = await dry(callTool, { ...args, dryRun: false, acknowledgeIncompletePreview: true });
+  assert.notEqual(applied.isError, true, applied.content[0].text);
+  assert.equal(mutationRequests(requests).length, 1);
+});
+
+test("search-derived mutations are never a complete preview and need confirm plus acknowledgeIncompletePreview", async (t) => {
+  const { callTool, requests } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { urlRedirectBulkDeleteBySearch: { job: { id: "gid://shopify/Job/1" }, smsUserErrors_userErrors: [] } } }
+    : undefined);
+  const args = { mutation: "urlRedirectBulkDeleteBySearch", variables: { search: "path:/old" } };
+  const preview = await dry(callTool, args);
+  assert.notEqual(preview.isError, true, preview.content[0].text);
+  const store = preview.structuredContent.results[0];
+  assert.equal(store.preview.complete, false);
+  assert.equal(store.preview.targets, 0);
+  assert.match(store.preview.reasons.join(" "), /urlRedirectBulkDeleteBySearch/);
+  assert.match(store.preview.recommendation, /Do not apply without narrowing/);
+  assert.equal(requests.length, 0, "nothing to look up");
+
+  const confirmOnly = await dry(callTool, { ...args, dryRun: false, confirm: "urlRedirectBulkDeleteBySearch" });
+  assert.equal(confirmOnly.isError, true);
+  assert.match(confirmOnly.content[0].text, /acknowledgeIncompletePreview/);
+  const ackOnly = await dry(callTool, { ...args, dryRun: false, acknowledgeIncompletePreview: true });
+  assert.equal(ackOnly.isError, true);
+  assert.match(ackOnly.content[0].text, /confirm: "urlRedirectBulkDeleteBySearch"/);
+  assert.equal(mutationRequests(requests).length, 0);
+  const applied = await dry(callTool, { ...args, dryRun: false, confirm: "urlRedirectBulkDeleteBySearch", acknowledgeIncompletePreview: true });
+  assert.notEqual(applied.isError, true, applied.content[0].text);
+  assert.equal(mutationRequests(requests).length, 1);
+
+  // A search argument on a mutation that also takes IDs counts only when it is given.
+  const byIds = await dry(callTool, { mutation: "discountCodeBulkDelete", variables: { ids: ["gid://shopify/DiscountCodeNode/1"] } });
+  assert.equal(byIds.structuredContent.results[0].preview.complete, true);
+  const bySearch = await dry(callTool, { mutation: "discountCodeBulkDelete", variables: { search: "" } });
+  assert.equal(bySearch.structuredContent.results[0].preview.complete, false);
 });

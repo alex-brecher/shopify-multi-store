@@ -62,7 +62,7 @@ function conditionValue(directive, variables) {
     return undefined;
 }
 /** False only when @skip/@include on the node itself definitely leave it out. */
-function included(node, variables) {
+export function included(node, variables) {
     for (const directive of node.directives ?? []) {
         const value = conditionValue(directive, variables);
         if (directive.name.value === "skip" && value === true)

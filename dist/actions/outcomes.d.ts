@@ -1,4 +1,4 @@
-import { type DocumentNode, type GraphQLSchema } from "graphql";
+import { type DocumentNode, type FieldNode, type GraphQLSchema } from "graphql";
 import type { GraphqlEnvelope } from "../shopify.js";
 /**
  * Per-root mutation outcomes.
@@ -51,6 +51,8 @@ export interface OutcomeReport {
     unknown: string[];
     advice?: string;
 }
+/** False only when @skip/@include on the node itself definitely leave it out. */
+export declare function included(node: FieldNode, variables: Data): boolean;
 /**
  * Add the payload's error lists under reserved aliases to every top-level mutation field, found
  * with TypeInfo so fields inside inline fragments and fragments on Mutation count too. The
