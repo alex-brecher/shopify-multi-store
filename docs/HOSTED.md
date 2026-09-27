@@ -260,6 +260,24 @@ Run one instance. The default file store is for a single process. (The Cloudflar
 
 Give people `https://<host>/mcp`. Each person connects from their own AI app as described in [Connect from your AI app](#connect-from-your-ai-app), and reconnects their stores once a day with one click (see [Signing in and reconnecting](#signing-in-and-reconnecting)). No organization-level setup in any AI app is needed. On Claude Team or Enterprise, an Owner can optionally add the connector for everyone under Organization settings > Connectors, leaving the OAuth client fields empty.
 
+## Cutting off earlier credentials
+
+Moving a team to the hosted server does not by itself revoke anything issued before. Earlier local installs (`shopify-multi-store start`) authenticate with either:
+
+- a static Admin API access token (`shpat_...`) for each store, from a custom app created in the store admin or an app installed from the Dev Dashboard; or
+- client credentials (the client ID and secret) of a shared app, which mint a store token on demand.
+
+Those installs keep working, with the app's full scopes and no per-person permissions, until their tokens are revoked. To make per-user Shopify login the only way in, an operator does the following. Nothing here is automated, and the server never does it for you.
+
+1. List what exists. For each store, open Settings > Apps and sales channels and note every app used for this connector: the shared Dev Dashboard app, and any custom app created in the store admin (Develop apps) that issued an `shpat_` token.
+2. Rotate the shared app's client secret in the Dev Dashboard (the app's settings, client credentials). If the dashboard keeps the old secret active for a grace period, revoke the old secret as soon as the new one is in place. From then on, nobody can mint new client-credentials tokens with the old secret.
+3. Put the new secret on the hosted server right away: `SHOPIFY_APP_CLIENT_SECRET` (on Cloudflare: `npx wrangler secret put SHOPIFY_APP_CLIENT_SECRET`). Until then, sign-in and store connections fail, because the secret also verifies Shopify's callbacks.
+4. Revoke the static tokens. Uninstall the shared app from each store, then install it again and approve its scopes. Uninstalling revokes every token the app holds for that store: static offline tokens, client-credentials tokens that were minted before the rotation (they would otherwise live up to 24 hours), and the hosted server's own online tokens. For a custom app created in a store's admin, uninstall or delete that app; that revokes its `shpat_` token.
+5. Tell people to reconnect: one click on `https://<host>/stores` (**Reconnect all**), or they will get the reconnect link from their next tool call.
+6. Check it: an old local install now gets `401` or `403` from Shopify for those stores (`shopify-multi-store doctor` shows the failure).
+
+After this, the only credentials that work are Shopify online tokens that each person obtains by signing in with their own staff account, and Shopify permissions are the only rule. Do not issue new static tokens or share the client secret if you want to keep it that way. Removing someone's staff account in Shopify then cuts them off everywhere.
+
 ## Security model
 
 - Only Shopify staff of a configured store can sign in. The identity is the `associated_user` email of a Shopify online token, which must be verified (`email_verified: true`). Offline (app-level) tokens are discarded.

@@ -1066,4 +1066,8 @@ test("hosted docs cover every client and every serve setting", async () => {
   assert.match(deploy, /deploy\.workers\.cloudflare\.com\/\?url=/);
   for (const secret of ["SHOPIFY_APP_CLIENT_ID", "SHOPIFY_APP_CLIENT_SECRET", "SHOPIFY_TOKEN_ENCRYPTION_KEYS", "STORES_JSON"]) assert.ok(deploy.includes(`wrangler secret put ${secret}`), secret);
   assert.ok(deploy.includes("https://<worker-host>/shopify/callback"));
+  // Cutover from earlier credentials is documented, as steps for the operator.
+  assert.match(hosted, /^## Cutting off earlier credentials$/m);
+  for (const step of [/Rotate the shared app's client secret in the Dev Dashboard/, /Uninstall the shared app from each store, then install it again/, /only credentials that work are Shopify online tokens/]) assert.match(hosted, step);
+  assert.ok(deploy.includes("HOSTED.md#cutting-off-earlier-credentials"));
 });

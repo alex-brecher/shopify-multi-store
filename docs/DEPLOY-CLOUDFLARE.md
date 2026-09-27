@@ -74,6 +74,10 @@ Give each person `https://<worker-host>/mcp`. In Claude: Settings > Connectors >
 
 Shopify ends each person's store connections after 24 hours, or when they log out of the Shopify admin. Reconnecting is one click for all stores at `https://<worker-host>/stores` (**Reconnect all**); tool errors link to it.
 
+## Moving from local installs
+
+Existing local installs keep working with their static tokens or client credentials until you revoke those. The steps are in [Cutting off earlier credentials](HOSTED.md#cutting-off-earlier-credentials).
+
 ## How it is built
 
 - `src/workers/index.ts` is the Worker entry. It builds the same hosted app as `serve`, from the Worker's env.
