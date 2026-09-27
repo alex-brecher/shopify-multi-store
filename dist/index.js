@@ -2,6 +2,7 @@
 import { registerPreviewDesignTools } from "./preview-designs.js";
 import { registerPreviewTools } from "./previews.js";
 import { registerAdminTools } from "./admin-tools.js";
+import { registerParityTools } from "./parity-tools.js";
 import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
@@ -19,6 +20,7 @@ const server = new McpServer({
 });
 registerUI(server);
 registerAdminTools(server);
+registerParityTools(server);
 registerPreviewTools(server);
 registerPreviewDesignTools(server);
 registerDiscoveryTools(server);

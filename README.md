@@ -243,6 +243,45 @@ The import copies credentials into the operating system credential store and pre
 
 Read-only operations can run in parallel. Mutations stay isolated to one selected store.
 
+## Admin parity tools
+
+These tools round out the single-store admin surface (prices, metafields, metaobjects,
+redirects, delivery rates, themes, files, draft orders, order and customer fields,
+tags, fulfillment, pages, blog articles, and markets). Every write tool defaults to
+`dryRun: true`, which returns a before/after preview without changing anything; pass
+`dryRun: false` to apply the change, and the tool then reads the result back before
+reporting success.
+
+| Tool | Action |
+| --- | --- |
+| `shopify_update_prices` | Set price, compareAtPrice and/or unit cost for up to 250 SKUs on one store. |
+| `shopify_update_prices_many` | Apply the same SKU price update across multiple stores. |
+| `shopify_get_metafields` | Read metafields for any owner GID. |
+| `shopify_set_metafields` | Set up to 25 metafields for any owner GID. |
+| `shopify_delete_metafields` | Delete up to 25 metafields by owner, namespace and key. |
+| `shopify_list_metaobjects` | List metaobjects of one type. |
+| `shopify_upsert_metaobject` | Create or update a metaobject by type and handle. |
+| `shopify_list_redirects` | List URL redirects. |
+| `shopify_create_redirects` | Create up to 100 URL redirects. |
+| `shopify_delete_redirects` | Delete up to 100 URL redirects by ID. |
+| `shopify_list_delivery_profiles` | List delivery profiles, zones, method definitions and rates. |
+| `shopify_update_delivery_rate` | Change one flat delivery rate, with a mandatory readback that catches Shopify's silent-discard behavior. |
+| `shopify_list_themes` | List themes and their role. |
+| `shopify_get_theme_files` | Read theme file contents. |
+| `shopify_upsert_theme_files` | Write theme files; refuses the live (MAIN) theme unless `allowLiveTheme: true`. |
+| `shopify_list_files` | List files (images, videos, generic files). |
+| `shopify_delete_files` | Delete up to 100 files by ID. |
+| `shopify_create_draft_order` | Create a draft order from line items. |
+| `shopify_update_order` | Update order tags, note, email and/or shipping address. |
+| `shopify_tags` | Add and/or remove tags on a product, order, customer or draft order. |
+| `shopify_update_customer` | Update customer tags, note and/or email. |
+| `shopify_create_fulfillment` | Fulfill an order's open fulfillment orders, with optional tracking. |
+| `shopify_list_pages` | List Online Store pages. |
+| `shopify_upsert_page` | Create or update a page. |
+| `shopify_list_blog_articles` | List a blog's articles. |
+| `shopify_list_markets` | List markets. |
+| `shopify_check_access` | Compare granted access scopes against every tool's requirement, across one or many stores. |
+
 ## Shopify companion skills
 
 Install Shopify's official Admin GraphQL and ShopifyQL skills:

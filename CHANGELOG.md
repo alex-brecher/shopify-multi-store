@@ -2,6 +2,30 @@
 
 This file records notable changes to Shopify Multi-Store MCP.
 
+## [Unreleased]
+
+- Add admin-parity tools: `shopify_update_prices` / `shopify_update_prices_many`,
+  metafield tools (`shopify_get_metafields`, `shopify_set_metafields`,
+  `shopify_delete_metafields`), metaobject tools (`shopify_list_metaobjects`,
+  `shopify_upsert_metaobject`), redirect tools (`shopify_list_redirects`,
+  `shopify_create_redirects`, `shopify_delete_redirects`), delivery profile tools
+  (`shopify_list_delivery_profiles`, `shopify_update_delivery_rate`), theme tools
+  (`shopify_list_themes`, `shopify_get_theme_files`, `shopify_upsert_theme_files`),
+  file tools (`shopify_list_files`, `shopify_delete_files`),
+  `shopify_create_draft_order`, `shopify_update_order`, a generic `shopify_tags`,
+  `shopify_update_customer`, `shopify_create_fulfillment`, page and blog article
+  tools (`shopify_list_pages`, `shopify_upsert_page`, `shopify_list_blog_articles`),
+  `shopify_list_markets`, and `shopify_check_access`.
+- Every new write tool defaults to `dryRun: true` and returns a before/after
+  preview; `dryRun: false` applies the change and reads the result back.
+  `shopify_update_delivery_rate` treats a readback that disagrees with the
+  requested amount as a failure, since Shopify can accept that mutation with no
+  userErrors and silently discard it. `shopify_upsert_theme_files` refuses to
+  write to the live (MAIN) theme unless `allowLiveTheme: true`.
+- Add `src/scope-requirements.ts`, mapping every tool (existing and new) to the
+  Admin API scopes it needs, and `scripts/print-scopes.mjs` to print their union
+  for a `shopify.app.toml`.
+
 ## [1.6.0] - 2026-09-07
 
 - Add guided Admin workflows for products, variants, collections, inventory, discounts, media, publication, analytics, and bulk exports.
