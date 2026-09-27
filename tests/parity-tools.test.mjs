@@ -166,6 +166,15 @@ async function fixture(t) {
           ]),
         };
         break;
+      case "GetDeliveryRate":
+        state.deliveryReadbacks = (state.deliveryReadbacks ?? 0) + 1;
+        data = {
+          deliveryProfile: v.profileId === gid("DeliveryProfile", 1) ? { id: v.profileId } : null,
+          method: v.methodId === gid("DeliveryMethodDefinition", 1)
+            ? { id: v.methodId, name: "Standard", rateProvider: { id: gid("DeliveryRateDefinition", 1), price: { amount: state.deliveryRatePersists ? (state.appliedAmount ?? "5.00") : "5.00", currencyCode: "USD" } } }
+            : null,
+        };
+        break;
       case "UpdateDeliveryRate":
         if (state.deliveryRatePersists) state.appliedAmount = (state.persistFormat ?? ((x) => x))(v.profile.locationGroupsToUpdate[0].zonesToUpdate[0].methodDefinitionsToUpdate[0].rateDefinition.price.amount);
         data = { deliveryProfileUpdate: { profile: { id: v.id }, userErrors: [] } };
@@ -617,4 +626,23 @@ test("create_fulfillment: works with merchant-managed fulfillment order scopes a
   const applied = await call("create_fulfillment", { orderId: gid("Order", 1), dryRun: false });
   assert.equal(applied.isError, undefined, applied.content[0].text);
   assert.equal(applied.structuredContent.fulfillment.status, "SUCCESS");
+});
+
+test("update_delivery_rate: reads the rate back from the specific profile and method by id", async (t) => {
+  const { call, state } = await fixture(t);
+  const result = await call("update_delivery_rate", {
+    deliveryProfileId: gid("DeliveryProfile", 1),
+    locationGroupId: gid("DeliveryLocationGroup", 1),
+    zoneId: gid("DeliveryZone", 1),
+    methodDefinitionId: gid("DeliveryMethodDefinition", 1),
+    rateDefinitionId: gid("DeliveryRateDefinition", 1),
+    amount: "7.25",
+    currencyCode: "USD",
+    dryRun: false,
+  });
+  assert.equal(result.structuredContent.verified, true);
+  assert.deepEqual(sentVariables(state, "GetDeliveryRate"), [
+    { profileId: gid("DeliveryProfile", 1), methodId: gid("DeliveryMethodDefinition", 1) },
+  ]);
+  assert.equal(sentVariables(state, "ListDeliveryProfiles").length, 0);
 });

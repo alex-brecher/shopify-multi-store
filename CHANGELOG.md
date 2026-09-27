@@ -51,6 +51,8 @@ This file records notable changes to Shopify Multi-Store MCP.
 - Fix `shopify_create_fulfillment` refusing to run without `write_fulfillments`.
   It no longer checks scopes itself; Shopify reports the missing scope, and
   `shopify_check_access` lists the merchant-managed fulfillment order scopes.
+- `shopify_update_delivery_rate` reads the rate back from the given profile and
+  method definition by id instead of scanning the first 50 profiles.
 
 ## [1.6.0] - 2026-09-07
 

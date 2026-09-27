@@ -28,6 +28,9 @@ export const PDOCS = {
 
   // Delivery profiles
   listDeliveryProfiles: `query ListDeliveryProfiles($first:Int!, $after:String) { deliveryProfiles(first:$first, after:$after) { nodes { id name default profileLocationGroups { locationGroup { id locations(first:10) { nodes { id name } } } locationGroupZones(first:20) { nodes { zone { id name countries { name code { countryCode restOfWorld } } } methodDefinitions(first:20) { nodes { id name active rateProvider { ... on DeliveryRateDefinition { id price { amount currencyCode } } } } } } } } } ${PAGE} } }`,
+  // Readback of one rate: the profile by id plus the method definition by id, so it does not
+  // depend on how many profiles, zones or methods the store has.
+  getDeliveryRate: `query GetDeliveryRate($profileId:ID!, $methodId:ID!) { deliveryProfile(id:$profileId) { id } method: node(id:$methodId) { ... on DeliveryMethodDefinition { id name rateProvider { ... on DeliveryRateDefinition { id price { amount currencyCode } } } } } }`,
   updateDeliveryRate: `mutation UpdateDeliveryRate($id:ID!, $profile:DeliveryProfileInput!) { deliveryProfileUpdate(id:$id, profile:$profile) { profile { id name profileLocationGroups { locationGroupZones(first:20) { nodes { zone { id name } methodDefinitions(first:20) { nodes { id name rateProvider { ... on DeliveryRateDefinition { id price { amount currencyCode } } } } } } } } } userErrors { field message } } }`,
 
   // Themes

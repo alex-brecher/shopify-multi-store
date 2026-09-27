@@ -674,13 +674,18 @@ export function registerParityTools(server: McpServer) {
         id: a.deliveryProfileId,
         profile,
       });
-      const after = await w.run(PDOCS.listDeliveryProfiles, { first: 50 });
-      const method = (after.deliveryProfiles?.nodes ?? [])
-        .flatMap((p: Data) => p.profileLocationGroups ?? [])
-        .flatMap((g: Data) => g.locationGroupZones?.nodes ?? [])
-        .flatMap((z: Data) => z.methodDefinitions?.nodes ?? [])
-        .find((m: Data) => m.id === a.methodDefinitionId);
-      const persistedAmount = method?.rateProvider?.price?.amount;
+      const after = await w.run(PDOCS.getDeliveryRate, {
+        profileId: a.deliveryProfileId,
+        methodId: a.methodDefinitionId,
+      });
+      if (!after.deliveryProfile)
+        throw new WorkflowError("Delivery profile not found when reading the rate back.", {
+          deliveryProfileId: a.deliveryProfileId,
+          completedSteps: w.completed,
+        });
+      const rate = after.method?.rateProvider;
+      const persistedAmount =
+        rate?.id === a.rateDefinitionId ? rate.price?.amount : undefined;
       if (!sameMoney(persistedAmount, a.amount))
         throw new WorkflowError(
           "Shopify accepted the delivery rate update with no userErrors but did not persist the new amount. This is a known Shopify silent-discard behavior; read the current rate before retrying.",
