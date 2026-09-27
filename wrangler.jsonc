@@ -17,7 +17,8 @@
   // OAuth clients, codes, token hashes and encrypted Shopify tokens: one strongly consistent object.
   "durable_objects": { "bindings": [{ "name": "OAUTH_STORE", "class_name": "OAuthStoreObject" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OAuthStoreObject"] }],
-  // Audit log. `wrangler deploy` creates the database on first deploy if it does not exist.
+  // Audit log. With the CLI, run `npx wrangler d1 create shopify-multi-store-audit` first and
+  // add its "database_id" here (docs/DEPLOY-CLOUDFLARE.md). The Deploy button creates it for you.
   "d1_databases": [{ "binding": "AUDIT_DB", "database_name": "shopify-multi-store-audit" }],
   "observability": { "enabled": true },
   "vars": {

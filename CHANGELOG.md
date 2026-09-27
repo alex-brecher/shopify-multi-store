@@ -28,6 +28,11 @@ This file records notable changes to Shopify Multi-Store MCP.
   limit; the TCP peer on Node, `CF-Connecting-IP` on Workers). The Durable
   Object keeps the client count in a counter key instead of listing every
   client on each registration.
+- Cloudflare CLI setup now creates the D1 audit database explicitly
+  (`npx wrangler d1 create shopify-multi-store-audit`, then its `database_id` in
+  `wrangler.jsonc`). Automatic creation during `wrangler deploy` depends on
+  wrangler's hidden experimental provisioning. `package.json` gains
+  `cloudflare.bindings` descriptions for the Deploy to Cloudflare flow.
 
 Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
 ### Review 3: fixes and a smaller tool surface

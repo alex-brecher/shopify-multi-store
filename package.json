@@ -37,6 +37,28 @@
     "access": "public",
     "provenance": true
   },
+  "cloudflare": {
+    "bindings": {
+      "AUDIT_DB": {
+        "description": "D1 database for the audit log (shopify-multi-store-audit). The Deploy to Cloudflare flow creates it. With the CLI, create it first with `npx wrangler d1 create shopify-multi-store-audit` and put its database_id in wrangler.jsonc; see docs/DEPLOY-CLOUDFLARE.md."
+      },
+      "OAUTH_STORE": {
+        "description": "Durable Object holding OAuth clients, codes, token hashes and encrypted Shopify tokens. Created from the migration in wrangler.jsonc."
+      },
+      "SHOPIFY_APP_CLIENT_ID": {
+        "description": "Client ID of your Shopify app (Dev Dashboard, app settings)."
+      },
+      "SHOPIFY_APP_CLIENT_SECRET": {
+        "description": "Client secret of your Shopify app. Also verifies Shopify's callback signature."
+      },
+      "SHOPIFY_TOKEN_ENCRYPTION_KEYS": {
+        "description": "k1: followed by 32 random bytes in base64, for example the output of: echo k1:$(openssl rand -base64 32). Encrypts stored Shopify tokens; keep it."
+      },
+      "STORES_JSON": {
+        "description": "The stores this Worker serves, for example {\"stores\":[{\"alias\":\"main\",\"shop\":\"main-store.myshopify.com\"}]}"
+      }
+    }
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {

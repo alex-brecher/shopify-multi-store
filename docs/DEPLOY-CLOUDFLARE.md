@@ -28,7 +28,7 @@ If you do not know the Worker's host yet, deploy first (step 2), then come back 
 ### With the button
 
 1. Click **Deploy to Cloudflare** above and sign in to Cloudflare.
-2. Let it create the repository copy in your GitHub or GitLab account. It also creates the Durable Object and the D1 database from `wrangler.jsonc`.
+2. Let it create the repository copy in your GitHub or GitLab account. It also creates the Durable Object and the D1 database (`AUDIT_DB`, named `shopify-multi-store-audit`) from `wrangler.jsonc`; the binding descriptions it shows come from the `cloudflare.bindings` field in `package.json`.
 3. When it asks for secrets, enter the four in [Secrets](#secrets).
 4. Deploy. Cloudflare shows the Worker's URL.
 
@@ -39,6 +39,9 @@ git clone https://github.com/alex-brecher/shopify-multi-store.git
 cd shopify-multi-store
 npm ci
 npx wrangler login
+npx wrangler d1 create shopify-multi-store-audit
+# Copy the database_id it prints into wrangler.jsonc, in d1_databases next to
+# "database_name": "shopify-multi-store-audit".
 npx wrangler secret put SHOPIFY_APP_CLIENT_ID
 npx wrangler secret put SHOPIFY_APP_CLIENT_SECRET
 npx wrangler secret put SHOPIFY_TOKEN_ENCRYPTION_KEYS
@@ -46,7 +49,7 @@ npx wrangler secret put STORES_JSON
 npx wrangler deploy
 ```
 
-`wrangler deploy` creates the D1 database the first time if it does not exist. `npm run worker:check` builds the Worker without deploying it (a dry run) so you can check the bundle first.
+Create the D1 database yourself as above. The wrangler this repository installs (4.142) would also create it during `wrangler deploy` when `wrangler.jsonc` names a database without a `database_id`, but only through its resource provisioning, which sits behind a hidden `--experimental-provision` flag (on by default in that version), is skipped when the API token cannot list D1 databases, and is missing from older wrangler versions. An explicit `d1 create` and `database_id` works with every version. `npm run worker:check` builds the Worker without deploying it (a dry run) so you can check the bundle first.
 
 ### Secrets
 
