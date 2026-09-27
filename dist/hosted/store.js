@@ -1,0 +1,126 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile, open } from "node:fs/promises";
+import { dirname } from "node:path";
+function emptyData() {
+    return { client: {}, pending: {}, code: {}, access: {}, refresh: {} };
+}
+/**
+ * In-memory store. All operations are synchronous against the map, so take() is atomic
+ * within one Node process. Subclasses persist after each change.
+ */
+export class MemoryStore {
+    now;
+    data = emptyData();
+    constructor(now = Date.now) {
+        this.now = now;
+    }
+    live(kind, key) {
+        const entry = Object.hasOwn(this.data[kind], key) ? this.data[kind][key] : undefined;
+        if (!entry)
+            return undefined;
+        if (entry.expiresAt !== undefined && entry.expiresAt <= this.now()) {
+            delete this.data[kind][key];
+            return undefined;
+        }
+        return entry;
+    }
+    async get(kind, key) {
+        return this.live(kind, key)?.value;
+    }
+    async put(kind, key, value, expiresAt) {
+        this.data[kind][key] = { value, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+        await this.changed();
+    }
+    async take(kind, key) {
+        const entry = this.live(kind, key);
+        if (!entry)
+            return undefined;
+        delete this.data[kind][key];
+        await this.changed();
+        return entry.value;
+    }
+    async delete(kind, key) {
+        if (!Object.hasOwn(this.data[kind], key))
+            return;
+        delete this.data[kind][key];
+        await this.changed();
+    }
+    async deleteWhere(kind, predicate) {
+        let removed = 0;
+        for (const [key, entry] of Object.entries(this.data[kind])) {
+            if (predicate(entry.value)) {
+                delete this.data[kind][key];
+                removed += 1;
+            }
+        }
+        if (removed)
+            await this.changed();
+        return removed;
+    }
+    async count(kind) {
+        this.purgeExpired();
+        return Object.keys(this.data[kind]).length;
+    }
+    purgeExpired() {
+        const now = this.now();
+        for (const kind of Object.keys(this.data)) {
+            for (const [key, entry] of Object.entries(this.data[kind])) {
+                if (entry.expiresAt !== undefined && entry.expiresAt <= now)
+                    delete this.data[kind][key];
+            }
+        }
+    }
+    async changed() { }
+}
+/**
+ * JSON file store for a single server process. Each change rewrites the file through a
+ * temporary file, fsync, and rename, so a crash never leaves a partial file.
+ * Do not point two running servers at the same file.
+ */
+export class FileStore extends MemoryStore {
+    path;
+    writing = Promise.resolve();
+    dirty = false;
+    constructor(path, now) {
+        super(now);
+        this.path = path;
+    }
+    static async open(path, now = Date.now) {
+        const store = new FileStore(path, now);
+        try {
+            const parsed = JSON.parse(await readFile(path, "utf8"));
+            store.data = { ...emptyData(), ...parsed };
+            store.purgeExpired();
+        }
+        catch (error) {
+            if (error.code !== "ENOENT")
+                throw error;
+        }
+        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+        return store;
+    }
+    async changed() {
+        this.dirty = true;
+        // Coalesce: one write in flight, one queued. Every caller waits until its change is on disk.
+        const next = this.writing.then(() => this.flush());
+        this.writing = next.catch(() => { });
+        return next;
+    }
+    async flush() {
+        if (!this.dirty)
+            return;
+        this.dirty = false;
+        this.purgeExpired();
+        const temp = `${this.path}.${randomUUID()}.tmp`;
+        await writeFile(temp, JSON.stringify(this.data), { mode: 0o600 });
+        const handle = await open(temp, "r");
+        try {
+            await handle.sync();
+        }
+        finally {
+            await handle.close();
+        }
+        await rename(temp, this.path);
+    }
+}
+//# sourceMappingURL=store.js.map
