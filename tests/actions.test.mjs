@@ -737,3 +737,33 @@ test("shopify_run_action needs confirm for productUpdate with status ARCHIVED, b
   const plain = await callTool("shopify_run_action", { stores: ["main"], mutation: "productUpdate", variables: { product: { id: "gid://shopify/Product/1", title: "x" } }, dryRun: false });
   assert.notEqual(plain.isError, true, plain.content[0].text);
 });
+
+test("local shopify_graphql_mutation applies the denylist and destructive confirm like shopify_run_action", async (t) => {
+  const { requests } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { productDelete: { deletedProductId: "gid://shopify/Product/1", userErrors: [] }, productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] } } }
+    : undefined);
+  const { createServer } = await import("../dist/server.js");
+  const tools = new Map();
+  createServer({ beforeRegister: (server) => {
+    const register = server.registerTool.bind(server);
+    server.registerTool = (name, definition, callback) => { tools.set(name, { definition, callback }); return register(name, definition, callback); };
+  } });
+  const call = (args) => {
+    const tool = tools.get("shopify_graphql_mutation");
+    return tool.callback(tool.definition.inputSchema.parse(args));
+  };
+  const deletion = "mutation { productDelete(input: { id: \"gid://shopify/Product/1\" }) { deletedProductId userErrors { message } } }";
+  const refused = await call({ store: "main", mutation: deletion, variables: {}, confirm: true });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /productDelete is destructive/);
+  const denied = await call({ store: "main", mutation: "mutation { webhookSubscriptionDelete(id: \"gid://shopify/WebhookSubscription/1\") { userErrors { message } } }", variables: {}, confirm: "webhookSubscriptionDelete" });
+  assert.equal(denied.isError, true);
+  assert.match(denied.content[0].text, /denylist/);
+  const archive = "mutation A($p: ProductUpdateInput!) { productUpdate(product: $p) { userErrors { message } } }";
+  const archiveRefused = await call({ store: "main", mutation: archive, variables: { p: { id: "gid://shopify/Product/1", status: "ARCHIVED" } }, confirm: true });
+  assert.equal(archiveRefused.isError, true);
+  assert.equal(mutationRequests(requests).length, 0, "refused before anything was sent");
+  const confirmed = await call({ store: "main", mutation: deletion, variables: {}, confirm: "productDelete" });
+  assert.notEqual(confirmed.isError, true, confirmed.content[0].text);
+  assert.equal(mutationRequests(requests).length, 1);
+});

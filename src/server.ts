@@ -5,9 +5,8 @@ import { registerParityTools } from "./parity-tools.js";
 import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
-import { actionPolicyError, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
-import { denylist, isDenied } from "./actions/catalog.js";
-import { currentUserAccess, isHostedMode } from "./runtime.js";
+import { actionPolicyError, destructiveMutations, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
+import { currentUserAccess } from "./runtime.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
@@ -196,29 +195,24 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     "shopify_graphql_mutation",
     {
       title: "Change a Shopify Store",
-      description: "Run one GraphQL Admin API mutation against one named store. Set confirm to true only after the user authorizes the exact store and change. The result reports each top-level mutation field as applied, rejected, or unknown, and the store as applied, rejected, partial, or unknown; after partial or unknown, retry only the rejected fields in a new document. On a hosted server in per-user mode, destructive mutations (see shopify_describe_action) need confirm set to the mutation name instead, and denylisted mutations are refused, exactly as in shopify_run_action.",
+      description: "Run one GraphQL Admin API mutation against one named store. Set confirm to true only after the user authorizes the exact store and change. Destructive mutations (see shopify_describe_action; some are destructive only with certain arguments, such as a product status of ARCHIVED or notifyCustomer true) need confirm set to the mutation name instead, and denylisted mutations are refused, exactly as in shopify_run_action. The result reports each top-level mutation field as applied, rejected, or unknown, and the store as applied, rejected, partial, or unknown; after partial or unknown, retry only the rejected fields in a new document.",
       inputSchema: z.object({
         store: StoreAliasSchema,
         mutation: z.string().min(1).max(50_000).describe("A GraphQL mutation document."),
         variables: VariablesSchema,
-        confirm: z.union([z.literal(true), z.string().min(1).max(2_000)]).describe("True after the user authorizes the exact change and store. In hosted per-user mode, destructive mutations need the mutation name (several: comma-separated, in document order).")
+        confirm: z.union([z.literal(true), z.string().min(1).max(2_000)]).describe("True after the user authorizes the exact change and store. Destructive mutations need the mutation name instead (several: comma-separated, in document order).")
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
     },
     async ({ store, mutation, variables, confirm }) => {
       try {
         requireMutation(mutation);
-        // Hosted: the raw mutation tool honors the same denylist as shopify_run_action. In per-user
-        // mode, where editors can call it, it also applies the same destructive confirm check.
-        if (currentUserAccess()) {
-          const refusal = actionPolicyError(parseActionDocument(mutation).rootFields, confirm, true);
-          if (refusal) throw new Error(refusal);
-        } else if (isHostedMode()) {
-          const denied = parseActionDocument(mutation).rootFields.filter((name) => isDenied(name, denylist()));
-          if (denied.length) throw new Error(`Refused: ${denied.join(", ")} is on this server's action denylist.`);
-        } else if (confirm !== true && typeof confirm === "string") {
-          throw new Error("confirm must be true.");
-        }
+        // Every mode (local stdio, hosted app token, hosted per-user) applies the same write
+        // policy as shopify_run_action: denylisted mutations are refused, and destructive ones,
+        // by name or by argument values, need confirm set to the mutation names.
+        const parsed = parseActionDocument(mutation);
+        const refusal = actionPolicyError(parsed.rootFields, confirm, true, destructiveMutations(parsed, [variables]));
+        if (refusal) throw new Error(refusal);
         const selected = await findStore(store);
         // Each root field is judged on its own (applied, rejected, unknown); see docs/ACTIONS.md.
         const result = await sendMutationWithOutcome(selected, mutation, variables);

@@ -516,7 +516,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
 
     for (const [name, args] of [
       ["shopify_graphql_query", { store: "first-store", query: "query AccessDeniedFixture { shop { name } }" }],
-      ["shopify_graphql_mutation", { store: "first-store", mutation: "mutation AccessDeniedFixture { productDelete(input: {}) { deletedProductId } }", confirm: true }]
+      ["shopify_graphql_mutation", { store: "first-store", mutation: "mutation AccessDeniedFixture { productDelete(input: {}) { deletedProductId } }", confirm: "productDelete" }]
     ]) {
       const denied = await client.callTool({ name, arguments: args });
       assert.equal(denied.isError, true);
