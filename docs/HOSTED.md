@@ -2,24 +2,27 @@
 
 Run this server once, and your team uses it from whatever AI app they already have: Claude, ChatGPT, Codex, Claude Code, Cursor, VS Code, Gemini CLI, Windsurf, or any other MCP client that supports remote servers over Streamable HTTP. Nothing depends on a particular vendor or plan. Claude users on any plan can add it as a personal custom connector; a Team or Enterprise organization is optional, not required.
 
-People sign in with their Google Workspace account and approve the app on a consent screen. Shopify tokens never leave the server. Clients that cannot run OAuth can use a personal access token instead.
+People sign in with their Google Workspace account and approve the app on a consent screen. By default (per-user mode) each person then connects each store with their own Shopify staff account at `/stores`, and every tool call runs with that person's own Shopify permissions: Shopify decides what they can do, not a separate permission system. Shopify tokens never leave the server. Clients that cannot run OAuth can use a personal access token instead. See [ACTIONS.md](ACTIONS.md) for per-user access and the generic action tools.
 
 ## How it works
 
 ```
 AI app ──HTTPS──> /mcp (Streamable HTTP, bearer token)
    │                 │
-   │ OAuth 2.1       ├─ policy: role + store allowlist per user
+   │ OAuth 2.1       ├─ per-user mode: the caller's own Shopify online token per store
+   │                 ├─ policy (optional in per-user mode): role + store allowlist per user
    ▼                 ├─ audit log (JSON Lines)
 /authorize ──> Google sign-in ──> consent screen ──> code back to the app
 /token, /register, /.well-known/*, /tokens (personal access tokens)
+/stores ──> /shopify/connect ──> Shopify staff login ──> /shopify/callback
 ```
 
 - `shopify-multi-store serve` starts one HTTP server. It is the MCP endpoint and its own OAuth 2.1 authorization server.
 - Login is delegated to Google. The server checks the id_token signature against Google's keys, plus `iss`, `aud`, `exp`, `nonce`, `email_verified`, and the Workspace `hd` claim.
 - After sign-in, a consent screen shows which app is asking, where it will return to, and the user's role and stores. Nothing is issued until the user approves.
 - The server issues its own opaque access and refresh tokens. Only their SHA-256 hashes are stored.
-- Every MCP request is checked against the policy file. Removing a user from the policy blocks them on their next request.
+- Every MCP request is checked against the policy (the policy file, or in per-user mode without one, "anyone from `ALLOWED_EMAIL_DOMAINS`"). Removing a user from the policy blocks them on their next request.
+- In per-user mode (`SHOPIFY_ACCESS_MODE=per_user`, the default) every Shopify call uses the caller's own online token for that store. A store the caller has not connected, or whose token expired, returns an error with the exact URL to connect it. There is no fallback to the app token.
 - `shopify-multi-store start` (stdio) is unchanged for local use. No policy applies there.
 
 ### Why stateless
@@ -141,6 +144,9 @@ A token acts as you, with your role and stores, and stops working as soon as it 
 | `GET /oauth/google/callback` | Google sign-in return; shows the consent screen |
 | `POST /consent` | Approve or deny on the consent screen |
 | `GET`, `POST /tokens` | Personal access token page |
+| `GET`, `POST /stores` | Per-user mode: connect, reconnect, or disconnect each store with your Shopify account |
+| `GET /shopify/connect?store=<alias>` | Per-user mode: start Shopify's online (per-user) authorization for one store |
+| `GET /shopify/callback` | Per-user mode: Shopify's return; verifies the HMAC and state, stores the encrypted token |
 | `GET /healthz` | Health check |
 
 Client ID Metadata Documents are supported: a `client_id` that is an HTTPS URL is fetched and its `redirect_uris` are checked against the redirect policy. Public clients (`token_endpoint_auth_method: none`) and confidential DCR clients (`client_secret_post`, `client_secret_basic`) are both supported.
@@ -169,7 +175,13 @@ After Google sign-in the server shows the client name, the client_id, the redire
 | `GOOGLE_CLIENT_ID` | yes | | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | yes | | Google OAuth client secret |
 | `ALLOWED_EMAIL_DOMAINS` | yes | | Comma list, for example `bariatricpal.com,netrition.com`. Both the `hd` claim and the email domain must be in it. |
-| `SHOPIFY_MULTI_STORE_POLICY` | yes | | Path to the policy file (below) |
+| `SHOPIFY_ACCESS_MODE` | no | `per_user` | `per_user`: each person connects stores with their own Shopify account and Shopify enforces their staff permissions. `app`: every call uses the store's app token (the previous behavior). |
+| `SHOPIFY_TOKEN_ENCRYPTION_KEY` | per-user mode | | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts stored Shopify tokens with AES-256-GCM. The server refuses to start per-user mode without it. Changing it disconnects everyone. |
+| `SHOPIFY_APP_CLIENT_ID` | per-user mode | | Client ID of the Shopify app people authorize. A `client_credentials` store's own `auth.clientId` takes precedence. |
+| `SHOPIFY_APP_CLIENT_SECRET` | per-user mode | | That app's client secret. `SHOPIFY_CLIENT_SECRET_<ALIAS>` takes precedence for one store. Also verifies Shopify's callback HMAC. |
+| `SHOPIFY_APP_SCOPES` | no | full set (`print-scopes --full`) | Comma list of scopes requested at `/shopify/connect` |
+| `SHOPIFY_REQUIRE_EMAIL_MATCH` | no | `0` | `1` refuses a Shopify connection whose staff email differs from the Google email. Both are always recorded and shown on `/stores`. |
+| `SHOPIFY_MULTI_STORE_POLICY` | app mode | | Path to the policy file (below). Required in app mode; optional in per-user mode, where it adds restrictions. |
 | `STORES_JSON` | one of | | Stores config as JSON, same format as `stores.json` |
 | `SHOPIFY_MULTI_STORE_CONFIG` | one of | | Path to `stores.json` instead of `STORES_JSON` |
 | `SHOPIFY_TOKEN_<ALIAS>` | per store | | Admin API token for an `access_token` store |
@@ -190,9 +202,13 @@ After Google sign-in the server shows the client name, the client_id, the redire
 | `PERSONAL_TOKENS_ENABLED` | no | `1` | `0` turns off `/tokens` and refuses `smsp_` bearer tokens |
 | `PERSONAL_TOKEN_MAX_DAYS` | no | `180` | Longest personal access token lifetime a user may choose |
 
-Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, and `SHOPIFY_CLIENT_SECRET_*`, you can set `<NAME>_FILE=/run/secrets/...` instead. In serve mode the OS keychain is never used.
+`ACTIONS_DENYLIST` (all modes, stdio too) replaces the list of mutations `shopify_run_action` refuses. See [ACTIONS.md](ACTIONS.md#denylist).
+
+Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, `SHOPIFY_CLIENT_SECRET_*`, `SHOPIFY_APP_CLIENT_SECRET`, and `SHOPIFY_TOKEN_ENCRYPTION_KEY`, you can set `<NAME>_FILE=/run/secrets/...` instead. In serve mode the OS keychain is never used.
 
 ### Policy file
+
+In per-user mode the policy file is optional. Without it, anyone from `ALLOWED_EMAIL_DOMAINS` can sign in as an `editor` on every store, and Shopify limits what each person can do. With it, it works as an extra restriction layer exactly as below.
 
 ```json
 {
@@ -207,7 +223,7 @@ Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, and
 ```
 
 - A `users` entry wins over a `domains` entry. Anyone not matched has no access.
-- `viewer`: only tools marked read-only. `editor`: everything except admin-only tools (`shopify_graphql_mutation`). `admin`: everything.
+- `viewer`: only tools marked read-only. `editor`: everything except admin-only tools. `admin`: everything. Admin-only tools are `shopify_graphql_mutation` and `shopify_run_action` in app mode; in per-user mode they are open to editors, because Shopify enforces the caller's own permissions.
 - `stores` limits which aliases the user can reach. It is checked on every `store`, `stores`, and `alias` argument, and the store list the tools see is filtered, so "all stores" means "all allowed stores".
 - Users only see the tools their role can call.
 - The file is re-read when it changes. If it becomes invalid, all access is denied until it is fixed.
@@ -220,9 +236,11 @@ One JSON line per tool call (`event: "tool_call"`): `timestamp`, `user`, `role`,
 - Other calls record the arguments. Values under secret-looking keys become `[REDACTED]`. Customer email, phone, and address fields become `[PII sha256:<hex>]`, so the same value can still be matched across lines. Every string is capped at 2,000 characters.
 - A line is capped at 64 KB. If it would be longer, the arguments are dropped and `truncated: true` is set; `argsSha256` stays.
 
-Auth events are logged to the same file with an `event` field: `sign_in`, `sign_in_denied` (with `reason`), `consent_approved`, `consent_denied`, `token_issued`, `token_refreshed`, `refresh_denied` (reuse, maximum session age, or policy), `personal_token_created`, `personal_token_revoked`, `request_unauthorized` (401), and `request_forbidden` (403). They carry `user` and `clientId` where known. Requests and tool calls made with a personal access token carry its `tokenId`.
+Auth events are logged to the same file with an `event` field: `sign_in`, `sign_in_denied` (with `reason`), `consent_approved`, `consent_denied`, `token_issued`, `token_refreshed`, `refresh_denied` (reuse, maximum session age, or policy), `personal_token_created`, `personal_token_revoked`, `request_unauthorized` (401), `request_forbidden` (403), and in per-user mode `shopify_connected`, `shopify_connect_denied`, and `shopify_disconnected` (with `store`, and the Shopify `shopifyUserId` and `shopifyEmail` where known).
 
-Tokens, personal access token values, and authorization codes are never logged.
+Every `shopify_run_action` call adds an `action_run` line: `user`, `mutations`, `stores`, `dryRun`, `variablesSha256`, and a per-store `outcome`. They carry `user` and `clientId` where known. Requests and tool calls made with a personal access token carry its `tokenId`.
+
+Tokens, personal access token values, Shopify tokens, and authorization codes are never logged.
 
 ## Setup
 
@@ -241,14 +259,24 @@ In Google Cloud Console for the Workspace:
 docker build -t shopify-multi-store .
 docker run -d --name shopify-mcp -p 8080:8080 \
   -v shopify-mcp-data:/data \
-  -v /srv/shopify-mcp/policy.json:/config/policy.json:ro \
   -e MCP_PUBLIC_URL=https://shopify-mcp.example.com \
   -e GOOGLE_CLIENT_ID=... -e GOOGLE_CLIENT_SECRET=... \
   -e ALLOWED_EMAIL_DOMAINS=bariatricpal.com,netrition.com \
-  -e SHOPIFY_MULTI_STORE_POLICY=/config/policy.json \
+  -e SHOPIFY_TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  -e SHOPIFY_APP_CLIENT_ID=... -e SHOPIFY_APP_CLIENT_SECRET=... \
   -e STORES_JSON='{"stores":[{"alias":"bariatricpal","shop":"bariatricpal.myshopify.com"}]}' \
-  -e SHOPIFY_TOKEN_BARIATRICPAL=shpat_... \
   shopify-multi-store
+```
+
+Generate the encryption key once and keep it (a new key disconnects everyone). In the Shopify app, add `https://<host>/shopify/callback` as an allowed redirect URL and request the scopes from `node scripts/print-scopes.mjs --full`; see [ACTIONS.md](ACTIONS.md#shopify-admin-setup).
+
+App mode instead (one shared app token per store, policy file required):
+
+```bash
+  -e SHOPIFY_ACCESS_MODE=app \
+  -v /srv/shopify-mcp/policy.json:/config/policy.json:ro \
+  -e SHOPIFY_MULTI_STORE_POLICY=/config/policy.json \
+  -e SHOPIFY_TOKEN_BARIATRICPAL=shpat_... \
 ```
 
 Put it behind a TLS-terminating proxy or platform load balancer so `https://<host>` reaches port 8080. Without Docker: `npm ci && npm run build && shopify-multi-store serve`.
@@ -257,12 +285,13 @@ Run one instance. The default file store is for a single process.
 
 ### 3. Share the URL
 
-Give people `https://<host>/mcp` and add them to the policy file. Each person connects from their own AI app as described in [Connect from your AI app](#connect-from-your-ai-app). No organization-level setup in any AI app is needed. On Claude Team or Enterprise, an Owner can optionally add the connector for everyone under Organization settings > Connectors, leaving the OAuth client fields empty.
+Give people `https://<host>/mcp` (and, in app mode, add them to the policy file). In per-user mode, each person also opens `https://<host>/stores` once a day and connects their stores; tools that need an unconnected store return that link. Each person connects from their own AI app as described in [Connect from your AI app](#connect-from-your-ai-app). No organization-level setup in any AI app is needed. On Claude Team or Enterprise, an Owner can optionally add the connector for everyone under Organization settings > Connectors, leaving the OAuth client fields empty.
 
 ## Security model
 
 - Only Google Workspace accounts in `ALLOWED_EMAIL_DOMAINS` can sign in. Consumer Google accounts that use a company email address are rejected because they have no `hd` claim.
-- Signing in is not enough: the user must also be in the policy file.
+- Signing in is not enough: the user must also be in the policy (the policy file, or in per-user mode without one, an allowed domain).
+- Per-user mode: Shopify tokens are online (per-user) tokens, so Shopify applies each person's staff permissions. The callback verifies Shopify's HMAC with the app secret, a single-use 10-minute state bound to the `/stores` browser session, and that the shop is a configured store. Offline (app-level) tokens returned by the callback are discarded. Tokens are encrypted with AES-256-GCM, bound to the user, store, and shop, and never leave the server.
 - Nothing is issued until the user approves the app on the consent screen, which names the app and where it will return to.
 - Authorization codes are single use, expire after 2 minutes, and require PKCE S256.
 - Access tokens are bound to `https://<host>/mcp`. Refresh tokens rotate; reuse of an old refresh token revokes the whole token family.
@@ -270,7 +299,7 @@ Give people `https://<host>/mcp` and add them to the policy file. Each person co
 - Redirect URIs must pass the redirect policy (known client callbacks plus loopback by default), for both registered and metadata-document clients.
 - Personal access tokens are stored only as hashes, expire after at most `PERSONAL_TOKEN_MAX_DAYS`, and re-check the policy on every request. They do not expire with the sign-in session, so revoke unused ones.
 - Shopify credentials come only from the environment or mounted files. The keychain, Shopify CLI preview stores, and local-file image upload are disabled in serve mode.
-- Keep the data directory private. It holds client registrations and token hashes.
+- Keep the data directory private. It holds client registrations, token hashes, and encrypted Shopify tokens.
 
 ## Limitations
 
@@ -281,3 +310,4 @@ Give people `https://<host>/mcp` and add them to the policy file. Each person co
 - A client whose OAuth callback is not built in, not configured, and not allowed by `OAUTH_ALLOW_ANY_REDIRECT` is refused at registration. Use a personal access token, or add the callback.
 - Local-machine tools are not available: preview store creation and status, and `imageFile` uploads (use `sourceUrl`).
 - The audit log is a local file. Ship it to your log system if you need retention.
+- Shopify online tokens expire after about 24 hours and cannot be refreshed; people reconnect on `/stores` (one click per store while signed in to Shopify admin, or "Connect all").

@@ -89,3 +89,16 @@ export function staticPolicy(document: unknown): PolicySource {
   const policy = new Policy(document);
   return { current: () => policy };
 }
+
+/**
+ * Per-user mode without a policy file: anyone from an allowed Google Workspace domain may sign in,
+ * as an editor on every store, and Shopify decides what they can do with their own staff account.
+ */
+export function openDomainPolicy(allowedDomains: readonly string[]): PolicySource {
+  const domains: Record<string, { role: Role; stores: "*" }> = {};
+  for (const domain of allowedDomains) {
+    const normalized = domain.trim().toLowerCase();
+    if (normalized) domains[normalized] = { role: "editor", stores: "*" };
+  }
+  return staticPolicy({ users: {}, domains });
+}

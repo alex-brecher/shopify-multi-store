@@ -52,4 +52,9 @@ export declare class FilePolicySource implements PolicySource {
     current(): Policy;
 }
 export declare function staticPolicy(document: unknown): PolicySource;
+/**
+ * Per-user mode without a policy file: anyone from an allowed Google Workspace domain may sign in,
+ * as an editor on every store, and Shopify decides what they can do with their own staff account.
+ */
+export declare function openDomainPolicy(allowedDomains: readonly string[]): PolicySource;
 export {};

@@ -2,9 +2,11 @@ import { createMcpHandler, type AuthInfo } from "@modelcontextprotocol/server";
 import { createServer } from "../server.js";
 import { PACKAGE_VERSION } from "../shopify.js";
 import type { AuditLog } from "./audit.js";
-import { guardServer } from "./guard.js";
-import { AuthorizationServer, SCOPE, type AuthServerOptions } from "./oauth.js";
+import type { UserShopifyAccess } from "../runtime.js";
+import { guardServer, type ShopifyAccessMode } from "./guard.js";
+import { AuthorizationServer, errorPage, SCOPE, type AuthServerOptions } from "./oauth.js";
 import type { Principal } from "./policy.js";
+import { ShopifyConnections, type ShopifyConnectOptions } from "./shopify-connect.js";
 import { PERSONAL_TOKEN_PREFIX, PersonalTokens } from "./tokens.js";
 
 export interface HostedAppOptions extends AuthServerOptions {
@@ -13,6 +15,13 @@ export interface HostedAppOptions extends AuthServerOptions {
   personalTokensEnabled?: boolean;
   /** Longest personal access token lifetime a user may choose, in days. Defaults to 180. */
   personalTokenMaxDays?: number;
+  /**
+   * "per_user": every tool call uses the caller's own Shopify online token (connected at /stores).
+   * "app" (the default here; serve mode defaults to per_user): the shared app token for each store.
+   */
+  shopifyAccessMode?: ShopifyAccessMode;
+  /** Required in per_user mode. auth, store, policy and now are filled in from these options. */
+  shopifyConnect?: Omit<ShopifyConnectOptions, "auth" | "store" | "policy" | "now">;
 }
 
 export interface HostedApp {
@@ -20,6 +29,9 @@ export interface HostedApp {
   close(): Promise<void>;
   readonly auth: AuthorizationServer;
   readonly tokens: PersonalTokens;
+  readonly accessMode: ShopifyAccessMode;
+  /** Present in per_user mode. */
+  readonly shopify?: ShopifyConnections;
 }
 
 const CORS_HEADERS = {
@@ -31,7 +43,7 @@ const CORS_HEADERS = {
 };
 
 /** Browser-facing pages. They get no CORS headers. */
-const BROWSER_PAGES = new Set(["/authorize", "/oauth/google/callback", "/consent", "/tokens"]);
+const BROWSER_PAGES = new Set(["/authorize", "/oauth/google/callback", "/consent", "/tokens", "/stores", "/shopify/connect", "/shopify/callback"]);
 
 function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
@@ -58,6 +70,17 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
     maxDays: options.personalTokenMaxDays ?? 180,
     ...(options.now ? { now: options.now } : {})
   });
+  const accessMode: ShopifyAccessMode = options.shopifyAccessMode ?? "app";
+  let shopify: ShopifyConnections | undefined;
+  if (accessMode === "per_user") {
+    if (!options.shopifyConnect) throw new Error("Per-user Shopify access needs shopifyConnect options.");
+    shopify = new ShopifyConnections({ ...options.shopifyConnect, auth, store: options.store, policy: options.policy, ...(options.now ? { now: options.now } : {}) });
+    const tokensSignIn = auth.onPageSignIn;
+    const connections = shopify;
+    auth.onPageSignIn = (purpose, email, principal) => purpose === "stores"
+      ? connections.signedIn(email)
+      : tokensSignIn ? tokensSignIn(purpose, email, principal) : Promise.resolve(errorPage(404, "This page is not available."));
+  }
   const mcpPath = new URL(auth.resource).pathname;
 
   // Stateless: a fresh McpServer per request, built for the caller's role. No session state,
@@ -66,7 +89,8 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
     const principal = context.authInfo?.extra?.principal as Principal | undefined;
     if (!principal) throw new Error("Unauthenticated MCP request reached the server factory.");
     const tokenId = context.authInfo?.extra?.tokenId as string | undefined;
-    return createServer({ title: auth.displayName, beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, ...(tokenId ? { tokenId } : {}) }) });
+    const access = context.authInfo?.extra?.access as UserShopifyAccess | undefined;
+    return createServer({ title: auth.displayName, beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, accessMode, ...(access ? { access } : {}), ...(tokenId ? { tokenId } : {}) }) });
   }, {
     legacy: "stateless",
     onerror: (error) => process.stderr.write(`MCP error: ${error.message}\n`)
@@ -111,7 +135,7 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
       scopes: [record.scope],
       expiresAt: Math.floor(record.expiresAt / 1000),
       resource: new URL(auth.resource),
-      extra: { principal }
+      extra: { principal, ...(shopify ? { access: await shopify.accessFor(principal.email) } : {}) }
     };
     return mcp.fetch(request, { authInfo });
   }
@@ -134,7 +158,7 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
       scopes: [SCOPE],
       expiresAt: Math.floor(record.expiresAt / 1000),
       resource: new URL(auth.resource),
-      extra: { principal, tokenId: record.id }
+      extra: { principal, tokenId: record.id, ...(shopify ? { access: await shopify.accessFor(principal.email) } : {}) }
     };
     return mcp.fetch(request, { authInfo });
   }
@@ -158,6 +182,9 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
     if (path === "/authorize") return method === "GET" ? auth.authorize(url) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/oauth/google/callback") return method === "GET" ? auth.googleCallback(url) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/tokens") return tokens.handle(request);
+    if (shopify && path === "/stores") return shopify.handleStoresPage(request);
+    if (shopify && path === "/shopify/connect") return shopify.connect(request);
+    if (shopify && path === "/shopify/callback") return shopify.callback(request);
     if (path === "/consent") return method === "POST" ? auth.consent(request) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/token") return method === "POST" ? auth.token(request) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/register") return method === "POST" ? auth.register(request) : jsonResponse({ error: "method_not_allowed" }, 405);
@@ -168,6 +195,8 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
   return {
     auth,
     tokens,
+    accessMode,
+    ...(shopify ? { shopify } : {}),
     async fetch(request: Request): Promise<Response> {
       let response: Response;
       try {

@@ -90,10 +90,13 @@ interface PendingRecord {
 
 /** A Google sign-in started by a page on this server rather than an OAuth client. */
 interface PageSignInRecord {
-  purpose: "tokens";
+  purpose: PageSignInPurpose;
   nonce: string;
   googleVerifier: string;
 }
+
+/** Server pages that start their own Google sign-in. */
+export type PageSignInPurpose = "tokens" | "stores";
 
 /** Audit label for sign-ins to server pages. */
 export const PAGE_SIGN_IN_CLIENT = "tokens-page";
@@ -453,7 +456,7 @@ export class AuthorizationServer {
    * Start a Google sign-in for a page on this server (the personal access token page) rather
    * than for an OAuth client. The same domain and policy checks apply.
    */
-  async startPageSignIn(purpose: "tokens"): Promise<Response> {
+  async startPageSignIn(purpose: PageSignInPurpose): Promise<Response> {
     const nonce = randomBytes(16).toString("base64url");
     const googleVerifier = randomBytes(48).toString("base64url");
     const loginState = randomBytes(32).toString("base64url");
@@ -468,7 +471,7 @@ export class AuthorizationServer {
   }
 
   /** Receives page sign-ins (see startPageSignIn) after the domain and policy checks pass. */
-  onPageSignIn?: (purpose: "tokens", email: string, principal: Principal) => Promise<Response>;
+  onPageSignIn?: (purpose: PageSignInPurpose, email: string, principal: Principal) => Promise<Response>;
 
   async googleCallback(url: URL): Promise<Response> {
     const loginState = url.searchParams.get("state");

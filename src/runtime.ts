@@ -15,9 +15,46 @@ export function isHostedMode(): boolean {
   return hosted;
 }
 
+/** One Shopify online (per-user) access token, already decrypted, for one store. */
+export interface ShopifyUserToken {
+  token: string;
+  /** ms since epoch. */
+  expiresAt: number;
+  /** The Shopify staff account the token acts as. */
+  shopifyEmail?: string;
+}
+
+/**
+ * Per-user Shopify access for one hosted request (SHOPIFY_ACCESS_MODE=per_user).
+ * When present, every Admin API call uses the caller's own online token for that store,
+ * so Shopify enforces that person's staff permissions. There is no fallback to the app token.
+ */
+export interface UserShopifyAccess {
+  /** Keyed by lower-case store alias. May include expired tokens so the error can say "expired". */
+  tokens: Map<string, ShopifyUserToken>;
+  /** The /stores page where the user connects stores. */
+  storesUrl: string;
+  /** The URL that starts a Shopify connection for one store. */
+  connectUrl(alias: string): string;
+  now(): number;
+}
+
+/** Details of one shopify_run_action call, for the hosted audit log. */
+export interface ActionAuditDetails {
+  mutations: string[];
+  stores: string[];
+  dryRun: boolean;
+  variablesSha256: string;
+  outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number }>;
+}
+
 /** Store aliases the current hosted caller may reach. "*" means every configured store. */
 export interface StoreScope {
   stores: "*" | string[];
+  /** Set in per-user mode: the caller's own Shopify tokens. */
+  access?: UserShopifyAccess;
+  /** Set in hosted mode: writes one audit line per action run. */
+  auditAction?: (details: ActionAuditDetails) => Promise<void>;
 }
 
 /**
@@ -31,4 +68,26 @@ export function storeAllowed(alias: string, scope: StoreScope | undefined = stor
   if (!scope || scope.stores === "*") return true;
   const lower = alias.toLowerCase();
   return scope.stores.some((allowed) => allowed.toLowerCase() === lower);
+}
+
+/** The caller's per-user Shopify access, when the current hosted call runs in per-user mode. */
+export function currentUserAccess(): UserShopifyAccess | undefined {
+  return storeScope.getStore()?.access;
+}
+
+export type ConnectionStatus = "connected" | "expired" | "not_connected";
+
+export function connectionStatus(access: UserShopifyAccess, alias: string): ConnectionStatus {
+  const token = access.tokens.get(alias.toLowerCase());
+  if (!token) return "not_connected";
+  return token.expiresAt > access.now() ? "connected" : "expired";
+}
+
+/** The message a tool returns when the caller has no live Shopify token for a store. */
+export function notConnectedMessage(access: UserShopifyAccess, alias: string): string {
+  const status = connectionStatus(access, alias);
+  const url = access.connectUrl(alias);
+  return status === "expired"
+    ? `Your Shopify connection to store "${alias}" has expired. Reconnect at ${url} (or see all stores at ${access.storesUrl}), then try again.`
+    : `You have not connected store "${alias}" with your Shopify account. Connect it at ${url} (or see all stores at ${access.storesUrl}), then try again.`;
 }

@@ -701,7 +701,7 @@ test("OAUTH_REDIRECT_URIS adds to the built-ins unless OAUTH_REDIRECT_URIS_REPLA
   const policyPath = join(dir, "policy.json");
   await writeFile(policyPath, JSON.stringify(POLICY));
   const base = {
-    MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_MULTI_STORE_POLICY: policyPath,
+    MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_ACCESS_MODE: "app", SHOPIFY_MULTI_STORE_POLICY: policyPath,
     GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret", SHOPIFY_MULTI_STORE_DATA_DIR: dir
   };
   const additive = (await buildHostedAppFromEnv({ ...base, OAUTH_REDIRECT_URIS: "https://tools.example.com/cb" })).app;
@@ -722,7 +722,7 @@ test("personal token settings come from PERSONAL_TOKENS_ENABLED and PERSONAL_TOK
   const policyPath = join(dir, "policy.json");
   await writeFile(policyPath, JSON.stringify(POLICY));
   const base = {
-    MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_MULTI_STORE_POLICY: policyPath,
+    MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_ACCESS_MODE: "app", SHOPIFY_MULTI_STORE_POLICY: policyPath,
     GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret", SHOPIFY_MULTI_STORE_DATA_DIR: dir
   };
   const defaults = (await buildHostedAppFromEnv({ ...base })).app;
@@ -1019,7 +1019,7 @@ test("SERVER_DISPLAY_NAME names the MCP server, resource metadata, consent and t
   const dir = await mkdtemp(join(tmpdir(), "sms-env-"));
   const policyPath = join(dir, "policy.json");
   await writeFile(policyPath, JSON.stringify(POLICY));
-  const base = { MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_MULTI_STORE_POLICY: policyPath, GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "s", SHOPIFY_MULTI_STORE_DATA_DIR: dir };
+  const base = { MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_ACCESS_MODE: "app", SHOPIFY_MULTI_STORE_POLICY: policyPath, GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "s", SHOPIFY_MULTI_STORE_DATA_DIR: dir };
   const named = (await buildHostedAppFromEnv({ ...base, SERVER_DISPLAY_NAME: "Netrition Stores" })).app;
   t.after(() => named.close());
   assert.equal(named.auth.displayName, "Netrition Stores");

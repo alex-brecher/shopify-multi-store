@@ -1,0 +1,403 @@
+import assert from "node:assert/strict";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { createHostedApp } from "../dist/hosted/app.js";
+import { FileAuditLog } from "../dist/hosted/audit.js";
+import { openDomainPolicy, staticPolicy } from "../dist/hosted/policy.js";
+import { decryptToken, encryptToken, parseEncryptionKey, verifyShopifyHmac } from "../dist/hosted/shopify-connect.js";
+import { MemoryStore } from "../dist/hosted/store.js";
+import { loadStores } from "../dist/config.js";
+import { enableHostedMode } from "../dist/runtime.js";
+import { buildHostedAppFromEnv } from "../dist/serve.js";
+
+// Per-user Shopify access (SHOPIFY_ACCESS_MODE=per_user). Runs in its own process.
+enableHostedMode();
+
+const ORIGIN = "https://mcp.example.test";
+const RESOURCE = `${ORIGIN}/mcp`;
+const CALLBACK = "https://claude.ai/api/mcp/auth_callback";
+const SECRET = "shpss_test_secret";
+const KEY = randomBytes(32);
+
+function fakeGoogle() {
+  return {
+    authorizationUrl: ({ state }) => `https://accounts.google.test/auth?state=${encodeURIComponent(state)}`,
+    async exchange({ code, nonce }) {
+      const [local, domain] = code.split("|");
+      return { sub: `sub-${local}`, email: `${local}@${domain}`, email_verified: true, hd: domain, nonce };
+    }
+  };
+}
+
+/** Shopify's token endpoint. Each exchanged code names the Shopify staff email to report. */
+function fakeShopifyOAuth(overrides = {}) {
+  const exchanges = [];
+  const fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    exchanges.push({ url, body });
+    const [email, token] = body.code.split("|");
+    const payload = overrides.offline
+      ? { access_token: token, scope: "write_products" }
+      : {
+          access_token: token, scope: "write_products,write_orders", expires_in: 86399, associated_user_scope: "write_products",
+          associated_user: { id: 42, first_name: "Pat", last_name: "Lee", email, email_verified: true, account_owner: false, locale: "en", collaborator: false }
+        };
+    return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  return { fetch, exchanges };
+}
+
+async function shopifyMock(t) {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      requests.push({ token: request.headers["x-shopify-access-token"], body: JSON.parse(body) });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: { shop: { name: "Mock Shop" }, productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] } } }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const saved = { ...process.env };
+  process.env.STORES_JSON = JSON.stringify({ stores: [
+    { alias: "main", shop: "main.myshopify.com", baseUrl: base },
+    { alias: "wholesale", shop: "wholesale.myshopify.com", baseUrl: base }
+  ] });
+  process.env.SHOPIFY_MULTI_STORE_ALLOW_INSECURE_HTTP = "1";
+  process.env.SHOPIFY_TOKEN_MAIN = "main-app-token";
+  process.env.SHOPIFY_TOKEN_WHOLESALE = "wholesale-app-token";
+  t.after(() => {
+    server.close();
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+  return requests;
+}
+
+async function setup(t, overrides = {}, connect = {}) {
+  const dir = await mkdtemp(join(tmpdir(), "sms-per-user-"));
+  const auditPath = join(dir, "audit.jsonl");
+  let now = Date.now();
+  const oauth = fakeShopifyOAuth(connect);
+  const store = new MemoryStore(() => now);
+  const app = createHostedApp({
+    issuer: ORIGIN,
+    resource: RESOURCE,
+    google: fakeGoogle(),
+    allowedDomains: ["bariatricpal.com"],
+    policy: openDomainPolicy(["bariatricpal.com"]),
+    store,
+    audit: new FileAuditLog(auditPath),
+    now: () => now,
+    log: () => {},
+    shopifyAccessMode: "per_user",
+    shopifyConnect: {
+      encryptionKey: KEY,
+      loadStores,
+      clientId: () => "app-client-id",
+      clientSecret: () => SECRET,
+      scopes: ["write_products", "write_orders"],
+      requireEmailMatch: Boolean(connect.requireEmailMatch),
+      fetch: oauth.fetch
+    },
+    ...overrides
+  });
+  t.after(() => app.close());
+  return { app, store, oauth, auditPath, advance: (ms) => { now += ms; } };
+}
+
+function call(app, path, init = {}) {
+  return app.fetch(new Request(`${ORIGIN}${path}`, init));
+}
+
+function signedCallback(params, secret = SECRET) {
+  const search = new URLSearchParams(params);
+  const message = [...search.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join("&");
+  search.set("hmac", createHmac("sha256", secret).update(message).digest("hex"));
+  return search;
+}
+
+/** Sign in to /stores with Google and return the session cookie. */
+async function storesSession(app, account) {
+  const start = await call(app, "/stores");
+  assert.equal(start.status, 302);
+  const google = new URL(start.headers.get("location"));
+  const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  assert.equal(back.status, 303, await back.clone().text());
+  assert.equal(back.headers.get("location"), "/stores");
+  const cookie = back.headers.get("set-cookie").split(";")[0];
+  assert.match(cookie, /^__Host-sms_stores=/);
+  return cookie;
+}
+
+/** Start a Shopify connection and return the state Shopify would echo back. */
+async function startConnect(app, cookie, alias = "main", chain = false) {
+  const response = await call(app, `/shopify/connect?store=${alias}${chain ? "&chain=1" : ""}`, { headers: { cookie } });
+  assert.equal(response.status, 302, await response.clone().text());
+  return new URL(response.headers.get("location"));
+}
+
+async function connectStore(app, cookie, { alias = "main", shop = `${alias}.myshopify.com`, shopifyEmail = "pat@bariatricpal.com", token = `online-${alias}-token` } = {}) {
+  const authorize = await startConnect(app, cookie, alias);
+  const search = signedCallback({ code: `${shopifyEmail}|${token}`, shop, state: authorize.searchParams.get("state"), timestamp: String(Math.floor(Date.now() / 1000)), host: "abc" });
+  return call(app, `/shopify/callback?${search}`, { headers: { cookie } });
+}
+
+async function login(app, account) {
+  const reg = await (await call(app, "/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: [CALLBACK], token_endpoint_auth_method: "none", client_name: "Claude" }) })).json();
+  const verifier = randomBytes(32).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const start = await call(app, `/authorize?${new URLSearchParams({ response_type: "code", client_id: reg.client_id, redirect_uri: CALLBACK, code_challenge: challenge, code_challenge_method: "S256", state: "s", resource: RESOURCE, scope: "mcp" })}`);
+  const google = new URL(start.headers.get("location"));
+  const consent = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  const html = await consent.text();
+  const field = (name) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)?.[1];
+  const consentCookie = /^(__Host-sms_consent=[^;]+)/.exec(consent.headers.get("set-cookie") ?? "")?.[1];
+  const decided = await call(app, "/consent", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: consentCookie }, body: new URLSearchParams({ consent: field("consent"), csrf: field("csrf"), decision: "approve" }) });
+  const code = new URL(decided.headers.get("location")).searchParams.get("code");
+  const tokens = await (await call(app, "/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: CALLBACK, client_id: reg.client_id, resource: RESOURCE }) })).json();
+  assert.ok(tokens.access_token, JSON.stringify(tokens));
+  return tokens.access_token;
+}
+
+async function mcpClient(t, app, accessToken) {
+  const transport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
+    fetch: (url, init) => app.fetch(new Request(url, init)),
+    requestInit: { headers: { authorization: `Bearer ${accessToken}` } }
+  });
+  const client = new Client({ name: "per-user-test", version: "1.0.0" });
+  await client.connect(transport);
+  t.after(() => client.close());
+  return client;
+}
+
+test("Shopify HMAC verification accepts a correct signature and rejects any change", () => {
+  const good = signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: "1700000000" });
+  assert.equal(verifyShopifyHmac(good, SECRET), true);
+  assert.equal(verifyShopifyHmac(good, "other-secret"), false);
+  const tampered = new URLSearchParams(good);
+  tampered.set("shop", "evil.myshopify.com");
+  assert.equal(verifyShopifyHmac(tampered, SECRET), false);
+  const missing = new URLSearchParams(good);
+  missing.delete("hmac");
+  assert.equal(verifyShopifyHmac(missing, SECRET), false);
+  const junk = new URLSearchParams(good);
+  junk.set("hmac", "zz");
+  assert.equal(verifyShopifyHmac(junk, SECRET), false);
+});
+
+test("online tokens round-trip through AES-256-GCM and are bound to their user and store", () => {
+  const binding = { email: "pat@bariatricpal.com", alias: "main", shop: "main.myshopify.com" };
+  const sealed = encryptToken(KEY, "shpua_secret", binding);
+  assert.ok(!sealed.includes("shpua_secret"));
+  assert.notEqual(sealed, encryptToken(KEY, "shpua_secret", binding), "random IV");
+  assert.equal(decryptToken(KEY, sealed, binding), "shpua_secret");
+  assert.throws(() => decryptToken(KEY, sealed, { ...binding, email: "other@bariatricpal.com" }));
+  assert.throws(() => decryptToken(KEY, sealed, { ...binding, alias: "wholesale" }));
+  assert.throws(() => decryptToken(randomBytes(32), sealed, binding));
+  assert.equal(parseEncryptionKey(KEY.toString("base64")).length, 32);
+  assert.throws(() => parseEncryptionKey(undefined), /SHOPIFY_TOKEN_ENCRYPTION_KEY/);
+  assert.throws(() => parseEncryptionKey(randomBytes(16).toString("base64")), /32 random bytes/);
+});
+
+test("connect redirects to Shopify for a per-user grant and the callback stores an encrypted online token", async (t) => {
+  await shopifyMock(t);
+  const { app, store, oauth, auditPath } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  const before = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.match(before, /Not connected/);
+  assert.match(before, /Connect all 2 unconnected stores/);
+
+  const authorize = await startConnect(app, cookie);
+  assert.equal(authorize.origin, "https://main.myshopify.com");
+  assert.equal(authorize.pathname, "/admin/oauth/authorize");
+  assert.equal(authorize.searchParams.get("client_id"), "app-client-id");
+  assert.equal(authorize.searchParams.get("scope"), "write_products,write_orders");
+  assert.equal(authorize.searchParams.get("redirect_uri"), `${ORIGIN}/shopify/callback`);
+  assert.equal(authorize.searchParams.get("grant_options[]"), "per-user");
+  assert.match(authorize.searchParams.get("state"), /^[A-Za-z0-9_-]{43}$/);
+
+  const search = signedCallback({ code: "pat@bariatricpal.com|shpua_live", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1700000000" });
+  const done = await call(app, `/shopify/callback?${search}`, { headers: { cookie } });
+  assert.equal(done.status, 303, await done.clone().text());
+  assert.equal(done.headers.get("location"), "/stores");
+  assert.equal(oauth.exchanges.length, 1);
+  assert.equal(oauth.exchanges[0].url, "https://main.myshopify.com/admin/oauth/access_token");
+  assert.deepEqual(oauth.exchanges[0].body, { client_id: "app-client-id", client_secret: SECRET, code: "pat@bariatricpal.com|shpua_live" });
+
+  const records = await store.entries("shopify_token");
+  assert.equal(records.length, 1);
+  assert.ok(!JSON.stringify(records).includes("shpua_live"), "token stored only encrypted");
+  assert.equal(records[0][1].associatedUser.email, "pat@bariatricpal.com");
+  assert.equal(records[0][1].associatedUser.accountOwner, false);
+  assert.equal(records[0][1].associatedUserScope, "write_products");
+
+  const after = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.match(after, /Connected as pat@bariatricpal\.com/);
+  assert.match(after, /signed in with Google as pat@bariatricpal\.com/);
+  assert.match(after, /Reconnect/);
+  const audit = await readFile(auditPath, "utf8");
+  assert.match(audit, /"event":"shopify_connected"/);
+  assert.ok(!audit.includes("shpua_live"));
+});
+
+test("callback state is single use, short lived, and bound to the browser session that started it", async (t) => {
+  await shopifyMock(t);
+  const { app, store, advance } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  const other = await storesSession(app, "sam|bariatricpal.com");
+
+  // Replayed state.
+  let authorize = await startConnect(app, cookie);
+  let search = signedCallback({ code: "pat@bariatricpal.com|t1", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 303);
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 400);
+
+  // State finished in another user's browser.
+  authorize = await startConnect(app, cookie, "wholesale");
+  search = signedCallback({ code: "pat@bariatricpal.com|t2", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie: other } })).status, 400);
+  // ...and it is now used up for the right browser too.
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 400);
+
+  // No session cookie at all.
+  authorize = await startConnect(app, cookie, "wholesale");
+  search = signedCallback({ code: "pat@bariatricpal.com|t3", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  assert.equal((await call(app, `/shopify/callback?${search}`)).status, 400);
+
+  // Expired state.
+  authorize = await startConnect(app, cookie, "wholesale");
+  advance(11 * 60_000);
+  search = signedCallback({ code: "pat@bariatricpal.com|t4", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie } })).status, 400);
+
+  // Bad signature, and a shop that does not match the state.
+  const fresh = await storesSession(app, "pat|bariatricpal.com");
+  authorize = await startConnect(app, fresh, "wholesale");
+  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" }, "wrong-secret");
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie: fresh } })).status, 400);
+  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" });
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie: fresh } })).status, 400);
+  search = signedCallback({ code: "pat@bariatricpal.com|t5", shop: "evil.myshopify.com", state: "x", timestamp: "1" });
+  assert.equal((await call(app, `/shopify/callback?${search}`, { headers: { cookie: fresh } })).status, 400);
+
+  const connected = (await store.entries("shopify_token")).map(([, record]) => `${record.email}:${record.alias}`);
+  assert.deepEqual(connected, ["pat@bariatricpal.com:main"]);
+});
+
+test("offline tokens and mismatched Shopify emails are refused", async (t) => {
+  await shopifyMock(t);
+  const offline = await setup(t, {}, { offline: true });
+  let cookie = await storesSession(offline.app, "pat|bariatricpal.com");
+  assert.equal((await connectStore(offline.app, cookie)).status, 502);
+  assert.equal((await offline.store.entries("shopify_token")).length, 0);
+
+  const strict = await setup(t, {}, { requireEmailMatch: true });
+  cookie = await storesSession(strict.app, "pat|bariatricpal.com");
+  const refused = await connectStore(strict.app, cookie, { shopifyEmail: "someone@else.com" });
+  assert.equal(refused.status, 403);
+  assert.match(await refused.text(), /someone@else\.com/);
+  assert.equal((await strict.store.entries("shopify_token")).length, 0);
+  assert.equal((await connectStore(strict.app, cookie, { shopifyEmail: "PAT@bariatricpal.com" })).status, 303);
+  assert.equal((await strict.store.entries("shopify_token")).length, 1);
+});
+
+test("per-user mode calls Shopify with the caller's own token, never the app token", async (t) => {
+  const requests = await shopifyMock(t);
+  const { app } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  assert.equal((await connectStore(app, cookie, { token: "pat-online-main" })).status, 303);
+  const client = await mcpClient(t, app, await login(app, "pat|bariatricpal.com"));
+
+  const info = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(info.isError, true, JSON.stringify(info));
+  assert.equal(requests.at(-1).token, "pat-online-main");
+
+  // Stores the user has not connected: an error with the exact connect URL, and no request at all.
+  const count = requests.length;
+  const other = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "wholesale" } });
+  assert.equal(other.isError, true);
+  assert.match(other.content[0].text, /not connected store "wholesale"/);
+  assert.ok(other.content[0].text.includes(`${ORIGIN}/shopify/connect?store=wholesale`));
+  assert.equal(requests.length, count);
+  assert.ok(!requests.some((request) => /app-token/.test(request.token)));
+
+  const listed = await client.callTool({ name: "shopify_list_stores", arguments: {} });
+  assert.deepEqual(listed.structuredContent.stores.map((store) => store.alias), ["main"]);
+  assert.deepEqual(listed.structuredContent.notConnected.map((store) => store.alias), ["wholesale"]);
+  assert.ok(listed.structuredContent.hint.includes(`${ORIGIN}/stores`));
+
+  // The generic mutation tool is open to non-admins here, because Shopify enforces permissions.
+  const { tools } = await client.listTools();
+  assert.ok(tools.some((tool) => tool.name === "shopify_graphql_mutation"));
+});
+
+test("an expired token returns the reconnect URL instead of falling back to the app token", async (t) => {
+  const requests = await shopifyMock(t);
+  const { app, advance } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  await connectStore(app, cookie);
+  advance(86_400_000);
+  const client = await mcpClient(t, app, await login(app, "pat|bariatricpal.com"));
+  const result = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /expired/);
+  assert.ok(result.content[0].text.includes(`${ORIGIN}/shopify/connect?store=main`));
+  assert.equal(requests.length, 0);
+  const listed = await client.callTool({ name: "shopify_list_stores", arguments: {} });
+  assert.equal(listed.structuredContent.count, 0);
+  assert.deepEqual(listed.structuredContent.notConnected.map((store) => store.status), ["expired", "not_connected"]);
+});
+
+test("connect all chains through every unconnected store", async (t) => {
+  await shopifyMock(t);
+  const { app, store } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  let authorize = await startConnect(app, cookie, "main", true);
+  let done = await call(app, `/shopify/callback?${signedCallback({ code: "pat@bariatricpal.com|a", shop: "main.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" })}`, { headers: { cookie } });
+  assert.equal(done.headers.get("location"), "/shopify/connect?store=wholesale&chain=1");
+  const next = await call(app, done.headers.get("location"), { headers: { cookie } });
+  authorize = new URL(next.headers.get("location"));
+  assert.equal(authorize.host, "wholesale.myshopify.com");
+  done = await call(app, `/shopify/callback?${signedCallback({ code: "pat@bariatricpal.com|b", shop: "wholesale.myshopify.com", state: authorize.searchParams.get("state"), timestamp: "1" })}`, { headers: { cookie } });
+  assert.equal(done.headers.get("location"), "/stores");
+  assert.equal((await store.entries("shopify_token")).length, 2);
+});
+
+test("a policy file still restricts stores and roles in per-user mode", async (t) => {
+  await shopifyMock(t);
+  const { app } = await setup(t, { policy: staticPolicy({ users: { "pat@bariatricpal.com": { role: "viewer", stores: ["main"] } } }) });
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  const page = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.ok(!page.includes("wholesale.myshopify.com"));
+  assert.equal((await call(app, "/shopify/connect?store=wholesale", { headers: { cookie } })).status, 404);
+  await connectStore(app, cookie);
+  const client = await mcpClient(t, app, await login(app, "pat|bariatricpal.com"));
+  const { tools } = await client.listTools();
+  assert.ok(!tools.some((tool) => tool.name === "shopify_graphql_mutation"), "viewer stays read-only");
+});
+
+test("serve mode defaults to per_user, needs an encryption key there, and needs a policy only in app mode", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "sms-env-"));
+  const base = { MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "s", SHOPIFY_MULTI_STORE_DATA_DIR: dir };
+  await assert.rejects(buildHostedAppFromEnv({ ...base }), /SHOPIFY_TOKEN_ENCRYPTION_KEY/);
+  const perUser = (await buildHostedAppFromEnv({ ...base, SHOPIFY_TOKEN_ENCRYPTION_KEY: KEY.toString("base64") })).app;
+  t.after(() => perUser.close());
+  assert.equal(perUser.accessMode, "per_user");
+  assert.ok(perUser.shopify);
+  await assert.rejects(buildHostedAppFromEnv({ ...base, SHOPIFY_ACCESS_MODE: "app" }), /SHOPIFY_MULTI_STORE_POLICY/);
+  const policyPath = join(dir, "policy.json");
+  await writeFile(policyPath, JSON.stringify({ users: { "a@bariatricpal.com": { role: "admin", stores: "*" } } }));
+  const appMode = (await buildHostedAppFromEnv({ ...base, SHOPIFY_ACCESS_MODE: "app", SHOPIFY_MULTI_STORE_POLICY: policyPath })).app;
+  t.after(() => appMode.close());
+  assert.equal(appMode.accessMode, "app");
+  assert.equal((await appMode.fetch(new Request(`${ORIGIN}/stores`))).status, 404);
+  await assert.rejects(buildHostedAppFromEnv({ ...base, SHOPIFY_ACCESS_MODE: "bogus" }), /per_user or app/);
+});

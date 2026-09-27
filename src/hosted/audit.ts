@@ -36,7 +36,10 @@ export interface AuthAuditEntry {
     | "token_refreshed"
     | "refresh_denied"
     | "request_unauthorized"
-    | "request_forbidden";
+    | "request_forbidden"
+    | "shopify_connected"
+    | "shopify_connect_denied"
+    | "shopify_disconnected";
   timestamp: string;
   user?: string;
   clientId?: string;
@@ -44,9 +47,28 @@ export interface AuthAuditEntry {
   tokenId?: string;
   status?: number;
   reason?: string;
+  /** Store alias for Shopify connection events. */
+  store?: string;
+  /** Shopify staff account for Shopify connection events: user id and email as Shopify reported them. */
+  shopifyUserId?: string;
+  shopifyEmail?: string;
 }
 
-export type AuditRecord = AuditEntry | AuthAuditEntry;
+/** One shopify_run_action call. Variables are recorded only as a hash. */
+export interface ActionAuditEntry {
+  event: "action_run";
+  timestamp: string;
+  user: string;
+  role?: string;
+  tokenId?: string;
+  mutations: string[];
+  stores: string[];
+  dryRun: boolean;
+  variablesSha256: string;
+  outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number }>;
+}
+
+export type AuditRecord = AuditEntry | AuthAuditEntry | ActionAuditEntry;
 
 export interface AuditLog {
   write(entry: AuditRecord): Promise<void>;

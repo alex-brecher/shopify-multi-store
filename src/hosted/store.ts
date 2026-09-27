@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile, open } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "pat" | "session";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "pat" | "session" | "shopify_state" | "shopify_token";
 
 export interface OAuthStore {
   get<T>(kind: RecordKind, key: string): Promise<T | undefined>;
@@ -26,7 +26,7 @@ interface Entry {
 type Data = Record<RecordKind, Record<string, Entry>>;
 
 function emptyData(): Data {
-  return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, pat: {}, session: {} };
+  return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, pat: {}, session: {}, shopify_state: {}, shopify_token: {} };
 }
 
 /**

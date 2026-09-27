@@ -23,4 +23,22 @@ export function storeAllowed(alias, scope = storeScope.getStore()) {
     const lower = alias.toLowerCase();
     return scope.stores.some((allowed) => allowed.toLowerCase() === lower);
 }
+/** The caller's per-user Shopify access, when the current hosted call runs in per-user mode. */
+export function currentUserAccess() {
+    return storeScope.getStore()?.access;
+}
+export function connectionStatus(access, alias) {
+    const token = access.tokens.get(alias.toLowerCase());
+    if (!token)
+        return "not_connected";
+    return token.expiresAt > access.now() ? "connected" : "expired";
+}
+/** The message a tool returns when the caller has no live Shopify token for a store. */
+export function notConnectedMessage(access, alias) {
+    const status = connectionStatus(access, alias);
+    const url = access.connectUrl(alias);
+    return status === "expired"
+        ? `Your Shopify connection to store "${alias}" has expired. Reconnect at ${url} (or see all stores at ${access.storesUrl}), then try again.`
+        : `You have not connected store "${alias}" with your Shopify account. Connect it at ${url} (or see all stores at ${access.storesUrl}), then try again.`;
+}
 //# sourceMappingURL=runtime.js.map

@@ -17,6 +17,15 @@ declare const StoreConfigSchema: z.ZodObject<{
 export type StoreConfig = z.infer<typeof StoreConfigSchema>;
 export declare function configPath(): string;
 export declare function loadStores(): Promise<StoreConfig[]>;
+/**
+ * Per-user mode: allowed stores the caller has not connected, or whose token expired, with the
+ * URL that connects each. Empty outside per-user mode.
+ */
+export declare function unconnectedStores(): Promise<Array<{
+    alias: string;
+    status: "expired" | "not_connected";
+    connectUrl: string;
+}>>;
 export declare function findStore(alias: string): Promise<StoreConfig>;
 export declare function getAccessToken(store: StoreConfig): Promise<string>;
 export declare function graphqlEndpoint(store: StoreConfig): string;

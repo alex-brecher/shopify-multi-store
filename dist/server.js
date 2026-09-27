@@ -8,7 +8,7 @@ import { registerDiscoveryTools } from "./discovery-tools.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
-import { findStore, loadStores } from "./config.js";
+import { findStore, loadStores, unconnectedStores } from "./config.js";
 import { catalogHealth, catalogGapReport, compareCatalog, compareCollections, compareInventory, comparePrices, customerGrowth, duplicateSkuReport, fulfillmentSlaReport, getProductEverywhere, listUnfulfilledOrders, lowStockReport, orderSummary, portfolioSnapshot, recentProductChanges, searchProductsMany, storeLocations } from "./reports.js";
 import { adminGraphql, hasGraphqlErrors, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
 import { fitMultiStoreResults } from "./result-limits.js";
@@ -49,15 +49,20 @@ export function createServer(options = {}) {
     registerDiscoveryTools(server);
     server.registerTool("shopify_list_stores", {
         title: "List Shopify Stores",
-        description: "List every Shopify Admin store that remains connected to this plugin. This tool does not expose access tokens.",
+        description: "List every Shopify Admin store that remains connected to this plugin. On a hosted server in per-user mode, lists only the stores you have connected with your own Shopify account and names the others with a link to connect them. This tool does not expose access tokens.",
         inputSchema: z.object({}).strict(),
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     }, async () => {
         try {
             const stores = await loadStores();
+            const notConnected = await unconnectedStores();
             return success({
                 count: stores.length,
-                stores: stores.map((store) => ({ alias: store.alias, shop: store.shop, apiVersion: store.apiVersion }))
+                stores: stores.map((store) => ({ alias: store.alias, shop: store.shop, apiVersion: store.apiVersion })),
+                ...(notConnected.length ? {
+                    notConnected,
+                    hint: `These stores are not connected with your Shopify account, or the connection expired: ${notConnected.map((store) => store.alias).join(", ")}. Connect them at ${new URL("/stores", notConnected[0].connectUrl).toString()}.`
+                } : {})
             });
         }
         catch (error) {

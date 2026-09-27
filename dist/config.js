@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { z } from "zod/v4";
 import { DEFAULT_API_VERSION } from "./constants.js";
 import { accessTokenAccount, clientSecretAccount, readCredential } from "./credentials.js";
-import { isHostedMode, storeAllowed } from "./runtime.js";
+import { connectionStatus, currentUserAccess, isHostedMode, notConnectedMessage, storeAllowed } from "./runtime.js";
 const AccessTokenAuthSchema = z.object({
     type: z.literal("access_token")
 }).strict();
@@ -33,9 +33,33 @@ export function configPath() {
     return configured ? resolve(configured) : resolve(homedir(), ".config", "codex-shopify-multi-store", "stores.json");
 }
 export async function loadStores() {
+    const stores = await allowedStores();
+    // Per-user mode: only stores the caller has a live Shopify token for. Outside a hosted
+    // per-user tool call this is a no-op.
+    const access = currentUserAccess();
+    return access ? stores.filter((store) => connectionStatus(access, store.alias) === "connected") : stores;
+}
+/** Configured stores the caller may use, before the per-user connection filter. */
+async function allowedStores() {
     const stores = await loadAllStores();
     // Hosted mode: restrict to the caller's allowlist. Outside a hosted tool call this is a no-op.
     return stores.filter((store) => storeAllowed(store.alias));
+}
+/**
+ * Per-user mode: allowed stores the caller has not connected, or whose token expired, with the
+ * URL that connects each. Empty outside per-user mode.
+ */
+export async function unconnectedStores() {
+    const access = currentUserAccess();
+    if (!access)
+        return [];
+    const result = [];
+    for (const store of await allowedStores()) {
+        const status = connectionStatus(access, store.alias);
+        if (status !== "connected")
+            result.push({ alias: store.alias, status, connectUrl: access.connectUrl(store.alias) });
+    }
+    return result;
 }
 async function loadAllStores() {
     const hosted = isHostedMode();
@@ -98,6 +122,12 @@ export async function findStore(alias) {
     const stores = await loadStores();
     const store = stores.find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
     if (!store) {
+        const access = currentUserAccess();
+        if (access) {
+            const configured = (await allowedStores()).find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
+            if (configured)
+                throw new Error(notConnectedMessage(access, configured.alias));
+        }
         throw new Error(`Unknown store \"${alias}\". Available stores: ${stores.map((candidate) => candidate.alias).join(", ")}`);
     }
     return store;
@@ -106,6 +136,14 @@ function defaultTokenEnv(alias) {
     return `SHOPIFY_TOKEN_${alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
 }
 export async function getAccessToken(store) {
+    // Per-user mode: the caller's own online token, never the app token.
+    const access = currentUserAccess();
+    if (access) {
+        const token = access.tokens.get(store.alias.toLowerCase());
+        if (token && token.expiresAt > access.now())
+            return token.token;
+        throw new Error(notConnectedMessage(access, store.alias));
+    }
     const envName = store.tokenEnv ?? defaultTokenEnv(store.alias);
     const envToken = process.env[envName];
     if (envToken)

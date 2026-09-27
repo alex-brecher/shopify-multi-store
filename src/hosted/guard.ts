@@ -1,14 +1,26 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { storeAllowed, storeScope } from "../runtime.js";
+import { storeAllowed, storeScope, type ActionAuditDetails, type UserShopifyAccess } from "../runtime.js";
 import { auditArguments, canonicalJson, capString, sha256Hex, type AuditLog } from "./audit.js";
 import type { Principal, Role } from "./policy.js";
 
 /** Tools only an admin may call in hosted mode, whatever their annotations say. */
 export const ADMIN_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "shopify_graphql_mutation",
+  "shopify_run_action",
   "shopify_create_preview_store",
   "shopify_get_new_store_previews"
 ]);
+
+/**
+ * Generic write tools that are admin-only with the shared app token, but open to every
+ * non-viewer in per-user mode, where the caller's own Shopify permissions limit them.
+ */
+export const PER_USER_OPEN_TOOLS: ReadonlySet<string> = new Set([
+  "shopify_graphql_mutation",
+  "shopify_run_action"
+]);
+
+export type ShopifyAccessMode = "per_user" | "app";
 
 /**
  * Tools that need the local machine (Shopify CLI, local preview receipts).
@@ -29,10 +41,11 @@ export const HOSTED_DISABLED_ARGUMENTS: Readonly<Record<string, readonly string[
 /** Top-level argument names that select stores. */
 const STORE_ARGUMENTS = ["store", "stores", "alias"] as const;
 
-export function toolAllowedForRole(role: Role, tool: string, readOnly: boolean): boolean {
+export function toolAllowedForRole(role: Role, tool: string, readOnly: boolean, mode: ShopifyAccessMode = "app"): boolean {
   if (role === "admin") return true;
-  if (role === "editor") return !ADMIN_ONLY_TOOLS.has(tool);
-  return readOnly && !ADMIN_ONLY_TOOLS.has(tool);
+  const adminOnly = ADMIN_ONLY_TOOLS.has(tool) && !(mode === "per_user" && PER_USER_OPEN_TOOLS.has(tool));
+  if (role === "editor") return !adminOnly;
+  return readOnly && !adminOnly;
 }
 
 export function requestedStores(args: unknown): string[] {
@@ -58,6 +71,10 @@ export interface GuardOptions {
   audit: AuditLog;
   /** Personal access token id when the request used one. Recorded in the audit log; never the value. */
   tokenId?: string;
+  /** "per_user" when every call uses the caller's own Shopify token. Defaults to "app". */
+  accessMode?: ShopifyAccessMode;
+  /** The caller's own Shopify tokens (per-user mode). */
+  access?: UserShopifyAccess;
 }
 
 /**
@@ -67,13 +84,21 @@ export interface GuardOptions {
  * refusal of local-file arguments, and one audit line per call.
  * Must run before any tool is registered.
  */
-export function guardServer(server: McpServer, { principal, audit, tokenId }: GuardOptions): void {
+export function guardServer(server: McpServer, { principal, audit, tokenId, accessMode = "app", access }: GuardOptions): void {
+  if (accessMode === "per_user" && !access) throw new Error("Per-user mode requires the caller's Shopify access.");
+  const auditAction = async (details: ActionAuditDetails): Promise<void> => {
+    try {
+      await audit.write({ event: "action_run", timestamp: new Date().toISOString(), user: principal.email, role: principal.role, ...(tokenId ? { tokenId } : {}), ...details });
+    } catch (error) {
+      process.stderr.write(`Audit log write failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  };
   const register = server.registerTool.bind(server) as unknown as (name: string, config: ToolConfig, cb: AnyCallback) => unknown;
 
   const guarded = (name: string, config: ToolConfig, callback: AnyCallback): unknown => {
     if (HOSTED_DISABLED_TOOLS.has(name)) return undefined;
     const readOnly = config.annotations?.readOnlyHint === true;
-    if (!toolAllowedForRole(principal.role, name, readOnly)) return undefined;
+    if (!toolAllowedForRole(principal.role, name, readOnly, accessMode)) return undefined;
     const hasInput = config.inputSchema !== undefined;
 
     const wrapped = async (...callArgs: unknown[]): Promise<unknown> => {
@@ -84,7 +109,7 @@ export function guardServer(server: McpServer, { principal, audit, tokenId }: Gu
       let failure: unknown;
       try {
         // Re-check at call time as a second line of defense.
-        if (!toolAllowedForRole(principal.role, name, readOnly)) {
+        if (!toolAllowedForRole(principal.role, name, readOnly, accessMode)) {
           result = denied(`Access denied: role ${principal.role} cannot call ${name}.`);
         } else {
           const blockedStore = stores.find((store) => !storeAllowed(store, { stores: principal.stores }));
@@ -97,7 +122,7 @@ export function guardServer(server: McpServer, { principal, audit, tokenId }: Gu
           } else if (blockedArgument) {
             result = denied(`${blockedArgument} refers to a file on the server and is not available on the hosted connector. Use sourceUrl with an HTTPS image URL instead.`);
           } else {
-            result = await storeScope.run({ stores: principal.stores }, () => callback(...callArgs));
+            result = await storeScope.run({ stores: principal.stores, ...(access ? { access } : {}), auditAction }, () => callback(...callArgs));
           }
         }
         return result;

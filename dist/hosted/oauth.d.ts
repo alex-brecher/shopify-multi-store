@@ -58,6 +58,8 @@ export interface ClientRecord {
     client_secret_sha256?: string;
     client_id_issued_at?: number;
 }
+/** Server pages that start their own Google sign-in. */
+export type PageSignInPurpose = "tokens" | "stores";
 /** Audit label for sign-ins to server pages. */
 export declare const PAGE_SIGN_IN_CLIENT = "tokens-page";
 export interface AccessRecord {
@@ -107,9 +109,9 @@ export declare class AuthorizationServer {
      * Start a Google sign-in for a page on this server (the personal access token page) rather
      * than for an OAuth client. The same domain and policy checks apply.
      */
-    startPageSignIn(purpose: "tokens"): Promise<Response>;
+    startPageSignIn(purpose: PageSignInPurpose): Promise<Response>;
     /** Receives page sign-ins (see startPageSignIn) after the domain and policy checks pass. */
-    onPageSignIn?: (purpose: "tokens", email: string, principal: Principal) => Promise<Response>;
+    onPageSignIn?: (purpose: PageSignInPurpose, email: string, principal: Principal) => Promise<Response>;
     googleCallback(url: URL): Promise<Response>;
     private issueCode;
     private consentPage;
