@@ -318,6 +318,40 @@ test("issues opaque tokens, rotates refresh tokens, and revokes the family on re
   assert.equal(wrongResource.body.error, "invalid_target");
 });
 
+test("refresh token families have a maximum session age and require a new Google sign-in", async (t) => {
+  const { app, advance } = await setup(t, { sessionMaxAgeSeconds: 7 * 24 * 3600 });
+  const { client, tokens } = await login(app, "admin|bariatricpal.com");
+  let refresh = tokens.refresh_token;
+  // Refreshing every 3 days keeps the session alive only until 7 days after sign-in.
+  for (let day = 3; day < 7; day += 3) {
+    advance(3 * 24 * 3600_000);
+    const next = await tokenRequest(app, { grant_type: "refresh_token", refresh_token: refresh, client_id: client.client_id });
+    assert.equal(next.response.status, 200, JSON.stringify(next.body));
+    refresh = next.body.refresh_token;
+  }
+  advance(24 * 3600_000 + 1);
+  const expired = await tokenRequest(app, { grant_type: "refresh_token", refresh_token: refresh, client_id: client.client_id });
+  assert.equal(expired.response.status, 400);
+  assert.equal(expired.body.error, "invalid_grant");
+  // A fresh sign-in starts a new session.
+  const again = await login(app, "admin|bariatricpal.com");
+  const refreshed = await tokenRequest(app, { grant_type: "refresh_token", refresh_token: again.tokens.refresh_token, client_id: again.client.client_id });
+  assert.equal(refreshed.response.status, 200);
+});
+
+test("refresh re-evaluates the access policy and revokes a removed user's family", async (t) => {
+  const policy = { users: { "admin@bariatricpal.com": { role: "admin", stores: "*" } } };
+  const { app } = await setup(t, { policy: { current: () => new (class { resolve(email) { return policy.users[email] ? { email, ...policy.users[email] } : null; } })() } });
+  const { client, tokens } = await login(app, "admin|bariatricpal.com");
+  delete policy.users["admin@bariatricpal.com"];
+  const refused = await tokenRequest(app, { grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id });
+  assert.equal(refused.body.error, "invalid_grant");
+  assert.equal(await app.auth.verifyAccessToken(tokens.access_token), undefined);
+  policy.users["admin@bariatricpal.com"] = { role: "admin", stores: "*" };
+  const stillRevoked = await tokenRequest(app, { grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id });
+  assert.equal(stillRevoked.body.error, "invalid_grant");
+});
+
 test("access tokens expire", async (t) => {
   const { app, advance } = await setup(t);
   const { tokens } = await login(app, "admin|bariatricpal.com");

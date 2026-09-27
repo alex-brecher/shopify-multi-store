@@ -30,6 +30,12 @@ This file records notable changes to Shopify Multi-Store MCP.
 - Add `src/scope-requirements.ts`, mapping every tool (existing and new) to the
   Admin API scopes it needs, and `scripts/print-scopes.mjs` to print their union
   for a `shopify.app.toml`.
+- Fix `shopify_create_draft_order`, `shopify_update_order`, `shopify_update_customer`
+  and `shopify_upsert_page` sending `dryRun` inside the Shopify input, which made
+  every `dryRun: false` call fail. Inputs are now built from field allowlists.
+- Hosted: cap the lifetime of a refresh token family with
+  `OAUTH_SESSION_MAX_AGE_SECONDS` (default 7 days). After it, the user signs in
+  with Google again. Every refresh re-checks the access policy.
 
 ## [1.6.0] - 2026-09-07
 

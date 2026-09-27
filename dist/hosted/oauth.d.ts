@@ -23,6 +23,12 @@ export interface AuthServerOptions {
     fetchClientMetadata?: (url: string) => Promise<unknown>;
     accessTokenTtlSeconds?: number;
     refreshTokenTtlSeconds?: number;
+    /**
+     * Maximum lifetime of a sign-in session (a refresh token family), counted from the Google
+     * sign-in. Refresh fails with invalid_grant after this, so the user signs in with Google
+     * again and the domain and policy checks run again. Defaults to 7 days.
+     */
+    sessionMaxAgeSeconds?: number;
     maxRegisteredClients?: number;
     now?: () => number;
     log?: (message: string) => void;
@@ -42,6 +48,8 @@ export interface AccessRecord {
     scope: string;
     resource: string;
     familyId: string;
+    /** When the Google sign-in that started this token family happened (ms since epoch). */
+    familyStartedAt: number;
     expiresAt: number;
 }
 export declare function sha256(value: string): string;
@@ -58,6 +66,7 @@ export declare class AuthorizationServer {
     private readonly cimdHosts;
     private readonly accessTtlMs;
     private readonly refreshTtlMs;
+    private readonly sessionMaxAgeMs;
     private readonly maxClients;
     private readonly now;
     private readonly log;

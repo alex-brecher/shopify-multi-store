@@ -59,7 +59,8 @@ Client ID Metadata Documents are supported: a `client_id` that is an HTTPS URL i
 | `OAUTH_ALLOW_LOOPBACK_REDIRECTS` | no | `1` | Also allow `http://localhost`, `127.0.0.1`, `[::1]` redirects (Claude Code and Desktop testing). Set `0` to turn off. |
 | `OAUTH_CIMD_ALLOWED_HOSTS` | no | `claude.ai,claude.com` | Hosts (and subdomains) allowed to serve client metadata documents. `*` allows any HTTPS host. |
 | `OAUTH_ACCESS_TOKEN_TTL_SECONDS` | no | `3600` | Access token lifetime |
-| `OAUTH_REFRESH_TOKEN_TTL_SECONDS` | no | `2592000` | Refresh token lifetime (30 days, renewed on each rotation) |
+| `OAUTH_REFRESH_TOKEN_TTL_SECONDS` | no | `2592000` | Refresh token lifetime (30 days, renewed on each rotation, never past the session maximum age) |
+| `OAUTH_SESSION_MAX_AGE_SECONDS` | no | `604800` | Maximum age of a sign-in session (7 days), counted from the Google sign-in. After it, refresh fails with `invalid_grant` and the user signs in with Google again, which re-checks the domain and the policy. |
 
 Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, and `SHOPIFY_CLIENT_SECRET_*`, you can set `<NAME>_FILE=/run/secrets/...` instead. In serve mode the OS keychain is never used.
 
@@ -138,6 +139,7 @@ For Claude Code testing: `claude mcp add --transport http shopify https://<host>
 - Signing in is not enough: the user must also be in the policy file.
 - Authorization codes are single use, expire after 2 minutes, and require PKCE S256.
 - Access tokens are bound to `https://<host>/mcp`. Refresh tokens rotate; reuse of an old refresh token revokes the whole token family.
+- A token family lives at most `OAUTH_SESSION_MAX_AGE_SECONDS` (7 days by default) from the Google sign-in, however often it is refreshed. Every refresh also re-checks the policy file, so a removed user cannot refresh.
 - Redirect URIs must be in the allowlist (Claude callbacks plus loopback by default), for both registered and metadata-document clients.
 - Shopify credentials come only from the environment or mounted files. The keychain, Shopify CLI preview stores, and local-file image upload are disabled in serve mode.
 - Keep the data directory private. It holds client registrations and token hashes.

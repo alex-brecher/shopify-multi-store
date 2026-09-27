@@ -66,6 +66,7 @@ export class AuthorizationServer {
     cimdHosts;
     accessTtlMs;
     refreshTtlMs;
+    sessionMaxAgeMs;
     maxClients;
     now;
     log;
@@ -80,6 +81,7 @@ export class AuthorizationServer {
         this.cimdHosts = (options.cimdAllowedHosts ?? DEFAULT_CIMD_HOSTS).map((host) => host.toLowerCase());
         this.accessTtlMs = (options.accessTokenTtlSeconds ?? 3600) * 1000;
         this.refreshTtlMs = (options.refreshTokenTtlSeconds ?? 30 * 24 * 3600) * 1000;
+        this.sessionMaxAgeMs = (options.sessionMaxAgeSeconds ?? 7 * 24 * 3600) * 1000;
         this.maxClients = options.maxRegisteredClients ?? 10_000;
         this.now = options.now ?? Date.now;
         this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
@@ -439,7 +441,7 @@ export class AuthorizationServer {
             return oauthError("invalid_target", `This server only issues tokens for ${this.resource}.`);
         if (!this.options.policy.current().resolve(record.email))
             return oauthError("invalid_grant", "The user no longer has access.");
-        return this.issueTokens(client, record.email, record.scope, randomUUID());
+        return this.issueTokens(client, record.email, record.scope, randomUUID(), this.now());
     }
     async refreshTokenGrant(client, body) {
         const token = body.get("refresh_token");
@@ -460,34 +462,44 @@ export class AuthorizationServer {
         const resource = body.get("resource");
         if (resource !== null && !this.resourceMatches(resource))
             return oauthError("invalid_target", `This server only issues tokens for ${this.resource}.`);
+        // Sessions do not slide forever: after the family's maximum age the user must sign in with
+        // Google again, which re-checks the Workspace domain and the access policy.
+        if (typeof record.familyStartedAt !== "number" || this.now() - record.familyStartedAt >= this.sessionMaxAgeMs) {
+            await this.revokeFamily(record.familyId);
+            this.log(`Session for ${record.email} reached its maximum age; sign-in required.`);
+            return oauthError("invalid_grant", "The sign-in session has expired. Sign in again.");
+        }
+        // Re-evaluate the access policy on every refresh so removed users lose access immediately.
         if (!this.options.policy.current().resolve(record.email)) {
             await this.revokeFamily(record.familyId);
+            this.log(`Refresh refused: ${record.email} is not in the access policy; revoked token family.`);
             return oauthError("invalid_grant", "The user no longer has access.");
         }
         // Rotation: keep the old token only as a reuse tripwire until it would have expired.
         await this.options.store.put("refresh", key, { ...record, rotated: true }, record.expiresAt);
-        return this.issueTokens(client, record.email, record.scope, record.familyId);
+        return this.issueTokens(client, record.email, record.scope, record.familyId, record.familyStartedAt);
     }
     async revokeFamily(familyId) {
         await this.options.store.deleteWhere("access", (value) => value.familyId === familyId);
         await this.options.store.deleteWhere("refresh", (value) => value.familyId === familyId);
     }
-    async issueTokens(client, email, scope, familyId) {
+    async issueTokens(client, email, scope, familyId, familyStartedAt) {
         const now = this.now();
+        const sessionEnd = familyStartedAt + this.sessionMaxAgeMs;
         const accessToken = secret("sms_at_");
-        const access = { clientId: client.client_id, email, scope, resource: this.resource, familyId, expiresAt: now + this.accessTtlMs };
+        const access = { clientId: client.client_id, email, scope, resource: this.resource, familyId, familyStartedAt, expiresAt: Math.min(now + this.accessTtlMs, sessionEnd) };
         await this.options.store.put("access", sha256(accessToken), access, access.expiresAt);
         const issueRefresh = client.grant_types.includes("refresh_token");
         let refreshToken;
         if (issueRefresh) {
             refreshToken = secret("sms_rt_");
-            const refresh = { ...access, expiresAt: now + this.refreshTtlMs };
+            const refresh = { ...access, expiresAt: Math.min(now + this.refreshTtlMs, sessionEnd) };
             await this.options.store.put("refresh", sha256(refreshToken), refresh, refresh.expiresAt);
         }
         return json({
             access_token: accessToken,
             token_type: "Bearer",
-            expires_in: Math.floor(this.accessTtlMs / 1000),
+            expires_in: Math.max(0, Math.floor((access.expiresAt - now) / 1000)),
             scope,
             ...(refreshToken ? { refresh_token: refreshToken } : {})
         });
