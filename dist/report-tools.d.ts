@@ -1,0 +1,63 @@
+import { McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod/v4";
+import { type Data } from "./admin-workflows.js";
+/** Every report shopify_report runs, with what it needs. Keep in step with scope-requirements.ts. */
+export declare const REPORTS: {
+    readonly portfolio_snapshot: "Shop identity and product, order, customer and location counts. stores optional (all stores).";
+    readonly store_locations: "Active, inactive, legacy, fulfillment, inventory and address status of locations. stores optional (all stores).";
+    readonly compare_inventory: "Inventory, price, status and catalog details for exact SKUs. Needs skus (1-50).";
+    readonly compare_prices: "Price and compare-at price for exact SKUs, with mismatches and missing variants. Needs skus (1-50).";
+    readonly get_product_everywhere: "One exact SKU or handle across stores. Needs identifier and matchBy (sku or handle).";
+    readonly compare_catalog: "Titles, status, vendor, type and inventory for exact product handles. Needs handles (1-50).";
+    readonly compare_collections: "Titles, sort order, product counts, SEO and images for exact collection handles. Needs handles (1-50).";
+    readonly catalog_gap_report: "Products missing or with different status across stores. first: products scanned per store (default 250).";
+    readonly catalog_health: "Missing vendor, type, SEO, media, alt text, and active products without inventory. first (default 100).";
+    readonly duplicate_sku_report: "SKUs repeated inside a store and shared across stores. first: variants scanned per store (default 250).";
+    readonly low_stock_report: "Active variants at or below threshold (default 10), separating low, zero and negative.";
+    readonly recent_product_changes: "Products updated in the last days (default 7). first (default 100).";
+    readonly list_unfulfilled_orders: "Recent open unfulfilled orders. days (default 7), first (default 25).";
+    readonly fulfillment_sla_report: "Open unfulfilled orders by age bucket and SLA breaches. lookbackDays (default 90), slaDays (default 2), first (default 100).";
+    readonly order_summary: "Order values, discounts, shipping, tax, cancellations and statuses; currencies separate. days (default 30), first (default 100).";
+    readonly customer_growth: "New customers in the current and previous period of days (default 30).";
+    readonly analytics: "Run one ShopifyQL query on each store and return columns, rows and a chart hint. Needs query and read_reports.";
+};
+export type ReportName = keyof typeof REPORTS;
+declare const ReportInput: z.ZodObject<{
+    report: z.ZodEnum<{
+        analytics: "analytics";
+        catalog_gap_report: "catalog_gap_report";
+        catalog_health: "catalog_health";
+        compare_catalog: "compare_catalog";
+        compare_collections: "compare_collections";
+        compare_inventory: "compare_inventory";
+        compare_prices: "compare_prices";
+        customer_growth: "customer_growth";
+        duplicate_sku_report: "duplicate_sku_report";
+        fulfillment_sla_report: "fulfillment_sla_report";
+        get_product_everywhere: "get_product_everywhere";
+        list_unfulfilled_orders: "list_unfulfilled_orders";
+        low_stock_report: "low_stock_report";
+        order_summary: "order_summary";
+        portfolio_snapshot: "portfolio_snapshot";
+        recent_product_changes: "recent_product_changes";
+        store_locations: "store_locations";
+    }>;
+    stores: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    skus: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    handles: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    identifier: z.ZodOptional<z.ZodString>;
+    matchBy: z.ZodOptional<z.ZodEnum<{
+        handle: "handle";
+        sku: "sku";
+    }>>;
+    days: z.ZodOptional<z.ZodNumber>;
+    lookbackDays: z.ZodOptional<z.ZodNumber>;
+    slaDays: z.ZodOptional<z.ZodNumber>;
+    threshold: z.ZodOptional<z.ZodNumber>;
+    first: z.ZodOptional<z.ZodNumber>;
+    query: z.ZodOptional<z.ZodString>;
+}, z.core.$strict>;
+type ReportArgs = z.infer<typeof ReportInput>;
+export declare function runReport(a: ReportArgs): Promise<Data>;
+export declare function registerReportTools(server: McpServer): void;
+export {};

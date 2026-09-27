@@ -13,6 +13,14 @@ const [command = "start", ...args] = process.argv.slice(2);
 
 if (command === "start") {
   await import("../dist/index.js");
+} else if (command === "serve") {
+  const { serve } = await import("../dist/serve.js");
+  try {
+    await serve();
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  }
 } else {
   const commandMap = {
     setup: ["configure-store.mjs", "add"],
@@ -25,7 +33,7 @@ if (command === "start") {
   };
   const mapped = commandMap[command];
   if (!mapped) {
-    process.stderr.write("Use: shopify-multi-store start, setup, oauth, list, remove <alias>, doctor, import <file>, or install-shopify-skills.\n");
+    process.stderr.write("Use: shopify-multi-store start, serve, setup, oauth, list, remove <alias>, doctor, import <file>, or install-shopify-skills.\n");
     process.exitCode = 1;
   } else {
     const result = spawnSync(process.execPath, [join(directory, mapped[0]), ...mapped.slice(1), ...args], {

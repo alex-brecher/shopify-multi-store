@@ -1,5 +1,3 @@
-import { sampleProducts } from "./samples.js";
-import { UI_META } from "./ui.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { textResult, toolError } from "./admin-workflows.js";
@@ -45,74 +43,6 @@ export function registerDiscoveryTools(server: McpServer) {
         if (!Array.isArray(results))
           throw Error("Unexpected documentation search response.");
         return textResult({ results: results.slice(0, a.max_num_results) });
-      } catch (e) {
-        return toolError(e);
-      }
-    },
-  );
-  server.registerTool(
-    "shopify_find_sample_product",
-    {
-      _meta: UI_META,
-      description:
-        "Find sample products across published Shopify demo catalogs. For categories without suitable samples, generate original product concepts from the user query and pass generatedCandidates to display draft-creation cards. Label concepts as examples, never supplier offers or verified products. Images are optional; use only available relevant image URLs.",
-      inputSchema: z
-        .object({
-          query: z.string().min(1).max(500),
-          limit: z.number().int().min(1).max(10).default(5),
-          generatedCandidates: z
-            .array(
-              z
-                .object({
-                  title: z.string().min(1).max(255),
-                  description: z.string().max(2000),
-                  imageUrl: z
-                    .url()
-                    .startsWith("https://cdn.shopify.com/")
-                    .optional(),
-                  imageAlt: z.string().max(1000).optional(),
-                })
-                .strict(),
-            )
-            .min(1)
-            .max(10)
-            .optional(),
-        })
-        .strict(),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
-    },
-    async (a) => {
-      try {
-        if (a.generatedCandidates)
-          return textResult({
-            query: a.query,
-            sampleData: true,
-            generatedConcepts: true,
-            catalogOnly: false,
-            notice:
-              "AI-generated product concepts. Review details and prices before use.",
-            sampleProducts: a.generatedCandidates
-              .slice(0, a.limit)
-              .map((p, i) => ({
-                id: `concept-${i + 1}`,
-                title: p.title,
-                description: p.description,
-                ...(p.imageUrl
-                  ? {
-                      featuredImage: {
-                        url: p.imageUrl,
-                        altText: p.imageAlt ?? p.title,
-                      },
-                    }
-                  : {}),
-              })),
-          });
-        return textResult(await sampleProducts(a.query, a.limit));
       } catch (e) {
         return toolError(e);
       }

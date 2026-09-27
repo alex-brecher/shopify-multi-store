@@ -169,38 +169,21 @@ test("lists two stores and routes a shop query to the selected store", async () 
   try {
     await client.connect(transport);
     const listed = await client.listTools();
-    const resources = await client.listResources();
-    assert.ok(resources.resources.some(r => r.uri === 'ui://shopify-multi-store/results'));
-    const ui = await client.readResource({ uri: 'ui://shopify-multi-store/results' });
-    assert.equal(ui.contents[0].mimeType, 'text/html;profile=mcp-app');
-    assert.match(ui.contents[0].text, /Shopify Multi Store/);
-    assert.ok(listed.tools.find(t => t.name === 'shopify_create_product')._meta.ui.resourceUri);
-    assert.ok(listed.tools.length > 45);
-    const originalTools = [
-      "shopify_catalog_gap_report",
-      "shopify_catalog_health",
-      "shopify_compare_catalog",
-      "shopify_compare_collections",
-      "shopify_compare_inventory",
-      "shopify_compare_prices",
-      "shopify_customer_growth",
-      "shopify_duplicate_sku_report",
-      "shopify_fulfillment_sla_report",
-      "shopify_get_product_everywhere",
-      "shopify_get_shop_info",
-      "shopify_graphql_mutation",
-      "shopify_graphql_query",
-      "shopify_graphql_query_many",
-      "shopify_list_stores",
-      "shopify_list_unfulfilled_orders",
-      "shopify_low_stock_report",
-      "shopify_order_summary",
-      "shopify_portfolio_snapshot",
-      "shopify_recent_product_changes",
-      "shopify_search_products_many",
-      "shopify_store_locations"
-    ];
-    for (const name of originalTools) assert.ok(listed.tools.some(t => t.name === name), name);
+    // The MCP Apps UI resource was removed in 1.7.0; results are text and structured JSON.
+    assert.ok(!listed.tools.some((tool) => tool._meta?.ui));
+    // 1.7.0 folded the report tools into shopify_report and search_products_many into
+    // shopify_search. The calls below keep their old names and are routed through legacyCall.
+    const coreTools = ["shopify_report", "shopify_search", "shopify_get_shop_info", "shopify_graphql_mutation", "shopify_graphql_query", "shopify_graphql_query_many", "shopify_list_stores"];
+    for (const name of coreTools) assert.ok(listed.tools.some(t => t.name === name), name);
+    const REPORTS = ["catalog_gap_report", "catalog_health", "compare_catalog", "compare_collections", "compare_inventory", "compare_prices", "customer_growth", "duplicate_sku_report", "fulfillment_sla_report", "get_product_everywhere", "list_unfulfilled_orders", "low_stock_report", "order_summary", "portfolio_snapshot", "recent_product_changes", "store_locations"];
+    const callTool = client.callTool.bind(client);
+    client.callTool = (request, ...rest) => {
+      const report = request.name.replace(/^shopify_/, "");
+      if (REPORTS.includes(report)) return callTool({ name: "shopify_report", arguments: { report, ...request.arguments } }, ...rest);
+      if (request.name === "shopify_search_products_many") return callTool({ name: "shopify_search", arguments: { resource: "products", ...request.arguments } }, ...rest);
+      return callTool(request, ...rest);
+    };
+
 
     const stores = await client.callTool({ name: "shopify_list_stores", arguments: {} });
     assert.equal(stores.isError, undefined);
@@ -516,7 +499,7 @@ test("lists two stores and routes a shop query to the selected store", async () 
 
     for (const [name, args] of [
       ["shopify_graphql_query", { store: "first-store", query: "query AccessDeniedFixture { shop { name } }" }],
-      ["shopify_graphql_mutation", { store: "first-store", mutation: "mutation AccessDeniedFixture { productDelete(input: {}) { deletedProductId } }", confirm: true }]
+      ["shopify_graphql_mutation", { store: "first-store", mutation: "mutation AccessDeniedFixture { productDelete(input: {}) { deletedProductId } }", confirm: "productDelete" }]
     ]) {
       const denied = await client.callTool({ name, arguments: args });
       assert.equal(denied.isError, true);

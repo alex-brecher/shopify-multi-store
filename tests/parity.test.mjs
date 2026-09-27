@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { parse } from "graphql";
 import { registerAdminTools } from "../dist/admin-tools.js";
 import { registerDiscoveryTools } from "../dist/discovery-tools.js";
+import { registerReadTools } from "../dist/read-tools.js";
+import { registerReportTools } from "../dist/report-tools.js";
 import { DOCS } from "../dist/admin-documents.js";
 import { validateDocument } from "../dist/schema.js";
 import { operation, mutationErrors } from "../dist/operations.js";
@@ -51,6 +53,8 @@ async function fixture(t) {
       tools.set(name, { definition, callback }),
   };
   registerAdminTools(server);
+  registerReadTools(server);
+  registerReportTools(server);
   registerDiscoveryTools(server);
   const state = {
     requests: [],
@@ -230,16 +234,26 @@ async function fixture(t) {
         };
         break;
       case "CreateCollection":
+      case "CreateCollectionLegacy":
         state.collection = { ...state.collection, ...v.input };
         data = {
           collectionCreate: { collection: collection(), userErrors: [] },
         };
         break;
       case "UpdateCollection":
+      case "UpdateCollectionLegacy":
         state.collection = { ...state.collection, ...v.input };
         data = {
           collectionUpdate: { collection: collection(), userErrors: [] },
         };
+        break;
+      case "AddTags":
+        state.product = { ...state.product, tags: [...new Set([...(state.product.tags ?? []), ...v.tags])] };
+        data = { tagsAdd: { node: { id: v.id, tags: state.product.tags }, userErrors: [] } };
+        break;
+      case "RemoveTags":
+        state.product = { ...state.product, tags: (state.product.tags ?? []).filter((tag) => !v.tags.includes(tag)) };
+        data = { tagsRemove: { node: { id: v.id, tags: state.product.tags }, userErrors: [] } };
         break;
       case "AddToCollection":
         data = {
@@ -338,10 +352,9 @@ async function fixture(t) {
   const call = async (name, args = {}) => {
     const tool = tools.get(`shopify_${name}`);
     assert.ok(tool, name);
-    const parsed = tool.definition.inputSchema.parse({
-      store: "fixture",
-      ...args,
-    });
+    const parsed = tool.definition.inputSchema.parse(
+      "stores" in args ? args : { store: "fixture", ...args },
+    );
     return tool.callback(parsed);
   };
   return { state, tools, call };
@@ -349,7 +362,7 @@ async function fixture(t) {
 
 test("all fixed operations validate against their supported Shopify schema", async () => {
   for (const [name, document] of Object.entries(DOCS)) {
-    const version = /^collection(Create|Update)$/.test(name)
+    const version = /^collection(Create|Update)Legacy$/.test(name)
       ? "2026-04"
       : "2026-07";
     assert.deepEqual(await validateDocument(document, version), [], name);
@@ -437,18 +450,16 @@ test("store queues serialize same-store work and release after a failure", async
 test("all read workflows return data through versioned schema validation", async (t) => {
   const { call } = await fixture(t);
   for (const [name, args] of [
-    ["switch_shop", {}],
-    ["get_store_capabilities", {}],
-    ["search_products", { query: "shirt" }],
-    ["get_product", { id: gid("Product") }],
-    ["search_collections", {}],
-    ["get_collection", { id: gid("Collection") }],
-    ["list_orders", {}],
-    ["get_order", { id: gid("Order") }],
-    ["list_customers", {}],
-    ["get_inventory_levels", { productId: gid("Product") }],
-    ["get_inventory_levels", { inventoryItemId: gid("InventoryItem") }],
-    ["list_publications", {}],
+    ["search", { resource: "products", query: "shirt" }],
+    ["get", { resource: "product", id: gid("Product") }],
+    ["search", { resource: "collections" }],
+    ["get", { resource: "collection", id: gid("Collection") }],
+    ["search", { resource: "orders" }],
+    ["get", { resource: "order", id: gid("Order") }],
+    ["search", { resource: "customers" }],
+    ["get", { resource: "inventory", id: gid("Product") }],
+    ["get", { resource: "inventory", id: gid("InventoryItem") }],
+    ["search", { resource: "publications" }],
   ]) {
     const result = await call(name, args);
     assert.equal(result.isError, undefined, JSON.stringify(result));
@@ -458,7 +469,7 @@ test("all read workflows return data through versioned schema validation", async
 test("product creation includes options, variants, media and collection membership", async (t) => {
   const { call, state } = await fixture(t);
   const r = await call("create_product", {
-    confirm: true,
+    dryRun: false,
     title: "Shirt",
     options: ["Size"],
     variants: [
@@ -492,7 +503,7 @@ test("product creation includes options, variants, media and collection membersh
 test("product updates handle variant prices, media removal and readback", async (t) => {
   const { call } = await fixture(t);
   const r = await call("update_product", {
-    confirm: true,
+    dryRun: false,
     id: gid("Product"),
     title: "Changed",
     variants: [{ id: gid("ProductVariant"), price: "20.00", sku: "NEW" }],
@@ -502,36 +513,37 @@ test("product updates handle variant prices, media removal and readback", async 
   assert.equal(r.structuredContent.after.title, "Changed");
   assert.equal(r.structuredContent.before.title, "Fixture product");
 });
-test("collection create and update use the supported legacy contract and explicit publication", async (t) => {
+test("collection create and update use the 2026-07 input, add products separately, and publish explicitly", async (t) => {
   const { call, state } = await fixture(t);
   const r = await call("create_collection", {
-    confirm: true,
+    dryRun: false,
     title: "Manual",
     productIds: [gid("Product")],
     publicationIds: [gid("Publication")],
   });
   assert.equal(r.isError, undefined, JSON.stringify(r));
-  assert.match(
-    state.requests.find((r) => r.query.includes("mutation CreateCollection"))
-      .url,
-    /2026-04/,
-  );
+  const create = state.requests.find((r) => r.query.includes("mutation CreateCollection("));
+  assert.match(create.url, /2026-07/);
+  assert.match(create.query, /collectionCreate\(collection:/);
+  assert.equal(create.variables.input.products, undefined, "2026-07 input has no products; they are added after");
+  assert.ok(state.requests.some((r) => r.query.includes("mutation AddToCollection")));
   assert.equal(
     (
       await call("update_collection", {
-        confirm: true,
+        dryRun: false,
         id: gid("Collection"),
         title: "Updated",
       })
     ).isError,
     undefined,
   );
+  assert.match(state.requests.find((r) => r.query.includes("mutation UpdateCollection(")).url, /2026-07/);
   assert.equal(
     (
-      await call("add_to_collection", {
-        confirm: true,
-        collectionId: gid("Collection"),
-        productIds: [gid("Product")],
+      await call("update_collection", {
+        dryRun: false,
+        id: gid("Collection"),
+        addProductIds: [gid("Product")],
       })
     ).isError,
     undefined,
@@ -540,7 +552,7 @@ test("collection create and update use the supported legacy contract and explici
 test("smart collections use rules and reject manual membership before a write", async (t) => {
   const { call, state } = await fixture(t);
   const r = await call("create_collection", {
-    confirm: true,
+    dryRun: false,
     title: "Smart",
     ruleSet: {
       appliedDisjunctively: false,
@@ -548,11 +560,12 @@ test("smart collections use rules and reject manual membership before a write", 
     },
   });
   assert.equal(r.isError, undefined, JSON.stringify(r));
+  assert.match(state.requests.find((r) => r.query.includes("mutation CreateCollectionLegacy")).url, /2026-04/, "rule sets keep the legacy input");
   const before = state.requests.length;
-  const rejected = await call("add_to_collection", {
-    confirm: true,
-    collectionId: gid("Collection"),
-    productIds: [gid("Product")],
+  const rejected = await call("update_collection", {
+    dryRun: false,
+    id: gid("Collection"),
+    addProductIds: [gid("Product")],
   });
   assert.equal(rejected.isError, true);
   assert.ok(
@@ -562,7 +575,7 @@ test("smart collections use rules and reject manual membership before a write", 
 test("inventory uses server-side compare-and-set and refuses a stale read", async (t) => {
   const { call, state } = await fixture(t);
   const args = {
-    confirm: true,
+    dryRun: false,
     inventoryItemId: gid("InventoryItem"),
     locationId: gid("Location"),
     quantity: 9,
@@ -588,7 +601,7 @@ test("inventory uses server-side compare-and-set and refuses a stale read", asyn
 test("discounts map audiences and minimum requirements to current input types", async (t) => {
   const { call, state } = await fixture(t);
   const args = {
-    confirm: true,
+    dryRun: false,
     title: "VIP offer",
     code: "VIP15",
     percentage: 15,
@@ -612,33 +625,11 @@ test("discounts map audiences and minimum requirements to current input types", 
   });
   assert.equal(all.isError, undefined, JSON.stringify(all));
 });
-test("bulk status updates reject oversized selections before writes and read back each item", async (t) => {
-  const { call, state } = await fixture(t);
-  assert.equal(
-    (
-      await call("bulk_update_product_status", {
-        confirm: true,
-        productIds: [gid("Product"), gid("Product", 2)],
-        status: "ACTIVE",
-        maxProducts: 1,
-      })
-    ).isError,
-    true,
-  );
-  assert.ok(state.requests.every((r) => !r.query.includes("mutation")));
-  const r = await call("bulk_update_product_status", {
-    confirm: true,
-    collectionId: gid("Collection"),
-    status: "ACTIVE",
-  });
-  assert.equal(r.isError, undefined, JSON.stringify(r));
-  assert.equal(r.structuredContent.succeeded, 1);
-});
 test("partial writes preserve succeeded steps and do not replay mutations", async (t) => {
   const { call, state } = await fixture(t);
   state.reject = "CreateVariants";
   const r = await call("create_product", {
-    confirm: true,
+    dryRun: false,
     title: "Partial",
     options: ["Size"],
     variants: [
@@ -653,11 +644,14 @@ test("partial writes preserve succeeded steps and do not replay mutations", asyn
     1,
   );
 });
-test("missing scopes and missing confirmation cannot send writes", async (t) => {
+test("missing scopes and the default dry run cannot send writes", async (t) => {
   const { call, state } = await fixture(t);
-  await assert.rejects(call("create_product", { title: "No approval" }));
+  const preview = await call("create_product", { title: "No approval" });
+  assert.equal(preview.structuredContent.dryRun, true);
+  assert.equal(preview.structuredContent.wouldCreate.product.title, "No approval");
+  assert.ok(state.requests.every((r) => !r.query.includes("mutation")));
   state.scopes = [];
-  const r = await call("create_product", { confirm: true, title: "No scope" });
+  const r = await call("create_product", { dryRun: false, title: "No scope" });
   assert.equal(r.isError, true);
   assert.deepEqual(r.structuredContent.missingScopes, ["write_products"]);
   assert.ok(state.requests.every((r) => !r.query.includes("mutation")));
@@ -666,7 +660,7 @@ test("readback failure keeps the successful mutation visible", async (t) => {
   const { call, state } = await fixture(t);
   state.failReadback = true;
   const r = await call("update_product", {
-    confirm: true,
+    dryRun: false,
     id: gid("Product"),
     title: "Changed",
   });
@@ -675,34 +669,33 @@ test("readback failure keeps the successful mutation visible", async (t) => {
 });
 test("analytics returns tables and chart metadata", async (t) => {
   const { call } = await fixture(t);
-  const r = await call("run_analytics_query", {
+  const r = await call("report", {
+    report: "analytics",
+    stores: ["fixture"],
     query: "FROM sales SHOW total_sales TIMESERIES day SINCE -7d",
   });
   assert.equal(r.isError, undefined, JSON.stringify(r));
-  assert.equal(r.structuredContent.rowCount, 1);
-  assert.equal(r.structuredContent.chartHint.type, "line");
+  const store = r.structuredContent.results[0];
+  assert.equal(store.ok, true, JSON.stringify(store));
+  assert.equal(store.result.rowCount, 1);
+  assert.equal(store.result.chartHint.type, "line");
 });
 test("image upload returns the processed CDN URL and can resume by ID", async (t) => {
   const { call } = await fixture(t);
   const r = await call("upload_image", {
-    confirm: true,
+    dryRun: false,
     sourceUrl: "https://example.com/image.png",
   });
   assert.equal(r.isError, undefined, JSON.stringify(r));
   assert.equal(r.structuredContent.status, "READY");
   assert.equal(
-    (await call("get_uploaded_image", { id: gid("MediaImage") })).isError,
+    (await call("get", { resource: "uploaded_image", id: gid("MediaImage") })).isError,
     undefined,
   );
 });
-test("bulk exports resume by ID without treating partial output as complete", async (t) => {
+test("bulk operations resume by ID without treating partial output as complete", async (t) => {
   const { call } = await fixture(t);
-  const r = await call("bulk_export_start", {
-    confirm: true,
-    query: "{ products { edges { node { id } } } }",
-  });
-  assert.equal(r.isError, undefined, JSON.stringify(r));
-  const status = await call("bulk_export_status", { id: gid("BulkOperation") });
+  const status = await call("get", { resource: "bulk_operation", id: gid("BulkOperation") });
   assert.equal(status.structuredContent.complete, false);
   assert.equal(status.structuredContent.partial, true);
 });
@@ -722,7 +715,7 @@ test("schema tool catches nonexistent fields without a store API request", async
 test("default product price creates a default variant", async (t) => {
   const { call, state } = await fixture(t);
   const r = await call("create_product", {
-    confirm: true,
+    dryRun: false,
     title: "Default",
     price: "12.00",
   });
@@ -832,4 +825,92 @@ test("image processing failure remains an error", async () => {
     uploadImage(w, { sourceUrl: "https://cdn.shopify.com/image.png" }),
     /processing failed/,
   );
+});
+
+test("every guided write tool defaults to dryRun:true and none takes confirm", async (t) => {
+  const { tools } = await fixture(t);
+  const { registerParityTools } = await import("../dist/parity-tools.js");
+  registerParityTools({ registerTool: (name, definition, callback) => tools.set(name, { definition, callback }) });
+  const writes = [...tools].filter(([, tool]) => tool.definition.annotations?.readOnlyHint === false);
+  assert.ok(writes.length >= 14, `${writes.length} write tools`);
+  for (const [name, tool] of writes) {
+    const shape = tool.definition.inputSchema.shape;
+    assert.ok(shape.dryRun, `${name} has dryRun`);
+    assert.equal(shape.dryRun.parse(undefined), true, `${name} defaults to a dry run`);
+    assert.equal(shape.confirm, undefined, `${name} has no confirm`);
+  }
+});
+
+test("update_product previews by default and changes tags with tagsAdd and tagsRemove, never a full replace", async (t) => {
+  const { call, state } = await fixture(t);
+  state.product = { ...state.product, tags: ["keep", "old"] };
+  const preview = await call("update_product", { id: gid("Product"), title: "New", addTags: ["sale"], removeTags: ["old"] });
+  assert.equal(preview.isError, undefined, JSON.stringify(preview));
+  assert.equal(preview.structuredContent.dryRun, true);
+  assert.equal(preview.structuredContent.before.title, "Fixture product");
+  assert.deepEqual(preview.structuredContent.wouldApply.addTags, ["sale"]);
+  assert.deepEqual(preview.structuredContent.wouldApply.removeTags, ["old"]);
+  assert.ok(state.requests.every((r) => !r.query.includes("mutation")), "a dry run sends no mutation");
+
+  const applied = await call("update_product", { dryRun: false, id: gid("Product"), title: "New", addTags: ["sale"], removeTags: ["old"] });
+  assert.equal(applied.isError, undefined, JSON.stringify(applied));
+  const update = state.requests.find((r) => r.query.includes("mutation UpdateProduct"));
+  assert.equal(update.variables.input.tags, undefined, "productUpdate does not replace the tag list");
+  assert.deepEqual(state.requests.find((r) => r.query.includes("mutation AddTags")).variables.tags, ["sale"]);
+  assert.deepEqual(state.requests.find((r) => r.query.includes("mutation RemoveTags")).variables.tags, ["old"]);
+  assert.deepEqual(state.product.tags, ["keep", "sale"]);
+});
+
+test("update_product replaceTags says it replaces all tags and shows what would be removed", async (t) => {
+  const { call, state, tools } = await fixture(t);
+  assert.match(tools.get("shopify_update_product").definition.inputSchema.shape.replaceTags.description, /replaces all tags/i);
+  assert.throws(() => tools.get("shopify_update_product").definition.inputSchema.parse({ store: "fixture", id: gid("Product"), tags: ["x"] }), "the ambiguous tags argument is gone");
+  state.product = { ...state.product, tags: ["keep", "old"] };
+  const preview = await call("update_product", { id: gid("Product"), replaceTags: ["keep", "new"] });
+  assert.deepEqual(preview.structuredContent.wouldApply.replaceTags, ["keep", "new"]);
+  assert.deepEqual(preview.structuredContent.wouldApply.tagsRemoved, ["old"]);
+  assert.match(preview.structuredContent.wouldApply.tagsNotice, /replaces every tag/);
+  const both = await call("update_product", { id: gid("Product"), replaceTags: ["a"], addTags: ["b"] });
+  assert.equal(both.isError, true);
+  await call("update_product", { dryRun: false, id: gid("Product"), replaceTags: ["keep", "new"] });
+  assert.deepEqual(state.requests.find((r) => r.query.includes("mutation UpdateProduct")).variables.input.tags, ["keep", "new"]);
+});
+
+test("set_inventory, create_discount, create_collection and upload_image preview without writing by default", async (t) => {
+  const { call, state } = await fixture(t);
+  const inventory = await call("set_inventory", { inventoryItemId: gid("InventoryItem"), locationId: gid("Location"), quantity: 9, compareQuantity: 5 });
+  assert.deepEqual(inventory.structuredContent.wouldApply.available, { from: 5, to: 9 });
+  assert.ok(inventory.structuredContent.before);
+  const discount = await call("create_discount", { title: "T", code: "T10", percentage: 10, startsAt: "2026-09-07T00:00:00Z", customerEligibility: "all_customers" });
+  assert.equal(discount.structuredContent.wouldCreate.code, "T10");
+  const collection = await call("create_collection", { title: "C", productIds: [gid("Product")] });
+  assert.equal(collection.structuredContent.dryRun, true);
+  const update = await call("update_collection", { id: gid("Collection"), title: "D" });
+  assert.equal(update.structuredContent.before.title, "Fixture collection");
+  assert.equal(update.structuredContent.wouldApply.title, "D");
+  const image = await call("upload_image", { sourceUrl: "https://example.com/a.png" });
+  assert.equal(image.structuredContent.dryRun, true);
+  assert.equal(state.quantity, 5);
+  assert.ok(state.requests.every((r) => !r.query.includes("mutation")));
+});
+
+test("shopify_search, shopify_get and shopify_report validate their resource-specific inputs", async (t) => {
+  const { call } = await fixture(t);
+  const many = await call("search", { resource: "collections", stores: ["fixture"] });
+  assert.equal(many.isError, undefined, JSON.stringify(many));
+  assert.equal(many.structuredContent.results[0].ok, true);
+  assert.ok(many.structuredContent.results[0].result.collections);
+  const both = await call("search", { resource: "collections", stores: ["fixture"], store: "fixture" });
+  assert.equal(both.isError, true);
+  const noType = await call("search", { resource: "metaobjects" });
+  assert.equal(noType.isError, true);
+  assert.match(noType.structuredContent.error, /needs type/);
+  const wrongId = await call("get", { resource: "order", id: gid("Product") });
+  assert.equal(wrongId.isError, true);
+  assert.match(wrongId.structuredContent.error, /Order GID/);
+  const noSkus = await call("report", { report: "compare_prices", stores: ["fixture"] });
+  assert.equal(noSkus.isError, true);
+  assert.match(noSkus.content[0].text, /compare_prices needs skus/);
+  const tooMany = await call("report", { report: "list_unfulfilled_orders", stores: ["fixture"], first: 250 });
+  assert.equal(tooMany.isError, true);
 });

@@ -7,3 +7,5 @@ stores.json
 *.log
 coverage/
 
+.wrangler/
+.dev.vars

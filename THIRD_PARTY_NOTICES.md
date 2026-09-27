@@ -32,11 +32,4 @@ The compressed Admin schemas were retrieved from Shopify's public developer sche
 - https://shopify.dev/admin-graphql-direct-proxy/2026-04
 - https://shopify.dev/admin-graphql-direct-proxy/2026-07
 
-Generated declarations derive from these schemas through Shopify's API code-generation preset.
 Dependencies retain their respective licenses in their distributed packages.
-
-## Shopify Dawn
-
-Preview generation downloads Shopify Dawn at commit `258f00f64365e2018ca4c62778a6bf55a5d3cd18` from https://github.com/Shopify/dawn.
-Dawn source is not bundled in this package. The cached checkout retains its upstream `LICENSE.md`.
-Generated themes are for Shopify stores.
