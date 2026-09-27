@@ -18,7 +18,28 @@ export declare const DESTRUCTIVE_WORDS: readonly ["delete", "remove", "cancel", 
  * or change what customers see at once. They need confirm like the name-matched ones.
  */
 export declare const DESTRUCTIVE_MUTATIONS: ReadonlySet<string>;
-export declare function isDestructive(name: string): boolean;
+type Arguments = Readonly<Record<string, unknown>>;
+/** One argument-driven rule: the mutation is destructive only when `when` holds for its arguments. */
+export interface DestructiveArgumentRule {
+    /** Mutation name, or "*" for every mutation. */
+    mutation: string;
+    /** Why the call is destructive, shown by shopify_describe_action. */
+    reason: string;
+    when: (args: Arguments) => boolean;
+}
+/**
+ * Mutations whose names look safe but whose arguments can make them destructive. The arguments
+ * are the call's resolved values: inline literals with variables substituted. Keep this the only
+ * table of argument rules.
+ */
+export declare const DESTRUCTIVE_ARGUMENT_RULES: readonly DestructiveArgumentRule[];
+/** Reasons a call to `name` can be destructive depending on its arguments (for describe output). */
+export declare function destructiveWhen(name: string): string[];
+/**
+ * Whether a mutation is destructive. By name alone when args is omitted; with args (the call's
+ * resolved argument values), argument rules from DESTRUCTIVE_ARGUMENT_RULES apply as well.
+ */
+export declare function isDestructive(name: string, args?: Arguments): boolean;
 /**
  * Mutations refused by default: ones that mint credentials or change this app's own installation
  * or billing; webhook and server-pixel subscriptions, which deliver data to an endpoint with the
@@ -28,7 +49,12 @@ export declare function isDestructive(name: string): boolean;
  * ACTIONS_DENYLIST_REPLACE=1 makes it replace this list instead.
  */
 export declare const DEFAULT_DENYLIST: readonly string[];
-export declare function denylist(env?: NodeJS.ProcessEnv): string[];
+/**
+ * The default denylist plus ACTIONS_DENYLIST (or only ACTIONS_DENYLIST with
+ * ACTIONS_DENYLIST_REPLACE). Read from runtimeEnv(): process.env on Node, the Worker's env on
+ * Cloudflare, where process.env does not hold the Worker's vars and secrets.
+ */
+export declare function denylist(env?: Readonly<Record<string, string | undefined>>): string[];
 export declare function isDenied(name: string, list?: readonly string[]): boolean;
 /** Mutations that already have a dedicated, guided tool. */
 export declare const DEDICATED_TOOLS: Readonly<Record<string, readonly string[]>>;
@@ -85,6 +111,8 @@ export interface InputFieldDescription {
     /** Set when the nested fields were not expanded (depth limit or a recursive type). */
     seeType?: string;
 }
+/** Scalar fields that label a record in previews and default selections. */
+export declare const LABEL_FIELDS: readonly ["title", "name", "displayName", "handle", "sku", "email", "status", "code"];
 /** Default selection for a mutation payload: scalars, record ids and labels, and every *userErrors list. */
 export declare function defaultSelection(payload: GraphQLOutputType): string;
 export declare function findMutation(schema: GraphQLSchema, name: string): GraphQLField<unknown, unknown> | undefined;
@@ -97,6 +125,8 @@ export declare function describeAction(name: string, version: string, depth?: nu
     category: "checkout" | "content" | "customers" | "discounts" | "fulfillment" | "inventory" | "marketing" | "markets" | "orders" | "platform" | "pos" | "products" | "subscriptions";
     destructive: boolean;
     confirmRequired?: string | undefined;
+    destructiveWhen?: string[] | undefined;
+    confirmRequiredWhen?: string | undefined;
     denied: boolean;
     deprecated?: string | undefined;
     dedicatedTools: string[];
@@ -123,3 +153,4 @@ export declare function describeAction(name: string, version: string, depth?: nu
     document: string;
     variablesTemplate: Record<string, unknown>;
 }>;
+export {};

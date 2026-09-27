@@ -1,14 +1,15 @@
 import { z } from "zod/v4";
-import { workflow, textResult, toolError, WorkflowError, } from "./admin-workflows.js";
+import { workflow, textResult, toolError, WorkflowError, applyTagChanges, checkTagArgs, tagPreview, } from "./admin-workflows.js";
 import { PDOCS } from "./parity-documents.js";
+import { PARITY_API_VERSION } from "./api-versions.js";
+import { tagFields } from "./admin-tools.js";
 import { mapConcurrent } from "./concurrency.js";
 import { resolveStoreTargets } from "./config.js";
 import { REQUIRED_SCOPES, VARIABLE_SCOPE_TOOLS } from "./scope-requirements.js";
-// These tools pin their Admin GraphQL operations to 2026-04 (the newest quarterly
-// version bundled with the server at the time they were written) rather than
-// following each store's own configured apiVersion, so their behavior stays fixed
+// These tools pin their Admin GraphQL operations to PARITY_API_VERSION (see api-versions.ts)
+// rather than following each store's own configured apiVersion, so their behavior stays fixed
 // regardless of what a store is otherwise configured for.
-const PARITY_API_VERSION = "2026-04";
+export { PARITY_API_VERSION };
 const store = z.string().min(1).max(64);
 const gid = (type) => z.string().regex(new RegExp(`^gid://shopify/${type}/[0-9]+$`));
 // Some ids returned by these tools (delivery zones, method definitions, rate
@@ -45,10 +46,8 @@ function pick(a, keys) {
             out[key] = a[key];
     return out;
 }
-const DRAFT_ORDER_INPUT_FIELDS = ["email", "note", "tags"];
-const ORDER_INPUT_FIELDS = ["tags", "note", "email", "shippingAddress"];
-const CUSTOMER_INPUT_FIELDS = ["tags", "note", "email"];
-const PAGE_INPUT_FIELDS = ["title", "handle", "body", "isPublished"];
+const ORDER_INPUT_FIELDS = ["note", "email", "shippingAddress"];
+const CUSTOMER_INPUT_FIELDS = ["note", "email"];
 /**
  * Canonical form of a decimal money string ("12", "12.0" and "12.00" all become "12"),
  * compared as text so there is no floating-point rounding. Returns undefined for
@@ -75,6 +74,10 @@ export function sameMoney(a, b) {
     return left !== undefined && left === canonicalDecimal(b);
 }
 const SKU_LOOKUP_MAX_PAGES = 20;
+// Variants per nodes(ids:) read. Shopify responses are capped at 50,000 characters here (see
+// shopify.ts), and a variant with a long product title can take about 700, so 100 per read could
+// fail the verification read-back after a successful write.
+const VARIANT_READ_BATCH = 50;
 /**
  * Every variant whose SKU exactly equals `sku` (case-sensitive, surrounding whitespace
  * ignored). Shopify's `sku:` search is a prefix match, so results are filtered here, and
@@ -84,8 +87,8 @@ async function findVariantsByExactSku(w, sku) {
     const wanted = sku.trim();
     const ids = await findVariantIdsByExactSku(w, wanted);
     const variants = [];
-    for (let i = 0; i < ids.length; i += 100) {
-        const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + 100) });
+    for (let i = 0; i < ids.length; i += VARIANT_READ_BATCH) {
+        const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + VARIANT_READ_BATCH) });
         for (const v of d.nodes ?? [])
             if (v?.id && typeof v.sku === "string" && v.sku.trim() === wanted)
                 variants.push(v);
@@ -172,6 +175,38 @@ export function deriveStatus(outcomes) {
     }
     return "partial";
 }
+function itemOutcome(outcome) {
+    return { outcome, ok: outcome === "applied" };
+}
+/**
+ * The outcome of one write that threw: "unknown" when the request may have reached Shopify
+ * (network error or timeout after sending), otherwise "rejected".
+ */
+function failedItem(error) {
+    const unknown = error instanceof WorkflowError && error.details?.outcome === "unknown";
+    return {
+        ...itemOutcome(unknown ? "unknown" : "rejected"),
+        error: error instanceof Error ? error.message : String(error),
+        ...(unknown
+            ? { doNotBlindlyRetry: "The write may or may not have applied. Read it back before retrying." }
+            : {}),
+    };
+}
+/** Store status and counts for per-item writes, derived like shopify_update_prices. */
+function itemSummary(results) {
+    const status = deriveStatus(results.map((r) => r.outcome));
+    return {
+        dryRun: false,
+        status,
+        results,
+        succeeded: results.filter((r) => r.outcome === "applied").length,
+        failed: results.filter((r) => r.outcome === "rejected").length,
+        unknown: results.filter((r) => r.outcome === "unknown").length,
+        ...(status === "unknown" || status === "partial"
+            ? { notice: "Items with outcome unknown may have applied. Read them back before retrying; retry only rejected items." }
+            : {}),
+    };
+}
 async function updatePricesCore(w, a) {
     const needsCost = a.skus.some((s) => s.unitCost !== undefined);
     await w.requireScopes([
@@ -238,6 +273,11 @@ async function updatePricesCore(w, a) {
         list.push(r);
         byProduct.set(r.variant.product.id, list);
     }
+    const requestedOf = (entry) => ({
+        ...(entry.price ? { price: entry.price } : {}),
+        ...(entry.compareAtPrice !== undefined ? { compareAtPrice: entry.compareAtPrice } : {}),
+        ...(entry.unitCost ? { unitCost: entry.unitCost } : {}),
+    });
     const results = [];
     // Entries whose mutation response looked fine and now need an independent readback.
     const provisional = [];
@@ -313,8 +353,8 @@ async function updatePricesCore(w, a) {
     if (provisional.length) {
         const ids = [...new Set(provisional.map((p) => p.variant.id))];
         try {
-            for (let i = 0; i < ids.length; i += 100) {
-                const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + 100) });
+            for (let i = 0; i < ids.length; i += VARIANT_READ_BATCH) {
+                const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + VARIANT_READ_BATCH) });
                 for (const v of d.nodes ?? [])
                     if (v?.id)
                         verified.set(v.id, v);
@@ -330,6 +370,7 @@ async function updatePricesCore(w, a) {
                 sku: entry.sku,
                 productId,
                 variantId: variant.id,
+                requested: requestedOf(entry),
                 outcome: "applied_unverified",
                 verification: "verification_failed",
                 mutationResponse,
@@ -347,6 +388,7 @@ async function updatePricesCore(w, a) {
             sku: entry.sku,
             productId,
             variantId: variant.id,
+            requested: requestedOf(entry),
             outcome: mismatch ? "mismatch" : "applied",
             verification: mismatch ? "mismatch" : "verified",
             mutationResponse,
@@ -384,6 +426,29 @@ async function updatePricesCore(w, a) {
             : {}),
     };
 }
+/** A workflow for one store, pinned to PARITY_API_VERSION. */
+async function parityWorkflow(alias) {
+    const w = await workflow(alias);
+    w.store = { ...w.store, apiVersion: PARITY_API_VERSION };
+    return w;
+}
+/** A tool error that keeps the store, and any completed writes, in its details. */
+function failure(w, error, write) {
+    if (!w)
+        return toolError(error, write);
+    return toolError(new WorkflowError(error instanceof Error ? error.message : String(error), {
+        store: w.store.alias,
+        shop: w.store.shop,
+        ...(w.completed.length
+            ? {
+                completedSteps: w.completed,
+                outcome: "partial",
+                notice: "Some writes succeeded. Read back before retrying.",
+            }
+            : {}),
+        ...(error instanceof WorkflowError ? error.details : {}),
+    }), write);
+}
 export function registerParityTools(server) {
     function register(name, description, shape, write, handler) {
         server.registerTool(`shopify_${name}`, {
@@ -401,42 +466,23 @@ export function registerParityTools(server) {
             const a = args;
             let w;
             try {
-                w = await workflow(a.store);
-                w.store = { ...w.store, apiVersion: PARITY_API_VERSION };
+                w = await parityWorkflow(a.store);
                 const { store: _store, ...input } = a;
                 const result = await handler(w, input);
-                return textResult({
-                    store: w.store.alias,
-                    shop: w.store.shop,
-                    apiVersion: w.store.apiVersion,
-                    ...result,
-                });
+                return textResult({ store: w.store.alias, shop: w.store.shop, apiVersion: w.store.apiVersion, ...result }, false, write);
             }
             catch (error) {
-                if (w)
-                    return toolError(new WorkflowError(error instanceof Error ? error.message : String(error), {
-                        store: w.store.alias,
-                        shop: w.store.shop,
-                        ...(w.completed.length
-                            ? {
-                                completedSteps: w.completed,
-                                outcome: "partial",
-                                notice: "Some writes succeeded. Read back before retrying.",
-                            }
-                            : {}),
-                        ...(error instanceof WorkflowError ? error.details : {}),
-                    }));
-                return toolError(error);
+                return failure(w, error, write);
             }
         });
     }
-    // 1. Prices
-    register("update_prices", "Set price, compareAtPrice and/or unit cost for up to 250 SKUs on one store. Resolves each SKU to the variants whose SKU matches exactly (Shopify search is a prefix match) and groups writes by product. A SKU shared by several variants is skipped unless allowDuplicates:true. Duplicate SKU rows with conflicting values are rejected before any write; identical duplicates are collapsed. After a successful write, verifies each variant with a separate readback query (not just the mutation response) and reports per-item outcome (applied, rejected, not_found, ambiguous, unknown, skipped, mismatch) plus an overall store status (ok, partial, failed, unknown). Defaults to dryRun:true.", { skus: skusField, allowDuplicates: allowDuplicatesField }, true, (w, a) => updatePricesCore(w, a));
-    server.registerTool("shopify_update_prices_many", {
-        description: "Apply the same shopify_update_prices SKU list to multiple stores in parallel. Defaults to dryRun:true; each store gets its own outcome.",
+    // 1. Prices (one store or several)
+    server.registerTool("shopify_update_prices", {
+        description: "Set price, compareAtPrice and/or unit cost for up to 250 SKUs on one store (store) or the same list on several stores in parallel (stores). Resolves each SKU to the variants whose SKU matches exactly (Shopify search is a prefix match) and groups writes by product. A SKU shared by several variants is skipped unless allowDuplicates:true. Duplicate SKU rows with conflicting values are rejected before any write; identical duplicates are collapsed. After a write, verifies each variant with a separate read-back query and reports per-item outcome (applied, applied_unverified, rejected, not_found, ambiguous, unknown, skipped, mismatch) and a store status (ok, unverified, partial, failed, unknown). Large results are trimmed, never dropped: status, counts and every item that did not apply are always returned. Defaults to dryRun:true.",
         inputSchema: z
             .object({
-            stores: z.array(store).min(1).max(50),
+            store: store.optional().describe("One store alias. Give store or stores."),
+            stores: z.array(store).min(1).max(50).optional().describe("Several store aliases; each store gets its own outcome."),
             skus: skusField,
             allowDuplicates: allowDuplicatesField,
             dryRun: dryRunField,
@@ -450,21 +496,33 @@ export function registerParityTools(server) {
         },
     }, async (args) => {
         const a = args;
+        const write = !a.dryRun;
+        if (Boolean(a.store) === Boolean(a.stores))
+            return toolError(new Error("Give exactly one of store or stores."));
+        if (a.store) {
+            let w;
+            try {
+                w = await parityWorkflow(a.store);
+                const result = await updatePricesCore(w, { skus: a.skus, dryRun: a.dryRun, allowDuplicates: a.allowDuplicates });
+                return textResult({ store: w.store.alias, shop: w.store.shop, apiVersion: w.store.apiVersion, ...result }, false, write);
+            }
+            catch (error) {
+                return failure(w, error, write);
+            }
+        }
         try {
             // Refuses two aliases for one shop, so no price change runs twice.
             const requested = (await resolveStoreTargets(a.stores)).map((target) => target.store?.alias ?? target.requestedAlias);
             const results = await mapConcurrent(requested, async (alias) => {
                 try {
-                    const w = await workflow(alias);
-                    w.store = { ...w.store, apiVersion: PARITY_API_VERSION };
+                    const w = await parityWorkflow(alias);
                     const result = await updatePricesCore(w, {
                         skus: a.skus,
                         dryRun: a.dryRun,
                         allowDuplicates: a.allowDuplicates,
                     });
-                    // Derive ok from the store's own status (task 8d): the batch wrapper never
-                    // reports ok:true just because updatePricesCore returned without throwing.
-                    // "unverified" (read-back failed) and "partial" are not ok.
+                    // The store is ok only when its own status is ok: "unverified" (read-back failed)
+                    // and "partial" are not.
                     const ok = a.dryRun ? true : result.status === "ok";
                     return { store: w.store.alias, ok, ...result };
                 }
@@ -484,33 +542,15 @@ export function registerParityTools(server) {
                 succeeded: results.filter((r) => r.ok).length,
                 unverified: results.filter((r) => !r.ok && r.status === "unverified").length,
                 failed: results.filter((r) => !r.ok).length,
-            });
+            }, false, write);
         }
         catch (error) {
-            return toolError(error);
+            return toolError(error, write);
         }
     });
     // 2. Metafields
-    register("get_metafields", "Get metafields for any owner GID (product, order, customer, collection, shop, etc.).", { ownerId: anyGid, namespace: z.string().max(255).optional(), key: z.string().max(255).optional(), ...page }, false, async (w, a) => {
-        const d = await w.run(PDOCS.getMetafields, {
-            id: a.ownerId,
-            first: a.first,
-            after: a.after,
-            namespace: a.namespace,
-        });
-        if (!d.node)
-            throw Error("Owner not found in this store.");
-        let nodes = d.node.metafields?.nodes ?? [];
-        if (a.key)
-            nodes = nodes.filter((m) => m.key === a.key);
-        return {
-            ownerId: a.ownerId,
-            metafields: nodes,
-            pageInfo: d.node.metafields?.pageInfo,
-        };
-    });
-    register("set_metafields", "Set up to 25 metafields in one call (metafieldsSet) for any owner GID. Defaults to dryRun:true.", {
-        metafields: z
+    register("metafields", "Set (metafieldsSet) and/or delete (metafieldsDelete) up to 25 metafields each, for any owner GID. Read them with shopify_get resource metafields. Defaults to dryRun:true.", {
+        set: z
             .array(z
             .object({
             ownerId: anyGid,
@@ -521,19 +561,9 @@ export function registerParityTools(server) {
         })
             .strict())
             .min(1)
-            .max(25),
-    }, true, async (w, a) => {
-        if (a.dryRun)
-            return {
-                dryRun: true,
-                wouldSet: a.metafields,
-                notice: "Pass dryRun:false to apply.",
-            };
-        const d = await w.run(PDOCS.metafieldsSet, { metafields: a.metafields });
-        return { dryRun: false, metafields: d.metafieldsSet?.metafields };
-    });
-    register("delete_metafields", "Delete up to 25 metafields identified by owner GID, namespace and key. Defaults to dryRun:true.", {
-        metafields: z
+            .max(25)
+            .optional(),
+        delete: z
             .array(z
             .object({
             ownerId: anyGid,
@@ -542,308 +572,80 @@ export function registerParityTools(server) {
         })
             .strict())
             .min(1)
-            .max(25),
+            .max(25)
+            .optional(),
     }, true, async (w, a) => {
+        if (!a.set?.length && !a.delete?.length)
+            throw Error("Supply set and/or delete.");
         if (a.dryRun)
             return {
                 dryRun: true,
-                wouldDelete: a.metafields,
+                ...(a.set ? { wouldSet: a.set } : {}),
+                ...(a.delete ? { wouldDelete: a.delete } : {}),
                 notice: "Pass dryRun:false to apply.",
             };
-        const d = await w.run(PDOCS.metafieldsDelete, {
-            metafields: a.metafields,
-        });
-        return {
-            dryRun: false,
-            deletedMetafields: d.metafieldsDelete?.deletedMetafields,
-        };
+        const out = { dryRun: false };
+        if (a.set?.length) {
+            const d = await w.run(PDOCS.metafieldsSet, { metafields: a.set });
+            out.metafields = d.metafieldsSet?.metafields;
+        }
+        if (a.delete?.length) {
+            const d = await w.run(PDOCS.metafieldsDelete, { metafields: a.delete });
+            out.deletedMetafields = d.metafieldsDelete?.deletedMetafields;
+        }
+        return out;
     });
-    // 3. Metaobjects
-    register("list_metaobjects", "List metaobjects of one type with cursor pagination.", { type: z.string().min(1), ...page }, false, async (w, a) => {
-        await w.requireScopes(["read_metaobjects"]);
-        return w.run(PDOCS.listMetaobjects, a);
-    });
-    register("upsert_metaobject", "Create or update a metaobject by type and handle (metaobjectUpsert). Defaults to dryRun:true.", {
-        type: z.string().min(1),
-        handle: z.string().min(1),
-        fields: z
-            .array(z.object({ key: z.string().min(1), value: z.string() }).strict())
-            .min(1)
-            .max(50),
-    }, true, async (w, a) => {
-        await w.requireScopes(["write_metaobjects"]);
-        if (a.dryRun)
-            return {
-                dryRun: true,
-                wouldUpsert: { type: a.type, handle: a.handle, fields: a.fields },
-                notice: "Pass dryRun:false to apply.",
-            };
-        const d = await w.run(PDOCS.metaobjectUpsert, {
-            handle: { type: a.type, handle: a.handle },
-            metaobject: { handle: a.handle, fields: a.fields },
-        });
-        return { dryRun: false, metaobject: d.metaobjectUpsert?.metaobject };
-    });
-    // 4. Redirects
-    register("list_redirects", "List URL redirects with cursor pagination. Requires read_online_store_navigation.", { query: z.string().max(1000).optional(), ...page }, false, async (w, a) => {
-        await w.requireScopes(["read_online_store_navigation"]);
-        return w.run(PDOCS.listRedirects, a);
-    });
-    register("create_redirects", "Create up to 100 URL redirects with per-redirect outcomes. Requires write_online_store_navigation. Defaults to dryRun:true.", {
-        redirects: z
+    // 3. Redirects
+    register("redirects", "Create and/or delete up to 100 URL redirects each, with a per-redirect outcome (applied, rejected or unknown) and a store status. List them with shopify_search resource redirects. Requires write_online_store_navigation. Defaults to dryRun:true.", {
+        create: z
             .array(z
             .object({ path: z.string().min(1), target: z.string().min(1) })
             .strict())
             .min(1)
-            .max(100),
+            .max(100)
+            .optional(),
+        delete: z.array(gid("UrlRedirect")).min(1).max(100).optional().describe("Redirect IDs to delete."),
     }, true, async (w, a) => {
+        if (!a.create?.length && !a.delete?.length)
+            throw Error("Supply create and/or delete.");
         await w.requireScopes(["write_online_store_navigation"]);
         if (a.dryRun)
             return {
                 dryRun: true,
-                wouldCreate: a.redirects,
+                ...(a.create ? { wouldCreate: a.create } : {}),
+                ...(a.delete ? { wouldDelete: a.delete } : {}),
                 notice: "Pass dryRun:false to apply.",
             };
         const results = [];
-        for (const r of a.redirects) {
+        for (const r of a.create ?? []) {
             try {
                 const d = await w.run(PDOCS.createRedirect, { urlRedirect: r });
-                results.push({ ...r, ok: true, urlRedirect: d.urlRedirectCreate?.urlRedirect });
+                results.push({ action: "create", ...r, ...itemOutcome("applied"), urlRedirect: d.urlRedirectCreate?.urlRedirect });
             }
             catch (error) {
-                results.push({
-                    ...r,
-                    ok: false,
-                    error: error instanceof Error ? error.message : String(error),
-                });
+                results.push({ action: "create", ...r, ...failedItem(error) });
             }
         }
-        return {
-            dryRun: false,
-            results,
-            succeeded: results.filter((r) => r.ok).length,
-            failed: results.filter((r) => !r.ok).length,
-        };
-    });
-    register("delete_redirects", "Delete up to 100 URL redirects by ID with per-ID outcomes. Requires write_online_store_navigation. Defaults to dryRun:true.", { ids: z.array(gid("UrlRedirect")).min(1).max(100) }, true, async (w, a) => {
-        await w.requireScopes(["write_online_store_navigation"]);
-        if (a.dryRun)
-            return {
-                dryRun: true,
-                wouldDelete: a.ids,
-                notice: "Pass dryRun:false to apply.",
-            };
-        const results = [];
-        for (const id of a.ids) {
+        for (const id of a.delete ?? []) {
             try {
                 const d = await w.run(PDOCS.deleteRedirect, { id });
                 results.push({
+                    action: "delete",
                     id,
-                    ok: true,
+                    ...itemOutcome("applied"),
                     deletedUrlRedirectId: d.urlRedirectDelete?.deletedUrlRedirectId,
                 });
             }
             catch (error) {
-                results.push({
-                    id,
-                    ok: false,
-                    error: error instanceof Error ? error.message : String(error),
-                });
+                results.push({ action: "delete", id, ...failedItem(error) });
             }
         }
-        return {
-            dryRun: false,
-            results,
-            succeeded: results.filter((r) => r.ok).length,
-            failed: results.filter((r) => !r.ok).length,
-        };
+        return itemSummary(results);
     });
-    // 5. Delivery profiles
-    register("list_delivery_profiles", "List delivery profiles with their zones, method definitions and current flat rates. Requires read_shipping.", { ...page }, false, async (w, a) => {
-        await w.requireScopes(["read_shipping"]);
-        return w.run(PDOCS.listDeliveryProfiles, a);
-    });
-    register("update_delivery_rate", "Change a single flat rate amount on a delivery method definition (deliveryProfileUpdate). Requires write_shipping. Defaults to dryRun:true. Always reads the rate back afterward: Shopify can return success with no userErrors while silently discarding the new amount, and this tool reports that as an error rather than a success.", {
-        deliveryProfileId: anyGid,
-        locationGroupId: anyGid,
-        zoneId: anyGid,
-        methodDefinitionId: anyGid,
-        rateDefinitionId: anyGid,
-        amount: z.string().regex(/^\d+(\.\d{1,2})?$/),
-        currencyCode: z.string().length(3),
-    }, true, async (w, a) => {
-        await w.requireScopes(["write_shipping"]);
-        if (a.dryRun)
-            return {
-                dryRun: true,
-                wouldApply: { amount: a.amount, currencyCode: a.currencyCode },
-                methodDefinitionId: a.methodDefinitionId,
-                notice: "Pass dryRun:false to apply.",
-            };
-        const profile = {
-            locationGroupsToUpdate: [
-                {
-                    id: a.locationGroupId,
-                    zonesToUpdate: [
-                        {
-                            id: a.zoneId,
-                            methodDefinitionsToUpdate: [
-                                {
-                                    id: a.methodDefinitionId,
-                                    rateDefinition: {
-                                        id: a.rateDefinitionId,
-                                        price: { amount: a.amount, currencyCode: a.currencyCode },
-                                    },
-                                },
-                            ],
-                        },
-                    ],
-                },
-            ],
-        };
-        await w.run(PDOCS.updateDeliveryRate, {
-            id: a.deliveryProfileId,
-            profile,
-        });
-        const after = await w.run(PDOCS.getDeliveryRate, {
-            profileId: a.deliveryProfileId,
-            methodId: a.methodDefinitionId,
-        });
-        if (!after.deliveryProfile)
-            throw new WorkflowError("Delivery profile not found when reading the rate back.", {
-                deliveryProfileId: a.deliveryProfileId,
-                completedSteps: w.completed,
-            });
-        const rate = after.method?.rateProvider;
-        const persistedAmount = rate?.id === a.rateDefinitionId ? rate.price?.amount : undefined;
-        if (!sameMoney(persistedAmount, a.amount))
-            throw new WorkflowError("Shopify accepted the delivery rate update with no userErrors but did not persist the new amount. This is a known Shopify silent-discard behavior; read the current rate before retrying.", {
-                methodDefinitionId: a.methodDefinitionId,
-                requestedAmount: a.amount,
-                persistedAmount,
-                completedSteps: w.completed,
-            });
-        return {
-            dryRun: false,
-            methodDefinitionId: a.methodDefinitionId,
-            appliedAmount: a.amount,
-            currencyCode: a.currencyCode,
-            verified: true,
-        };
-    });
-    // 6. Themes
-    register("list_themes", "List themes with their role (MAIN is the live theme). Requires read_themes.", { ...page }, false, async (w, a) => {
-        await w.requireScopes(["read_themes"]);
-        return w.run(PDOCS.listThemes, a);
-    });
-    register("get_theme_files", "Read theme file contents. Pass filenames to fetch specific files, or omit to page through all of them. Requires read_themes.", {
-        themeId: gid("OnlineStoreTheme"),
-        filenames: z.array(z.string().min(1)).max(50).optional(),
-        ...page,
-    }, false, async (w, a) => {
-        await w.requireScopes(["read_themes"]);
-        const d = await w.run(PDOCS.getThemeFiles, {
-            id: a.themeId,
-            filenames: a.filenames,
-            first: a.first,
-            after: a.after,
-        });
-        if (!d.theme)
-            throw Error("Theme not found in this store.");
-        return d.theme;
-    });
-    register("upsert_theme_files", "Write theme files (themeFilesUpsert). Refuses to write to the live (MAIN) theme unless allowLiveTheme:true. Requires write_themes. Defaults to dryRun:true.", {
-        themeId: gid("OnlineStoreTheme"),
-        files: z
-            .array(z
-            .object({
-            filename: z.string().min(1),
-            content: z.string().min(1).max(500000),
-        })
-            .strict())
-            .min(1)
-            .max(50),
-        allowLiveTheme: z.boolean().default(false),
-    }, true, async (w, a) => {
-        await w.requireScopes(["write_themes", "read_themes"]);
-        const list = await w.run(PDOCS.listThemes, { first: 50 });
-        const theme = (list.themes?.nodes ?? []).find((t) => t.id === a.themeId);
-        if (!theme)
-            throw Error("Theme not found in this store.");
-        if (theme.role === "MAIN" && !a.allowLiveTheme)
-            throw new WorkflowError("Refusing to write to the live (MAIN) theme without allowLiveTheme:true.", { themeId: a.themeId, role: theme.role });
-        if (a.dryRun)
-            return {
-                dryRun: true,
-                theme,
-                wouldUpsert: a.files.map((f) => f.filename),
-                notice: "Pass dryRun:false to apply.",
-            };
-        const files = a.files.map((f) => ({
-            filename: f.filename,
-            body: { type: "TEXT", value: f.content },
-        }));
-        const d = await w.run(PDOCS.upsertThemeFiles, {
-            themeId: a.themeId,
-            files,
-        });
-        return {
-            dryRun: false,
-            theme,
-            upserted: d.themeFilesUpsert?.upsertedThemeFiles,
-        };
-    });
-    // 7. Files
-    register("list_files", "List files (images, videos, generic files) with cursor pagination. Requires read_files.", { query: z.string().max(1000).optional(), ...page }, false, async (w, a) => {
-        await w.requireScopes(["read_files"]);
-        return w.run(PDOCS.listFiles, a);
-    });
-    register("delete_files", "Delete up to 100 files by ID. Requires write_files. Defaults to dryRun:true.", { ids: z.array(anyGid).min(1).max(100) }, true, async (w, a) => {
-        await w.requireScopes(["write_files"]);
-        if (a.dryRun)
-            return {
-                dryRun: true,
-                wouldDelete: a.ids,
-                notice: "Pass dryRun:false to apply.",
-            };
-        const d = await w.run(PDOCS.deleteFiles, { fileIds: a.ids });
-        return { dryRun: false, deletedFileIds: d.fileDelete?.deletedFileIds };
-    });
-    // 8. Orders
-    register("create_draft_order", "Create a draft order from line items (variant ID and quantity). Requires write_draft_orders. Defaults to dryRun:true.", {
-        email: z.string().email().optional(),
-        note: z.string().max(5000).optional(),
-        tags: z.array(z.string()).max(250).optional(),
-        lineItems: z
-            .array(z
-            .object({
-            variantId: gid("ProductVariant"),
-            quantity: z.number().int().min(1).max(100000),
-        })
-            .strict())
-            .min(1)
-            .max(250),
-    }, true, async (w, a) => {
-        await w.requireScopes(["write_draft_orders"]);
-        const input = {
-            ...pick(a, DRAFT_ORDER_INPUT_FIELDS),
-            lineItems: a.lineItems.map((l) => ({
-                variantId: l.variantId,
-                quantity: l.quantity,
-            })),
-        };
-        if (a.dryRun)
-            return {
-                dryRun: true,
-                wouldCreate: input,
-                notice: "Pass dryRun:false to apply.",
-            };
-        const d = await w.run(PDOCS.createDraftOrder, { input });
-        return { dryRun: false, draftOrder: d.draftOrderCreate?.draftOrder };
-    });
-    register("update_order", "Update order tags, note, email and/or shipping address (orderUpdate) with a before/after result. Requires write_orders. Defaults to dryRun:true.", {
+    // 4. Orders
+    register("update_order", "Update order note, email, shipping address and tags (orderUpdate). dryRun:true (the default) returns the current order and the change without applying it; dryRun:false applies it and returns before and after. Tags: addTags and removeTags change only the named tags; replaceTags replaces all tags. Requires write_orders.", {
         id: gid("Order"),
-        tags: z.array(z.string()).max(250).optional(),
+        ...tagFields,
         note: z.string().max(5000).nullable().optional(),
         email: z.string().email().optional(),
         shippingAddress: z
@@ -862,21 +664,22 @@ export function registerParityTools(server) {
             .strict()
             .optional(),
     }, true, async (w, a) => {
+        checkTagArgs(a);
         await w.requireScopes(["write_orders"]);
         const before = await w.run(PDOCS.getOrderTagsNote, { id: a.id });
         if (!before.order)
             throw Error("Order not found in this store.");
-        const id = a.id;
-        const fields = pick(a, ORDER_INPUT_FIELDS);
+        const fields = { ...pick(a, ORDER_INPUT_FIELDS), ...(a.replaceTags ? { tags: a.replaceTags } : {}) };
         if (a.dryRun)
             return {
                 dryRun: true,
                 before: before.order,
-                wouldApply: fields,
+                wouldApply: { ...pick(a, ORDER_INPUT_FIELDS), ...tagPreview(a, before.order.tags) },
                 notice: "Pass dryRun:false to apply.",
             };
         if (Object.keys(fields).length)
-            await w.run(PDOCS.updateOrder, { input: { id, ...fields } });
+            await w.run(PDOCS.updateOrder, { input: { id: a.id, ...fields } });
+        await applyTagChanges(w, a.id, a);
         const after = await w.run(PDOCS.getOrderTagsNote, { id: a.id });
         return { dryRun: false, before: before.order, after: after.order };
     });
@@ -908,32 +711,33 @@ export function registerParityTools(server) {
         }
         return { dryRun: false, node };
     });
-    // 9. Customers
-    register("update_customer", "Update customer tags, note and/or email (customerUpdate) with a before/after result. Email marketing consent is out of scope. Requires write_customers. Defaults to dryRun:true.", {
+    // 5. Customers
+    register("update_customer", "Update customer note, email and tags (customerUpdate). dryRun:true (the default) returns the current customer and the change without applying it; dryRun:false applies it and returns before and after. Tags: addTags and removeTags change only the named tags; replaceTags replaces all tags. Email marketing consent is out of scope. Requires write_customers.", {
         id: gid("Customer"),
-        tags: z.array(z.string()).max(250).optional(),
+        ...tagFields,
         note: z.string().max(5000).optional(),
         email: z.string().email().optional(),
     }, true, async (w, a) => {
+        checkTagArgs(a);
         await w.requireScopes(["write_customers"]);
         const before = await w.run(PDOCS.getCustomer, { id: a.id });
         if (!before.customer)
             throw Error("Customer not found in this store.");
-        const id = a.id;
-        const fields = pick(a, CUSTOMER_INPUT_FIELDS);
+        const fields = { ...pick(a, CUSTOMER_INPUT_FIELDS), ...(a.replaceTags ? { tags: a.replaceTags } : {}) };
         if (a.dryRun)
             return {
                 dryRun: true,
                 before: before.customer,
-                wouldApply: fields,
+                wouldApply: { ...pick(a, CUSTOMER_INPUT_FIELDS), ...tagPreview(a, before.customer.tags) },
                 notice: "Pass dryRun:false to apply.",
             };
         if (Object.keys(fields).length)
-            await w.run(PDOCS.updateCustomer, { input: { id, ...fields } });
+            await w.run(PDOCS.updateCustomer, { input: { id: a.id, ...fields } });
+        await applyTagChanges(w, a.id, a);
         const after = await w.run(PDOCS.getCustomer, { id: a.id });
         return { dryRun: false, before: before.customer, after: after.customer };
     });
-    // 10. Fulfillment
+    // 6. Fulfillment
     register("create_fulfillment", "Fulfill the remaining quantities of an order's OPEN and IN_PROGRESS fulfillment orders with optional tracking. notifyCustomer defaults to false. Requires read_merchant_managed_fulfillment_orders and write_merchant_managed_fulfillment_orders (Shopify reports any other missing scope, such as for fulfillment orders assigned to a fulfillment service). Defaults to dryRun:true.", {
         orderId: gid("Order"),
         trackingNumber: z.string().min(1).optional(),
@@ -994,56 +798,9 @@ export function registerParityTools(server) {
             fulfillment: result.fulfillmentCreateV2?.fulfillment,
         };
     });
-    // 11. Pages and blog articles
-    register("list_pages", "List Online Store pages with cursor pagination. Requires read_content.", { query: z.string().max(1000).optional(), ...page }, false, async (w, a) => {
-        await w.requireScopes(["read_content"]);
-        return w.run(PDOCS.listPages, a);
-    });
-    register("upsert_page", "Create a page (omit id) or update one (pass id) with a before/after result. Requires write_content. Defaults to dryRun:true.", {
-        id: gid("Page").optional(),
-        title: z.string().min(1).max(255).optional(),
-        handle: z.string().max(255).optional(),
-        body: z.string().max(500000).optional(),
-        isPublished: z.boolean().optional(),
-    }, true, async (w, a) => {
-        await w.requireScopes(["write_content"]);
-        if (!a.id && !a.title)
-            throw Error("title is required to create a page.");
-        const before = a.id ? await w.run(PDOCS.getPage, { id: a.id }) : undefined;
-        if (a.id && !before?.page)
-            throw Error("Page not found in this store.");
-        const page = pick(a, PAGE_INPUT_FIELDS);
-        if (a.dryRun)
-            return {
-                dryRun: true,
-                before: before?.page,
-                wouldApply: a.id ? { id: a.id, ...page } : page,
-                notice: "Pass dryRun:false to apply.",
-            };
-        if (a.id) {
-            const id = a.id;
-            await w.run(PDOCS.updatePage, { id, page });
-            const after = await w.run(PDOCS.getPage, { id });
-            return { dryRun: false, before: before?.page, after: after.page };
-        }
-        const d = await w.run(PDOCS.createPage, { page });
-        return { dryRun: false, page: d.pageCreate?.page };
-    });
-    register("list_blog_articles", "List a blog's articles with cursor pagination. Requires read_content.", { blogId: gid("Blog"), ...page }, false, async (w, a) => {
-        await w.requireScopes(["read_content"]);
-        const d = await w.run(PDOCS.listBlogArticles, { id: a.blogId, first: a.first, after: a.after });
-        if (!d.blog)
-            throw Error("Blog not found in this store.");
-        return d.blog;
-    });
-    // 12. Markets
-    register("list_markets", "List markets with cursor pagination. Requires read_markets.", { ...page }, false, async (w, a) => {
-        await w.requireScopes(["read_markets"]);
-        return w.run(PDOCS.listMarkets, a);
-    });
-    // 13. Access-scope diagnostics
+    // 7. Access-scope diagnostics
     server.registerTool("shopify_check_access", {
-        description: "For one or many stores, compare granted Admin API access scopes against every tool's requirement (see src/scope-requirements.ts) and report granted scopes, missing scopes, and which tools would fail. Omit stores to check every configured store.",
+        description: "For one or many stores, report the shop identity and granted Admin API access scopes, compare them against every tool's requirement (see src/scope-requirements.ts; tools with several resources or reports are listed as tool:resource), and report missing scopes and which tools would fail. Omit stores to check every configured store.",
         inputSchema: z
             .object({ stores: z.array(store).min(1).max(50).optional() })
             .strict(),
@@ -1059,8 +816,7 @@ export function registerParityTools(server) {
             const aliases = (await resolveStoreTargets(a.stores)).map((target) => target.store?.alias ?? target.requestedAlias);
             const results = await mapConcurrent(aliases, async (alias) => {
                 try {
-                    const w = await workflow(alias);
-                    w.store = { ...w.store, apiVersion: PARITY_API_VERSION };
+                    const w = await parityWorkflow(alias);
                     const data = await w.run(PDOCS.capabilities);
                     const granted = new Set((data.currentAppInstallation?.accessScopes ?? []).map((s) => s.handle));
                     const hasScope = (s) => granted.has(s) ||
@@ -1075,6 +831,7 @@ export function registerParityTools(server) {
                     return {
                         store: w.store.alias,
                         ok: true,
+                        shop: data.shop,
                         grantedScopes: [...granted].sort(),
                         missingScopes: [
                             ...new Set(failingTools.flatMap((t) => t.missingScopes)),

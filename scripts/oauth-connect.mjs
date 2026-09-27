@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
@@ -7,6 +7,7 @@ import { accessTokenAccount, clientSecretAccount, removeCredential, storeCredent
 import { getAccessToken } from "../dist/config.js";
 import { adminGraphql } from "../dist/shopify.js";
 import { DEFAULT_API_VERSION } from "../dist/constants.js";
+import { verifyShopifyHmac } from "../dist/shopify-hmac.js";
 import { exchangeAuthorizationCode, normalizeShop, readHidden, upsertStore, validateAlias, validateApiVersion } from "./config-helpers.mjs";
 
 const DEFAULT_SCOPES = ["read_products", "read_orders", "read_inventory", "read_locations", "read_customers"];
@@ -21,18 +22,6 @@ function openBrowser(url) {
   } catch {
     return false;
   }
-}
-
-function validHmac(url, clientSecret) {
-  const received = url.searchParams.get("hmac");
-  if (!received || !/^[a-f0-9]{64}$/i.test(received)) return false;
-  const message = [...url.searchParams.entries()]
-    .filter(([key]) => key !== "hmac" && key !== "signature")
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${value}`)
-    .join("&");
-  const expected = createHmac("sha256", clientSecret).update(message).digest("hex");
-  return timingSafeEqual(Buffer.from(received, "hex"), Buffer.from(expected, "hex"));
 }
 
 async function waitForAuthorization({ shop, clientId, clientSecret, scopes, port }) {
@@ -56,7 +45,7 @@ async function waitForAuthorization({ shop, clientId, clientSecret, scopes, port
       if (callbackSettled) throw new Error("The OAuth callback was already used.");
       if (url.searchParams.get("state") !== state) throw new Error("The OAuth state did not match.");
       if (url.searchParams.get("shop") !== shop) throw new Error("The OAuth store did not match.");
-      if (!validHmac(url, clientSecret)) throw new Error("The OAuth HMAC was invalid.");
+      if (!verifyShopifyHmac(url.searchParams, clientSecret, { nowMs: Date.now() })) throw new Error("The OAuth HMAC was invalid.");
       const code = url.searchParams.get("code");
       if (!code) throw new Error("Shopify did not return an authorization code.");
       callbackSettled = true;

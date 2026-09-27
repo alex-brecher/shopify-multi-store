@@ -1,0 +1,14 @@
+# Secrets for the Cloudflare Worker. The Deploy to Cloudflare flow asks for these; with the
+# CLI set each one with `npx wrangler secret put <NAME>`. For local `wrangler dev`, copy this
+# file to .dev.vars. See docs/DEPLOY-CLOUDFLARE.md.
+
+# Client ID and secret of your Shopify app (Dev Dashboard > your app > Settings).
+SHOPIFY_APP_CLIENT_ID=
+SHOPIFY_APP_CLIENT_SECRET=
+
+# Encrypts stored Shopify tokens. id:key, key = 32 random bytes base64 (openssl rand -base64 32).
+SHOPIFY_TOKEN_ENCRYPTION_KEYS=k1:
+
+# The stores this server serves, for example:
+# {"stores":[{"alias":"main","shop":"main-store.myshopify.com"}]}
+STORES_JSON=

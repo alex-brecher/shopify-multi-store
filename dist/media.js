@@ -104,7 +104,7 @@ export async function uploadImage(w, a) {
         fileId: id,
         status: "PROCESSING",
         complete: false,
-        notice: "Use shopify_get_uploaded_image with this file ID. Do not upload it again.",
+        notice: "Use shopify_get with resource uploaded_image and this file ID. Do not upload it again.",
     };
 }
 //# sourceMappingURL=media.js.map

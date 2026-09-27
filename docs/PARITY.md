@@ -8,12 +8,12 @@ Branch: `codex/review-parity-20260907`.
 Version 1.6.0 adds guided workflows for the standard Shopify Admin features in the observed ChatGPT connector.
 It retains the existing multi-store reports and explicit store routing.
 GitHub releases identify the published package version. Installed clients can use an older version until their next update.
-Live acceptance now includes writes to three isolated temporary preview stores. Existing brand stores received read-only checks.
+Existing brand stores received read-only checks.
+Version 1.7.0 removed the preview-store, sample-product, and MCP Apps UI features and the Shopify CLI bridge; see CHANGELOG.md.
 
-The candidate exposes 55 tools through MCP.
+Version 1.7.0 exposes 29 tools through MCP; reads are grouped under `shopify_report`, `shopify_search`, and `shopify_get` (see CHANGELOG.md).
 The observed connector has 27 tools. Tool count does not prove behavior or visual parity.
 The public Shopify repositories do not establish that the complete ChatGPT service is open source.
-Shopify CLI provides a public preview-store creation and claim route. The candidate now uses it.
 
 ## Coverage
 
@@ -26,9 +26,9 @@ Shopify CLI provides a public preview-store creation and claim route. The candid
 | Product search and details | Implemented | Independent cursors for products, variants, and media. |
 | Product creation | Implemented | Options, variants, prices, SKUs, images, and optional collection membership. New products default to draft. |
 | Product updates | Implemented | Fields, variants, images, media removal, and before/after results. |
-| Bulk product status | Implemented | Bounded selections, per-product outcomes, and readback. Maximum 250 products per call. |
+| Bulk product status | Through `shopify_run_action` | One aliased `productUpdate` per product; ARCHIVED and DRAFT need confirm. |
 | Collection search and details | Implemented | Manual and smart collections, products, and pagination. |
-| Collection creation and updates | Implemented | Rules, images, sorting, and explicit channel publication. Legacy collection mutations use API 2026-04. |
+| Collection creation and updates | Implemented | Rules, images, sorting, and explicit channel publication. Writes without a rule set use the 2026-07 input; writes with a legacy rule set use API 2026-04. |
 | Collection membership | Implemented | Manual collections only. Smart collection membership follows its rules. |
 | Inventory reads and changes | Implemented | Exact inventory item and location, compare-and-set control, and readback. |
 | Order lists and details | Implemented | Filters, cursors, fulfillment, and tracking. Shopify order-history access limits apply. |
@@ -38,27 +38,20 @@ Shopify CLI provides a public preview-store creation and claim route. The candid
 | ShopifyQL analytics | Implemented | Tables, bar charts, time-series charts, metric selection, currency, and timezone. |
 | Schema exploration and validation | Implemented | Bundled 2026-04 and 2026-07 schemas; public schema retrieval for other configured versions. |
 | Documentation search | Implemented | Shopify AI Toolkit search protocol with source links. No separate usage telemetry. |
-| Sample products | Implemented | Category-specific catalogs and agent-generated concepts, with draft-creation cards. Generated concepts are labeled as examples. |
-| New-store previews and claims | Implemented | One to three separate temporary stores with agent-designed Dawn layouts, demo products, and real claim links. |
+| Sample products | Removed in 1.7.0 | Not provided. |
+| New-store previews and claims | Removed in 1.7.0 | Not provided. |
 
 Product options use explicit option names and values. These inputs are not a drop-in copy of the official connector's input schema.
 Channel publication requires explicit publication IDs. It does not silently select the Online Store.
-The UI uses MCP Apps resources. Hosts without MCP Apps support retain text and structured tool results.
-The local browser tests cover the renderer. They do not establish acceptance of the complete iframe bridge in every host.
+Results are text and structured JSON. The MCP Apps UI was removed in 1.7.0.
 
 ## Official repository integrations
 
 - `Shopify/shopify-app-js`: official Admin API client and API code-generation preset.
 - `Shopify/Shopify-AI-Toolkit`: documentation search protocol, schema validation, and the existing companion skill installer.
 - Shopify's public schema proxy: version-specific validation before each guided operation.
-- `mock.shop`: category-specific catalogs from the published store index.
-- `Shopify/cli`: preview-store creation, temporary credentials, theme upload, and claim links.
-- `Shopify/dawn`: pinned theme source at `258f00f64365e2018ca4c62778a6bf55a5d3cd18` for editable storefront designs.
 
-Code generation keeps the legacy collection types separate from the current client type augmentation.
-The TypeScript code-generation plugin uses major version 5 because Shopify's preset requires its `Exact` helper.
-
-The React Router template remains an option for a separate hosted Admin app. The preview feature now integrates Shopify CLI directly.
+The React Router template remains an option for a separate hosted Admin app.
 A separate Python ShopifyQL runtime was not added because the server already calls ShopifyQL through TypeScript.
 
 ## Reliability and performance changes
@@ -94,7 +87,7 @@ A final complete call created `t1kks2-nb.myshopify.com`, seeded its demo product
 Replaying the same request returned the existing store.
 No store was claimed, subscribed, or connected to a payment method.
 ShopifyQL live acceptance remains dependent on reports access. MCP Apps bridge acceptance remains host-specific.
-The 2026-04 collection adapter needs migration before Shopify retires that API version.
+Collection writes with a legacy rule set still use 2026-04; tests/api-versions.test.mjs fails 60 days before that version's end of support.
 
 ## Validation
 
@@ -123,20 +116,6 @@ The 2026-04 collection adapter needs migration before Shopify retires that API v
 - [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview)
 - Observed official connector tool inventory: `docs/shopify-tool-reference.json`.
 
-## Preview requirements and behavior
-
-Install Shopify CLI and Git before using preview tools. The first design request downloads a pinned Dawn checkout from GitHub.
-The package does not redistribute the Dawn source. Its upstream license remains in the cached checkout.
-The request includes concrete design palettes, layouts, headlines, and demo products generated by the calling agent from the user's brief.
-Creation returns a pending job immediately. The status tool returns completed previews or an explicit failure.
-The UI includes a status button. This avoids a single long request during store and theme creation.
-The workflow creates a separate temporary store for each design. It does not restyle an existing merchant store.
-A request ID and durable receipts prevent blind duplicate creation. File locks coordinate separate local server processes.
-An interrupted write can require inspection before recovery. The app preserves the known store and theme state.
-CLI credentials remain in Shopify CLI storage. Preview and claim links are refreshed when requested.
-
-The result provides functional storefront previews and claims. It does not reproduce Shopify's proprietary visual carousel or image-generation service.
-Generated product concepts can omit images when no suitable image exists. The app does not substitute unrelated product images.
+## Test runner
 
 The test runner enumerates unit-test files explicitly on every platform. Live smoke tests remain a separate command.
-Windows launches the Shopify CLI JavaScript entry through Node rather than a shell-based npm shim.

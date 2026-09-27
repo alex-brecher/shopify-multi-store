@@ -1,4 +1,3 @@
-import { cliJson } from "./cli-bridge.js";
 import { createHash } from "node:crypto";
 import { serializeStore } from "./concurrency.js";
 import { operation, mutationErrors } from "./operations.js";
@@ -9,7 +8,9 @@ const CHARACTER_LIMIT = 50_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_THROTTLE_RETRIES = 3;
 const MAX_RETRY_DELAY_MS = 60_000;
-export const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
+export const PACKAGE_VERSION = typeof __SMS_PACKAGE_VERSION__ === "string"
+    ? __SMS_PACKAGE_VERSION__
+    : String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
 /**
  * Shopify throttled a mutation before running it (HTTP 429 or a THROTTLED error with no data).
  * Mutations are never resent automatically; the caller can safely retry after retryAfterMs.
@@ -98,14 +99,6 @@ async function graphqlRequest(store, document, variables, token) {
     return { response, payload };
 }
 export async function adminGraphql(store, document, variables) {
-    if (store.auth?.type === 'shopify_cli')
-        return serializeStore(`${store.shop}\0cli`, async () => {
-            const start = Date.now();
-            const writing = operation(document).selected.operation === 'mutation';
-            const data = await cliJson(['store', 'execute', '--store', store.shop, '--query', document, '--variables', JSON.stringify(variables), '--version', store.apiVersion, '--json', ...(writing ? ['--allow-mutations'] : [])]);
-            const errors = mutationErrors(document, data);
-            return { store: store.alias, shop: store.shop, apiVersion: store.apiVersion, elapsedMs: Date.now() - start, retryCount: 0, data, ...(errors.length ? { userErrors: errors } : {}) };
-        });
     const token = await getAccessToken(store);
     const key = `${store.shop}\0${createHash("sha256").update(token).digest("hex")}`;
     return serializeStore(key, () => adminGraphqlWithToken(store, document, variables, token));

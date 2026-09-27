@@ -16,7 +16,12 @@ export declare class Workflow {
     publish(id: string, publicationIds: string[]): Promise<void>;
 }
 export declare function workflow(alias: string): Promise<Workflow>;
-export declare function textResult(value: Data, isError?: boolean): {
+/**
+ * A tool result. Reads that exceed the limit are refused with advice to request fewer rows.
+ * Writes (write: true) are never dropped: fitWriteResult trims them instead, so a caller always
+ * learns what a write did.
+ */
+export declare function textResult(value: Data, isError?: boolean, write?: boolean): {
     isError: boolean;
     content: {
         type: "text";
@@ -30,7 +35,7 @@ export declare function textResult(value: Data, isError?: boolean): {
     }[];
     structuredContent: Data;
 };
-export declare function toolError(error: unknown): {
+export declare function toolError(error: unknown, write?: boolean): {
     isError: boolean;
     content: {
         type: "text";
@@ -44,3 +49,15 @@ export declare function toolError(error: unknown): {
     }[];
     structuredContent: Data;
 };
+/** Tag arguments shared by the product, order and customer update tools. */
+export interface TagArgs {
+    replaceTags?: string[];
+    addTags?: string[];
+    removeTags?: string[];
+}
+/** Refuse replaceTags together with addTags or removeTags: the result would depend on order. */
+export declare function checkTagArgs(a: TagArgs): void;
+/** The tag change a preview shows: the full new list for replaceTags, else what is added and removed. */
+export declare function tagPreview(a: TagArgs, currentTags: unknown): Data;
+/** Add and remove tags with tagsAdd and tagsRemove, leaving every other tag alone. */
+export declare function applyTagChanges(w: Workflow, id: string, a: TagArgs): Promise<void>;

@@ -22,8 +22,10 @@ export declare const DOCS: {
     readonly variantsCreate: `mutation CreateVariants($productId:ID!, $variants:[ProductVariantsBulkInput!]!) { productVariantsBulkCreate(productId:$productId,variants:$variants,strategy:REMOVE_STANDALONE_VARIANT) { productVariants { id title price } userErrors { field message } } }`;
     readonly variantsUpdate: `mutation UpdateVariants($productId:ID!, $variants:[ProductVariantsBulkInput!]!) { productVariantsBulkUpdate(productId:$productId,variants:$variants) { productVariants { id title price } userErrors { field message } } }`;
     readonly mediaDelete: `mutation DeleteProductMedia($productId:ID!, $mediaIds:[ID!]!) { productDeleteMedia(productId:$productId,mediaIds:$mediaIds) { deletedMediaIds mediaUserErrors { field message } } }`;
-    readonly collectionCreate: `mutation CreateCollection($input:CollectionInput!) { collectionCreate(input:$input) { collection { id title } userErrors { field message } } }`;
-    readonly collectionUpdate: `mutation UpdateCollection($input:CollectionInput!) { collectionUpdate(input:$input) { collection { id title } userErrors { field message } } }`;
+    readonly collectionCreate: `mutation CreateCollection($input:CollectionCreateInput!) { collectionCreate(collection:$input) { collection { id title } userErrors { field message } } }`;
+    readonly collectionUpdate: `mutation UpdateCollection($input:CollectionUpdateInput!) { collectionUpdate(collection:$input) { collection { id title } userErrors { field message } } }`;
+    readonly collectionCreateLegacy: `mutation CreateCollectionLegacy($input:CollectionInput!) { collectionCreate(input:$input) { collection { id title } userErrors { field message } } }`;
+    readonly collectionUpdateLegacy: `mutation UpdateCollectionLegacy($input:CollectionInput!) { collectionUpdate(input:$input) { collection { id title } userErrors { field message } } }`;
     readonly addCollection: `mutation AddToCollection($id:ID!, $productIds:[ID!]!) { collectionAddProducts(id:$id,productIds:$productIds) { collection { id title } userErrors { field message } } }`;
     readonly publications: "query Publications($after:String) { publications(first:100,after:$after) { nodes { id name } pageInfo { hasNextPage endCursor } } }";
     readonly publicationRead: `query PublicationRead($id:ID!, $publicationId:ID!) { node(id:$id) { ... on Product { id publishedOnPublication(publicationId:$publicationId) } ... on Collection { id publishedOnPublication(publicationId:$publicationId) } } }`;
@@ -35,6 +37,5 @@ export declare const DOCS: {
     readonly stage: `mutation StageFile($input:[StagedUploadInput!]!) { stagedUploadsCreate(input:$input) { stagedTargets { url resourceUrl parameters { name value } } userErrors { field message } } }`;
     readonly file: `mutation CreateFile($files:[FileCreateInput!]!) { fileCreate(files:$files) { files { id fileStatus } userErrors { field message code } } }`;
     readonly fileRead: `query GetFile($id:ID!) { node(id:$id) { ... on MediaImage { id fileStatus fileErrors { code message } image { url altText } } } }`;
-    readonly bulkStart: `mutation StartBulkQuery($query:String!) { bulkOperationRunQuery(query:$query) { bulkOperation { id status } userErrors { field message } } }`;
     readonly bulkRead: `query BulkStatus($id:ID!) { node(id:$id) { ... on BulkOperation { id status errorCode objectCount rootObjectCount fileSize url partialDataUrl createdAt completedAt } } }`;
 };

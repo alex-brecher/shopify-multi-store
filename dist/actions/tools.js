@@ -1,5 +1,4 @@
-import { getNamedType, isEnumType, isObjectType, isScalarType, Kind, parse, validate, } from "graphql";
-import { getVariableValues } from "graphql/execution/values.js";
+import { getNamedType, getVariableValues, isEnumType, isObjectType, isScalarType, Kind, parse, validate, valueFromASTUntyped, } from "graphql";
 import { z } from "zod/v4";
 import { mapConcurrent } from "../concurrency.js";
 import { findStore, resolveStoreTargets } from "../config.js";
@@ -9,16 +8,15 @@ import { fitMultiStoreResults } from "../result-limits.js";
 import { currentUserAccess, storeScope } from "../runtime.js";
 import { adminSchema } from "../schema.js";
 import { adminGraphql, MutationThrottledError } from "../shopify.js";
-import { actionCatalog, buildDocument, CATEGORIES, describeAction, denylist, findMutation, isDenied, isDestructive, scopeHint, searchCatalog, } from "./catalog.js";
+import { actionCatalog, buildDocument, CATEGORIES, describeAction, denylist, findMutation, isDenied, isDestructive, LABEL_FIELDS, scopeHint, searchCatalog, } from "./catalog.js";
 import { literalGids, nonEnumerableReasons } from "./preview.js";
 import { evaluateOutcome, evaluateOutcomeStructural, instrumentMutation, RESERVED_ALIAS_PREFIX } from "./outcomes.js";
 const StoreAlias = z.string().min(1).max(64);
-const ApiVersion = z.string().regex(/^\d{4}-(01|04|07|10)$/).describe("Admin API version, such as 2026-04. Defaults to the store's version, or the server default.");
+const ApiVersion = z.string().regex(/^\d{4}-(01|04|07|10)$/).describe("Admin API version, such as 2026-07. Defaults to the store's version, or the server default.");
 const Variables = z.record(z.string(), z.unknown());
 const RUN_CONCURRENCY = 4;
 const RESULT_CHARACTER_LIMIT = 100_000;
 const MAX_RESOLVED_IDS = 250;
-const LABEL_FIELDS = ["title", "name", "displayName", "email", "handle", "sku", "status"];
 const GID = /^gid:\/\/shopify\/([A-Za-z][A-Za-z0-9]*)\/[^\s]+$/;
 function ok(value) {
     return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
@@ -55,10 +53,14 @@ export function parseActionDocument(document) {
         if (definition.kind === Kind.FRAGMENT_DEFINITION)
             fragments.set(definition.name.value, definition);
     const rootFields = [];
+    const rootNodes = [];
     const walk = (set, active) => {
         for (const selection of set.selections) {
             if (selection.kind === Kind.FIELD) {
-                if (selection.name.value !== "__typename" && !rootFields.includes(selection.name.value))
+                if (selection.name.value === "__typename")
+                    continue;
+                rootNodes.push(selection);
+                if (!rootFields.includes(selection.name.value))
                     rootFields.push(selection.name.value);
             }
             else if (selection.kind === Kind.INLINE_FRAGMENT) {
@@ -77,7 +79,37 @@ export function parseActionDocument(document) {
     walk(operation.selectionSet, new Set());
     if (!rootFields.length)
         throw new Error("The mutation selects no fields.");
-    return { ast, operation, rootFields };
+    return { ast, operation, rootFields, rootNodes };
+}
+/**
+ * The destructive mutations a document calls, in document order: by name, and by the resolved
+ * argument values (inline literals with each variable set substituted) under the argument rules
+ * in DESTRUCTIVE_ARGUMENT_RULES. Several variable sets (one per store) are checked together, and
+ * a mutation destructive under any of them is included.
+ */
+export function destructiveMutations(parsed, variableSets = [{}]) {
+    const hit = new Set();
+    for (const node of parsed.rootNodes) {
+        const name = node.name.value;
+        if (hit.has(name))
+            continue;
+        for (const variables of variableSets.length ? variableSets : [{}]) {
+            const args = {};
+            for (const argument of node.arguments ?? []) {
+                try {
+                    args[argument.name.value] = valueFromASTUntyped(argument.value, variables);
+                }
+                catch {
+                    args[argument.name.value] = undefined;
+                }
+            }
+            if (isDestructive(name, args)) {
+                hit.add(name);
+                break;
+            }
+        }
+    }
+    return parsed.rootFields.filter((name) => hit.has(name));
 }
 /** Every Shopify GID string anywhere in a value. */
 export function collectGids(value, found = new Set(), depth = 0) {
@@ -149,12 +181,12 @@ function lacksMessage(scopes, alias) {
  * refuse denylisted mutations, and require confirm equal to the destructive mutation names
  * (comma-separated, in document order) before applying. Returns the refusal, or undefined.
  */
-export function actionPolicyError(mutations, confirm, applying) {
+export function actionPolicyError(mutations, confirm, applying, destructiveNames) {
     const denied = mutations.filter((name) => isDenied(name, denylist()));
     if (denied.length) {
         return `Refused: ${denied.join(", ")} ${denied.length === 1 ? "is" : "are"} on this server's action denylist (mutations that mint credentials, change this app's own installation or billing, create lasting subscriptions, or hide other mutations).`;
     }
-    const destructive = mutations.filter(isDestructive);
+    const destructive = destructiveNames ?? mutations.filter((name) => isDestructive(name));
     const expected = destructive.join(",");
     if (applying && destructive.length && confirm !== expected) {
         return `${expected} is destructive. Run a dry run first, then pass confirm: "${expected}" with dryRun: false.`;
@@ -323,10 +355,19 @@ export function registerActionTools(server) {
                     return await refuse(`The document does not call ${args.mutation}; it calls ${parsed.rootFields.join(", ")}.`);
                 }
             }
-            const policyError = actionPolicyError(mutations, args.confirm, !args.dryRun);
+            // Destructive by name, or by argument values (a status of ARCHIVED, notifyCustomer true...)
+            // under any store's merged variables. A name-only call uses the default document, whose
+            // variables are named after the arguments.
+            const variableSets = aliases.map((alias) => ({
+                ...(args.variables ?? {}),
+                ...(Object.entries(args.variablesByStore ?? {}).find(([key]) => key.toLowerCase() === alias.toLowerCase())?.[1] ?? {}),
+            }));
+            const destructive = parsed
+                ? destructiveMutations(parsed, variableSets)
+                : mutations.filter((name) => variableSets.some((variables) => isDestructive(name, variables)));
+            const policyError = actionPolicyError(mutations, args.confirm, !args.dryRun, destructive);
             if (policyError)
                 return await refuse(policyError);
-            const destructive = mutations.filter(isDestructive);
             const expectedConfirm = destructive.join(",");
             const plans = await mapConcurrent(aliases, async (alias) => {
                 const plan = { alias, errors: [], warnings: [] };

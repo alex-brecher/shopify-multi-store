@@ -1,41 +1,21 @@
 import type { AuditLog } from "./audit.js";
-import { type ShopifyAccessMode } from "./guard.js";
 import { AuthorizationServer, type AuthServerOptions } from "./oauth.js";
 import { ShopifyConnections, type ShopifyConnectOptions } from "./shopify-connect.js";
-import { PersonalTokens } from "./tokens.js";
 export interface HostedAppOptions extends AuthServerOptions {
     audit: AuditLog;
-    /** Personal access tokens at /tokens and as bearer tokens on /mcp. Defaults to true. */
-    personalTokensEnabled?: boolean;
-    /** Longest personal access token lifetime a user may choose, in days. Defaults to 180. */
-    personalTokenMaxDays?: number;
-    /**
-     * "per_user": every tool call uses the caller's own Shopify online token (connected at /stores).
-     * "app" (the default here; serve mode defaults to per_user): the shared app token for each store.
-     */
-    shopifyAccessMode?: ShopifyAccessMode;
-    /**
-     * Per-user mode: whether personal access tokens may use the owner's Shopify connections.
-     * Off by default. When on, personal tokens are capped at PERSONAL_TOKEN_SHOPIFY_MAX_DAYS.
-     */
-    personalTokensShopifyAccess?: boolean;
-    /** Required in per_user mode. auth, store, policy and now are filled in from these options. */
-    shopifyConnect?: Omit<ShopifyConnectOptions, "auth" | "store" | "policy" | "now">;
+    /** Shopify app credentials, token encryption and the configured stores. auth, store and now come from these options. */
+    shopifyConnect: Omit<ShopifyConnectOptions, "auth" | "store" | "now">;
 }
 export interface HostedApp {
     fetch(request: Request): Promise<Response>;
     close(): Promise<void>;
     readonly auth: AuthorizationServer;
-    readonly tokens: PersonalTokens;
-    readonly accessMode: ShopifyAccessMode;
-    /** Present in per_user mode. */
-    readonly shopify?: ShopifyConnections;
+    readonly shopify: ShopifyConnections;
 }
 /**
- * The hosted connector as a web-standard fetch handler:
- * OAuth metadata, authorization server, Google sign-in callback, health check,
- * and the Streamable HTTP MCP endpoint at /mcp behind bearer-token auth.
+ * The hosted connector as a web-standard fetch handler: OAuth metadata, the authorization
+ * server, Shopify sign-in, the /stores page, a health check, and the Streamable HTTP MCP
+ * endpoint at /mcp behind bearer-token auth. Every tool call uses the caller's own Shopify
+ * online token, so Shopify's staff permissions decide what each person can do.
  */
-/** Longest personal access token lifetime when personal tokens may use Shopify (per-user mode). */
-export declare const PERSONAL_TOKEN_SHOPIFY_MAX_DAYS = 30;
 export declare function createHostedApp(options: HostedAppOptions): HostedApp;

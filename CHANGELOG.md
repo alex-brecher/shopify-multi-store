@@ -4,6 +4,140 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+### Cloudflare Workers review fixes
+
+- Guided tools (prices, metafields, redirects, tags, orders, customers,
+  fulfillment, and the pinned `shopify_search`/`shopify_get` reads) now run on
+  the default API version, 2026-07, the one schema a Worker bundles. Before,
+  they pinned 2026-04, so on Cloudflare the first guided call downloaded a
+  second 6 MB schema from shopify.dev and held two parsed schemas in a 128 MB
+  isolate. Only the legacy smart-collection `ruleSet` write stays on 2026-04;
+  a Worker refuses it and points to `shopify_run_action`.
+- A Worker never downloads a schema at run time: an unbundled API version fails
+  at once with an error naming the bundled one, instead of a 30 second fetch.
+- Guided writes failed on Workers with "Expected String to be a GraphQL
+  nullable type": `graphql/execution/values.js` pulled a second copy of
+  `graphql` into the bundle. Every import now uses the package root.
+- `ACTIONS_DENYLIST` and `ACTIONS_DENYLIST_REPLACE` are read from the Worker's
+  env (`runtimeEnv()`), not `process.env`, so an operator's denylist applies on
+  Cloudflare whatever the compatibility date.
+- Dynamically registered OAuth clients expire after 30 days without use
+  (`OAUTH_CLIENT_IDLE_TTL_SECONDS`; each use pushes it back, at most one write a
+  day). Registration is limited per source address per hour
+  (`OAUTH_MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR`, default 30, `0` for no
+  limit; the TCP peer on Node, `CF-Connecting-IP` on Workers). The Durable
+  Object keeps the client count in a counter key instead of listing every
+  client on each registration.
+- Cloudflare CLI setup now creates the D1 audit database explicitly
+  (`npx wrangler d1 create shopify-multi-store-audit`, then its `database_id` in
+  `wrangler.jsonc`). Automatic creation during `wrangler deploy` depends on
+  wrangler's hidden experimental provisioning. `package.json` gains
+  `cloudflare.bindings` descriptions for the Deploy to Cloudflare flow.
+- Hosted: a store's Shopify token is decrypted only when a tool call uses that
+  store. Before, every MCP request (including `initialize` and `tools/list`)
+  read and decrypted the caller's token for every configured store.
+- Hosted: the Shopify OAuth HMAC check uses the shared `src/shopify-hmac.ts`
+  instead of a second copy.
+- The `/stores` page names the server it belongs to (issuer and MCP URL), so a
+  person with more than one deployment knows which connections they are
+  looking at.
+- README: the npm badge reads the live version; "up to ten stores" is now the
+  real limit (one hundred); a "Connect your first store" section walks a new
+  merchant through a Dev Dashboard app (client credentials or authorization
+  code) or an admin-created custom app token; `prepare` builds the server so
+  `npm install github:...` works; the `codex-shopify-multi-store` config and
+  credential name is explained as a legacy name kept for existing installs.
+
+Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
+### Review 3: fixes and a smaller tool surface
+
+Breaking: the server now exposes 29 tools instead of 85. Removed tools and their
+replacements are listed below. Guided write tools take `dryRun` (default `true`)
+instead of `confirm`.
+
+Fixes:
+
+- Write results are never dropped for size. Above 150,000 characters a write
+  tool's result is trimmed (per-item `mutationResponse` and `verifiedState` to
+  the changed fields, then one summary line per applied item), always keeping
+  status, counts, and every item that did not apply, with `responseTrimmed`
+  explaining what was cut. Before, `shopify_update_prices` with about 190 or more
+  SKUs applied and verified every price and then reported failure. Variants are
+  also read back 50 at a time, so long product titles cannot push the
+  verification read over the 50,000 character response cap.
+- `shopify_update_product`, `shopify_update_order` and `shopify_update_customer`
+  no longer take `tags` (a silent full replace). `replaceTags` says it replaces
+  all tags and the preview lists the tags it would remove; `addTags` and
+  `removeTags` use `tagsAdd` and `tagsRemove` and leave other tags alone.
+- Every guided write tool defaults to `dryRun: true` and returns a before/after
+  (or would-create) preview; `dryRun: false` applies and reads back.
+- Local `shopify_graphql_mutation` now applies the action denylist and the
+  destructive confirm (confirm set to the mutation name), as hosted mode did.
+- Destructive classification covers argument-driven destruction:
+  `productUpdate` or `productChangeStatus` with status `ARCHIVED` or `DRAFT`,
+  `productVariantsBulkCreate` with `REMOVE_STANDALONE_VARIANT`, and any mutation
+  with `notifyCustomer: true` (one table, `DESTRUCTIVE_ARGUMENT_RULES`), plus
+  always-destructive `publishablePublish`, `productPublish`, `collectionPublish`,
+  discount activation, invoice and notification emails, `giftCardCreate`,
+  `giftCardCredit` and `storeCreditAccountCredit`.
+- `scripts/oauth-connect.mjs` verifies Shopify's OAuth HMAC with Shopify's
+  escaping and array rules and a timestamp check, from the shared
+  `src/shopify-hmac.ts`.
+- Redirect writes report a per-item `outcome` of `applied`, `rejected` or
+  `unknown` and a store `status` (`ok`, `partial`, `failed`, `unknown`), like
+  `shopify_update_prices`; an unknown outcome is no longer flattened to
+  `ok: false`.
+- Pinned Admin API versions live in `src/api-versions.ts`, and a test fails 60
+  days before any pinned version's end of support (12 months after release).
+  Collection writes without a rule set now use the 2026-07
+  `CollectionCreateInput`/`CollectionUpdateInput` (products are added with
+  `collectionAddProducts`); writes with a legacy `ruleSet` stay on 2026-04,
+  because 2026-07 replaced rule sets with typed collection sources.
+
+Removed features: new-store previews, sample products, the MCP Apps UI
+(`ui://` resource and `_meta.ui`), the Shopify CLI bridge and `shopify_cli`
+store auth, and the unused GraphQL code generation (`src/generated`,
+`scripts/codegen.mjs`). The build is plain `tsc`.
+
+Removed or folded tools, with what to use instead:
+
+| Removed tool | Use instead |
+| --- | --- |
+| `shopify_create_preview_store`, `shopify_get_preview_store`, `shopify_get_new_store_previews`, `shopify_get_new_store_preview_status`, `shopify_find_sample_product` | Removed with the feature. |
+| `shopify_switch_shop` | Pass `store` on every call. |
+| `shopify_get_store_capabilities` | `shopify_check_access` (shop identity and granted scopes). |
+| 16 report tools (`shopify_portfolio_snapshot`, `shopify_order_summary`, `shopify_customer_growth`, `shopify_get_product_everywhere`, `shopify_compare_inventory`, `shopify_low_stock_report`, `shopify_compare_prices`, `shopify_duplicate_sku_report`, `shopify_list_unfulfilled_orders`, `shopify_fulfillment_sla_report`, `shopify_compare_catalog`, `shopify_catalog_gap_report`, `shopify_catalog_health`, `shopify_recent_product_changes`, `shopify_compare_collections`, `shopify_store_locations`) | `shopify_report` with `report` set to the old name without `shopify_`, same arguments. |
+| `shopify_run_analytics_query` | `shopify_report` with `report: "analytics"`, `stores` and `query`. |
+| `shopify_search_products`, `shopify_search_collections`, `shopify_list_orders`, `shopify_list_customers`, `shopify_list_publications`, `shopify_list_redirects`, `shopify_list_pages`, `shopify_list_files`, `shopify_list_metaobjects`, `shopify_list_markets`, `shopify_list_themes`, `shopify_list_delivery_profiles` | `shopify_search` with `resource` (`products`, `collections`, `orders`, `customers`, `publications`, `redirects`, `pages`, `files`, `metaobjects` with `type`, `markets`, `themes`, `delivery_profiles`). |
+| `shopify_search_products_many` | `shopify_search` with `resource: "products"` and `stores`. |
+| `shopify_get_product`, `shopify_get_collection`, `shopify_get_order`, `shopify_get_inventory_levels`, `shopify_get_metafields`, `shopify_get_theme_files`, `shopify_list_blog_articles`, `shopify_get_uploaded_image`, `shopify_bulk_export_status` | `shopify_get` with `resource` (`product`, `collection`, `order`, `inventory`, `metafields`, `theme_files`, `blog_articles`, `uploaded_image`, `bulk_operation`) and `id`. |
+| `shopify_update_prices_many` | `shopify_update_prices` with `stores` instead of `store`. |
+| `shopify_set_metafields`, `shopify_delete_metafields` | `shopify_metafields` with `set` and/or `delete`. |
+| `shopify_create_redirects`, `shopify_delete_redirects` | `shopify_redirects` with `create` and/or `delete`. |
+| `shopify_add_to_collection` | `shopify_update_collection` with `addProductIds`. |
+| `shopify_publish_resource` | `shopify_run_action` with `mutation: "publishablePublish"`, `variables: { id, input: [{ publicationId }] }`, `confirm: "publishablePublish"`. |
+| `shopify_bulk_update_product_status` | `shopify_run_action` with a document that aliases one `productUpdate(product: { id, status })` per product (or `mutation: "productChangeStatus"` per product); ARCHIVED and DRAFT need `confirm`. |
+| `shopify_bulk_export_start` | `shopify_run_action` with `mutation: "bulkOperationRunQuery"` and `variables: { query }`; poll with `shopify_get` `resource: "bulk_operation"`. |
+| `shopify_upsert_metaobject` | `shopify_run_action` with `mutation: "metaobjectUpsert"`, `variables: { handle: { type, handle }, metaobject: { handle, fields } }`. |
+| `shopify_update_delivery_rate` | `shopify_run_action` with `mutation: "deliveryProfileUpdate"`. Shopify can accept a rate change and not persist it, so read the rate back with `shopify_search` `resource: "delivery_profiles"` afterwards; the old tool did this automatically. |
+| `shopify_upsert_theme_files` | `shopify_run_action` with `mutation: "themeFilesUpsert"` (destructive: `confirm: "themeFilesUpsert"`). Check the theme's `role` with `shopify_search` `resource: "themes"` first; the old tool refused the live (MAIN) theme unless `allowLiveTheme: true`. |
+| `shopify_delete_files` | `shopify_run_action` with `mutation: "fileDelete"`, `variables: { fileIds }`, `confirm: "fileDelete"`. |
+| `shopify_create_draft_order` | `shopify_run_action` with `mutation: "draftOrderCreate"`, `variables: { input }`. |
+| `shopify_upsert_page` | `shopify_run_action` with `mutation: "pageCreate"` (`variables: { page }`) or `"pageUpdate"` (`variables: { id, page }`). |
+
+The 29 tools (count checked by a test):
+
+| Area | Tools |
+| --- | --- |
+| Stores and access (3) | `shopify_list_stores`, `shopify_get_shop_info`, `shopify_check_access` |
+| Reads (3) | `shopify_report`, `shopify_search`, `shopify_get` |
+| Guided writes (14) | `shopify_update_prices`, `shopify_set_inventory`, `shopify_create_product`, `shopify_update_product`, `shopify_create_collection`, `shopify_update_collection`, `shopify_create_discount`, `shopify_upload_image`, `shopify_metafields`, `shopify_redirects`, `shopify_tags`, `shopify_update_order`, `shopify_update_customer`, `shopify_create_fulfillment` |
+| Any mutation (3) | `shopify_find_actions`, `shopify_describe_action`, `shopify_run_action` |
+| Raw GraphQL (3) | `shopify_graphql_query`, `shopify_graphql_query_many`, `shopify_graphql_mutation` |
+| Schema and docs (3) | `shopify_graphql_schema`, `shopify_validate_graphql_codeblocks`, `shopify_search_docs_chunks` |
+
+### Earlier unreleased changes
+
 Breaking change for `shopify-multi-store serve`: `SHOPIFY_ACCESS_MODE` now
 defaults to `per_user`. An existing deployment that relies on shared app tokens
 must set `SHOPIFY_ACCESS_MODE=app`, or it will refuse to start without
@@ -13,17 +147,46 @@ every Google Workspace user in `ALLOWED_EMAIL_DOMAINS` signs in as an editor on
 every store (the server logs a warning at startup); Shopify then limits each
 person to their own staff permissions.
 
-- Hosted: per-user Shopify access (`SHOPIFY_ACCESS_MODE=per_user`, the new
-  serve default). Each person connects each store with their own Shopify staff
-  account at `/stores` (Shopify online tokens, `grant_options[]=per-user`), and
-  every tool call uses that person's token, so Shopify enforces their
-  permissions. Tokens are encrypted with AES-256-GCM
-  (`SHOPIFY_TOKEN_ENCRYPTION_KEY`). Missing or expired connections return the
-  exact connect URL; there is no fallback to the app token. The policy file is
-  optional in this mode. New settings: `SHOPIFY_APP_CLIENT_ID`,
-  `SHOPIFY_APP_CLIENT_SECRET`, `SHOPIFY_APP_SCOPES`,
-  `SHOPIFY_REQUIRE_EMAIL_MATCH`. `SHOPIFY_ACCESS_MODE=app` keeps the previous
-  behavior.
+- Sign-in is Shopify login only. Google sign-in (`GOOGLE_CLIENT_ID`,
+  `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL_DOMAINS`) is removed. People pick a
+  configured store on a small chooser page (`SHOPIFY_IDENTITY_STORE` is listed
+  first) and log in to its Shopify admin; the verified `associated_user` email
+  of the Shopify online token is their identity, and that token is also kept
+  as their connection to the store.
+- Shopify permissions are the only rule. The policy file
+  (`SHOPIFY_MULTI_STORE_POLICY`), roles (admin, editor, viewer), per-user store
+  allowlists, and admin-only tools are removed.
+- Hosted is always per-user. `SHOPIFY_ACCESS_MODE` and the `app` mode are
+  removed: a hosted server never uses a shared app token or a static Admin API
+  token (`SHOPIFY_TOKEN_<ALIAS>`), even when one is set.
+  `SHOPIFY_REQUIRE_EMAIL_MATCH` is removed because every store connection must
+  now match the signed-in Shopify email.
+- Personal access tokens are removed: the `/tokens` page, `smsp_` bearer
+  tokens, `PERSONAL_TOKENS_ENABLED`, `PERSONAL_TOKEN_MAX_DAYS`, and
+  `PERSONAL_TOKENS_SHOPIFY_ACCESS`. Every supported client signs in with OAuth.
+- Reconnect all: one click on `/stores` reconnects every expired or unconnected
+  store in a row, with no further clicks while the person is logged in to the
+  Shopify admin. Tool errors for an expired or unconnected store return one
+  link, `/stores/reconnect`, which also signs in first when needed.
+- Existing Google sign-in sessions, refresh tokens and personal access tokens
+  stop working. People sign in again with Shopify.
+
+- Hosted on Cloudflare Workers (optional; local stdio stays the default):
+  `wrangler.jsonc`, `src/workers/`, and a Deploy to Cloudflare button. OAuth
+  state lives in one Durable Object (strongly consistent single-use codes,
+  refresh rotation and reuse detection), the audit log in D1, and one gzipped
+  Admin schema is bundled and inflated on first use. See
+  docs/DEPLOY-CLOUDFLARE.md. `serve` and the Dockerfile remain the "any
+  server" option; both share the settings code (`src/hosted/config.ts`).
+- Hosted internals: token encryption and Shopify HMAC use Web Crypto (the
+  stored token format is unchanged, no migration); client metadata documents
+  are fetched with plain `fetch` on Workers and with DNS pinning on Node; the
+  OS keychain is imported only on the local stdio path.
+- Hosted: per-user Shopify access. Each person's tool calls use their own
+  Shopify online token for each store (`grant_options[]=per-user`), so Shopify
+  enforces their permissions. Tokens are encrypted with AES-256-GCM
+  (`SHOPIFY_TOKEN_ENCRYPTION_KEY`). Settings: `SHOPIFY_APP_CLIENT_ID`,
+  `SHOPIFY_APP_CLIENT_SECRET`, `SHOPIFY_APP_SCOPES`.
 - `shopify_run_action` dry runs report whether the preview is complete. IDs
   written inline in the document are looked up too. Search, saved-search,
   filter, and "all" style mutations, more than 250 IDs, and IDs that do not
