@@ -20,7 +20,9 @@ export const KNOWN_CLIENT_REDIRECTS = Object.freeze([
     // VS Code Insiders, through the insiders.vscode.dev redirector.
     { uri: "https://insiders.vscode.dev/redirect", client: "VS Code Insiders" },
     // Cursor remote MCP servers, through its registered private-use URI scheme.
-    { uri: "cursor://anysphere.cursor-mcp/oauth/callback", client: "Cursor" }
+    { uri: "cursor://anysphere.cursor-mcp/oauth/callback", client: "Cursor" },
+    // Cursor web and cloud agents (desktop Cursor uses a loopback redirect, covered below).
+    { uri: "https://www.cursor.com/agents/mcp/oauth/callback", client: "Cursor (web)" }
     // TODO: Windsurf. Its native remote-MCP OAuth callback scheme is not published; when it is
     // known, add it here. Until then Windsurf works through loopback (for example mcp-remote)
     // or a personal access token.
