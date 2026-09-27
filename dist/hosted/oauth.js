@@ -71,6 +71,8 @@ export class AuthorizationServer {
     now;
     log;
     cimdCache = new Map();
+    /** Per refresh-token lock chain, so concurrent uses of one token are handled one at a time. */
+    refreshLocks = new Map();
     constructor(options) {
         this.options = options;
         this.issuer = trimSlash(options.issuer);
@@ -448,6 +450,25 @@ export class AuthorizationServer {
         if (!token)
             return oauthError("invalid_request", "refresh_token is required.");
         const key = sha256(token);
+        // Serialize every use of the same refresh token. Without this, concurrent requests could all
+        // read the record before any of them marked it rotated, and each would get new tokens.
+        // With it, exactly one succeeds and the others see a rotated token and revoke the family.
+        const previous = this.refreshLocks.get(key) ?? Promise.resolve();
+        let release;
+        const held = new Promise((resolve) => { release = resolve; });
+        const chain = previous.then(() => held);
+        this.refreshLocks.set(key, chain);
+        await previous;
+        try {
+            return await this.refreshTokenGrantLocked(client, body, key);
+        }
+        finally {
+            release();
+            if (this.refreshLocks.get(key) === chain)
+                this.refreshLocks.delete(key);
+        }
+    }
+    async refreshTokenGrantLocked(client, body, key) {
         const record = await this.options.store.get("refresh", key);
         if (!record)
             return oauthError("invalid_grant", "The refresh token is invalid or expired.");
@@ -476,6 +497,7 @@ export class AuthorizationServer {
             return oauthError("invalid_grant", "The user no longer has access.");
         }
         // Rotation: keep the old token only as a reuse tripwire until it would have expired.
+        // Written before new tokens are issued, while this token's lock is held.
         await this.options.store.put("refresh", key, { ...record, rotated: true }, record.expiresAt);
         return this.issueTokens(client, record.email, record.scope, record.familyId, record.familyStartedAt);
     }

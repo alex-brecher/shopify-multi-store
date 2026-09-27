@@ -161,6 +161,8 @@ export class AuthorizationServer {
   private readonly now: () => number;
   private readonly log: (message: string) => void;
   private readonly cimdCache = new Map<string, { client: ClientRecord; fetchedAt: number }>();
+  /** Per refresh-token lock chain, so concurrent uses of one token are handled one at a time. */
+  private readonly refreshLocks = new Map<string, Promise<void>>();
 
   constructor(private readonly options: AuthServerOptions) {
     this.issuer = trimSlash(options.issuer);
@@ -527,6 +529,24 @@ export class AuthorizationServer {
     const token = body.get("refresh_token");
     if (!token) return oauthError("invalid_request", "refresh_token is required.");
     const key = sha256(token);
+    // Serialize every use of the same refresh token. Without this, concurrent requests could all
+    // read the record before any of them marked it rotated, and each would get new tokens.
+    // With it, exactly one succeeds and the others see a rotated token and revoke the family.
+    const previous = this.refreshLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const chain = previous.then(() => held);
+    this.refreshLocks.set(key, chain);
+    await previous;
+    try {
+      return await this.refreshTokenGrantLocked(client, body, key);
+    } finally {
+      release();
+      if (this.refreshLocks.get(key) === chain) this.refreshLocks.delete(key);
+    }
+  }
+
+  private async refreshTokenGrantLocked(client: ClientRecord, body: URLSearchParams, key: string): Promise<Response> {
     const record = await this.options.store.get<RefreshRecord>("refresh", key);
     if (!record) return oauthError("invalid_grant", "The refresh token is invalid or expired.");
     if (record.clientId !== client.client_id) return oauthError("invalid_grant", "The refresh token was issued to another client.");
@@ -552,6 +572,7 @@ export class AuthorizationServer {
       return oauthError("invalid_grant", "The user no longer has access.");
     }
     // Rotation: keep the old token only as a reuse tripwire until it would have expired.
+    // Written before new tokens are issued, while this token's lock is held.
     await this.options.store.put<RefreshRecord>("refresh", key, { ...record, rotated: true }, record.expiresAt);
     return this.issueTokens(client, record.email, record.scope, record.familyId, record.familyStartedAt);
   }

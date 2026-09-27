@@ -352,6 +352,20 @@ test("refresh re-evaluates the access policy and revokes a removed user's family
   assert.equal(stillRevoked.body.error, "invalid_grant");
 });
 
+test("concurrent use of one refresh token yields exactly one success and revokes the family", async (t) => {
+  const { app } = await setup(t);
+  const { client, tokens } = await login(app, "admin|bariatricpal.com");
+  const results = await Promise.all([1, 2, 3, 4].map(() =>
+    tokenRequest(app, { grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id })));
+  const ok = results.filter((r) => r.response.status === 200);
+  assert.equal(ok.length, 1, JSON.stringify(results.map((r) => r.response.status)));
+  assert.ok(results.filter((r) => r.response.status !== 200).every((r) => r.body.error === "invalid_grant"));
+  // The reuse revoked the whole family, including the tokens the winning request received.
+  assert.equal(await app.auth.verifyAccessToken(ok[0].body.access_token), undefined);
+  const next = await tokenRequest(app, { grant_type: "refresh_token", refresh_token: ok[0].body.refresh_token, client_id: client.client_id });
+  assert.equal(next.body.error, "invalid_grant");
+});
+
 test("access tokens expire", async (t) => {
   const { app, advance } = await setup(t);
   const { tokens } = await login(app, "admin|bariatricpal.com");

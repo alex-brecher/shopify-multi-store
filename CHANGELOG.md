@@ -36,6 +36,9 @@ This file records notable changes to Shopify Multi-Store MCP.
 - Hosted: cap the lifetime of a refresh token family with
   `OAUTH_SESSION_MAX_AGE_SECONDS` (default 7 days). After it, the user signs in
   with Google again. Every refresh re-checks the access policy.
+- Hosted: fix a race where concurrent requests with the same refresh token
+  could all succeed. Uses of one refresh token are now serialized, so exactly
+  one succeeds and the rest trigger family revocation.
 
 ## [1.6.0] - 2026-09-07
 

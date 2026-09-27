@@ -71,6 +71,8 @@ export declare class AuthorizationServer {
     private readonly now;
     private readonly log;
     private readonly cimdCache;
+    /** Per refresh-token lock chain, so concurrent uses of one token are handled one at a time. */
+    private readonly refreshLocks;
     constructor(options: AuthServerOptions);
     get resourceMetadataUrl(): string;
     protectedResourceMetadata(): Record<string, unknown>;
@@ -87,6 +89,7 @@ export declare class AuthorizationServer {
     private authenticateClient;
     private authorizationCodeGrant;
     private refreshTokenGrant;
+    private refreshTokenGrantLocked;
     private revokeFamily;
     private issueTokens;
     /** Look up a bearer token. Returns the record only if it is live and bound to this resource. */
