@@ -299,7 +299,7 @@ export function registerActionTools(server: McpServer): void {
     {
       title: "Run a Shopify Admin Action",
       description:
-        "Run any Shopify Admin API mutation on one to one hundred stores. Give a mutation name (a default document is built) or a full single-mutation document, plus variables shared by every store and/or variablesByStore (IDs differ per store). dryRun (the default) validates the document and variables against each store's API version and looks up every record ID in the variables and the document; nothing is changed. The preview says whether it is complete: targets chosen by a search, saved search, filter, or \"all\" flag, more than 250 IDs, or IDs that do not resolve make it incomplete, and then applying also needs acknowledgeIncompletePreview: true. dryRun false applies it. Destructive actions (delete, cancel, refund and similar) need confirm set to the mutation name. Mutations are never retried automatically. On a hosted server in per-user mode, Shopify limits this to what your own staff account may do.",
+        "Run any Shopify Admin API mutation on one to one hundred stores. Give a mutation name (a default document is built) or a full single-mutation document, plus variables shared by every store and/or variablesByStore (IDs differ per store). dryRun (the default) validates the document and variables against each store's API version and looks up every record ID in the variables and the document; nothing is changed. The preview says whether it is complete: targets chosen by a search, saved search, filter, or \"all\" flag, more than 250 IDs, or IDs that do not resolve make it incomplete, and then applying also needs acknowledgeIncompletePreview: true. dryRun false applies it; every ID is looked up again first, and IDs that do not resolve refuse the apply unless acknowledgeIncompletePreview is true. Destructive actions (delete, cancel, refund and similar) need confirm set to the mutation name. Mutations are never retried automatically. On a hosted server in per-user mode, Shopify limits this to what your own staff account may do.",
       inputSchema: z.object({
         stores: z.array(StoreAlias).min(1).max(100),
         mutation: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional().describe("Mutation name. Required unless document is given; if both are given, the document must call it."),
@@ -308,7 +308,7 @@ export function registerActionTools(server: McpServer): void {
         variablesByStore: z.record(z.string(), Variables).optional().describe("Per-store variables by alias, merged over variables."),
         dryRun: z.boolean().default(true),
         confirm: z.string().max(2_000).optional().describe("For destructive actions: the mutation name (several destructive mutations: comma-separated, in document order)."),
-        acknowledgeIncompletePreview: z.boolean().default(false).describe("Required, with dryRun false, when the targets cannot all be listed in advance (search, saved search, filter, or \"all\" style arguments, or more than 250 IDs). Prefer narrowing the document to explicit IDs instead."),
+        acknowledgeIncompletePreview: z.boolean().default(false).describe("Required, with dryRun false, when the targets cannot all be listed in advance (search, saved search, filter, or \"all\" style arguments, or more than 250 IDs) or when a named ID does not resolve at apply time. Prefer narrowing the document to explicit IDs instead."),
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
@@ -412,31 +412,39 @@ export function registerActionTools(server: McpServer): void {
           return reasons;
         };
         const NARROW = "Do not apply without narrowing: name the records by ID (at most 250 per store), or split the change.";
+        // Look up the IDs a plan names (variables and inline literals) with nodes(ids:), at most
+        // MAX_RESOLVED_IDS per store. Used by the dry run and again right before applying.
+        const lookupTargets = async (plan: Plan) => {
+          const ids = targetIds(plan);
+          let touched: unknown[] = [];
+          let resolveErrors: string[] = [];
+          let unresolved: string[] = [];
+          if (ids.length && plan.store && plan.schema) {
+            const lookup = ids.slice(0, MAX_RESOLVED_IDS);
+            try {
+              const envelope = await adminGraphql(plan.store, resolveQuery(plan.schema, lookup), { ids: lookup });
+              const nodes = ((envelope.data as { nodes?: unknown[] } | undefined)?.nodes ?? []);
+              touched = lookup.map((id, index) => nodes[index] ?? { id, found: false });
+              unresolved = lookup.filter((_id, index) => nodes[index] == null);
+              if (Array.isArray(envelope.errors) && envelope.errors.length) {
+                resolveErrors = [accessDeniedMessage(envelope.errors, plan.alias, ["nodes"]) ?? JSON.stringify(envelope.errors).slice(0, 1_000)];
+              }
+            } catch (error) {
+              resolveErrors = [error instanceof Error ? error.message : String(error)];
+            }
+          }
+          return { ids, touched, unresolved, resolveErrors };
+        };
+        const unresolvedReason = (count: number) => `${count} ID${count === 1 ? "" : "s"} did not resolve to a record (deleted, from another store, or not visible to this account).`;
+        const LOOKUP_FAILED = "The record lookup returned errors, so the targets could not be confirmed.";
 
         if (args.dryRun) {
           const previews = await mapConcurrent(plans, async (plan) => {
             if (plan.errors.length || !plan.store || !plan.schema) return { store: plan.alias, ok: false, errors: plan.errors, warnings: plan.warnings };
-            const ids = targetIds(plan);
             const reasons = staticGaps(plan);
-            let touched: unknown[] = [];
-            let resolveErrors: string[] = [];
-            let unresolved: string[] = [];
-            if (ids.length) {
-              const lookup = ids.slice(0, MAX_RESOLVED_IDS);
-              try {
-                const envelope = await adminGraphql(plan.store, resolveQuery(plan.schema, lookup), { ids: lookup });
-                const nodes = ((envelope.data as { nodes?: unknown[] } | undefined)?.nodes ?? []);
-                touched = lookup.map((id, index) => nodes[index] ?? { id, found: false });
-                unresolved = lookup.filter((_id, index) => nodes[index] == null);
-                if (Array.isArray(envelope.errors) && envelope.errors.length) {
-                  resolveErrors = [accessDeniedMessage(envelope.errors, plan.alias, ["nodes"]) ?? JSON.stringify(envelope.errors).slice(0, 1_000)];
-                }
-              } catch (error) {
-                resolveErrors = [error instanceof Error ? error.message : String(error)];
-              }
-            }
-            if (unresolved.length) reasons.push(`${unresolved.length} ID${unresolved.length === 1 ? "" : "s"} did not resolve to a record (deleted, from another store, or not visible to this account).`);
-            if (resolveErrors.length) reasons.push("The record lookup returned errors, so the targets could not be confirmed.");
+            const { ids, touched, unresolved, resolveErrors } = await lookupTargets(plan);
+            if (unresolved.length) reasons.push(unresolvedReason(unresolved.length));
+            if (resolveErrors.length) reasons.push(LOOKUP_FAILED);
             const complete = reasons.length === 0;
             return {
               store: plan.alias,
@@ -505,6 +513,22 @@ export function registerActionTools(server: McpServer): void {
           return fail("Nothing was changed: some stores failed preflight. Fix these and run again.", {
             results: plans.map((plan) => ({ store: plan.alias, ok: plan.errors.length === 0, errors: plan.errors, warnings: plan.warnings })),
           });
+        }
+
+        // Resolve every named ID again right before applying, as the dry run did: a record
+        // deleted or from another store since the preview must not be written blindly.
+        if (!args.acknowledgeIncompletePreview) {
+          const lookups = await mapConcurrent(plans, async (plan) => ({ plan, ...(await lookupTargets(plan)) }), RUN_CONCURRENCY);
+          const missing = lookups.flatMap(({ plan, unresolved, resolveErrors }) => [
+            ...(unresolved.length ? [`${plan.alias}: ${unresolvedReason(unresolved.length)}`] : []),
+            ...(resolveErrors.length ? [`${plan.alias}: ${LOOKUP_FAILED}`] : []),
+          ]);
+          if (missing.length) {
+            return await refuse(`Nothing was changed: some record IDs in this document could not be confirmed. ${NARROW} To apply anyway, pass acknowledgeIncompletePreview: true as well.`, {
+              reasons: missing,
+              unresolved: Object.fromEntries(lookups.filter((lookup) => lookup.unresolved.length).map((lookup) => [lookup.plan.alias, lookup.unresolved])),
+            });
+          }
         }
 
         const outcomes = await mapConcurrent(plans, async (plan) => {

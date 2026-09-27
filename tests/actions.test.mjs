@@ -350,7 +350,8 @@ test("a throttled mutation is not resent and is reported as not applied, safe to
   assert.equal(outcome.outcome, "throttled");
   assert.match(outcome.error, /not applied.*safe to retry after about 2 seconds/);
   assert.equal(outcome.retryAfterMs, 2000);
-  assert.equal(requests.length, 0);
+  // Only the apply-time ID lookup reached the fixture; the mutation never did.
+  assert.equal(mutationRequests(requests).length, 0);
 
   // The same holds for a GraphQL THROTTLED error with no data (HTTP 200).
   mutationCalls = 0;
@@ -530,6 +531,44 @@ test("an ID that does not resolve is listed and makes the preview incomplete", a
   assert.match(store.preview.reasons.join(" "), /did not resolve/);
   assert.match(store.preview.recommendation, /Do not apply without narrowing/);
   assert.equal(result.structuredContent.complete, false);
+});
+
+test("applying resolves every ID again and refuses unresolved ones unless acknowledgeIncompletePreview", async (t) => {
+  let lookupFails = false;
+  const { callTool, requests } = await fixture(t, (request) => {
+    if (lookupFails && /nodes\(ids:/.test(request.query)) return { errors: [{ message: "Internal error" }] };
+    if (/^\s*mutation/.test(request.query)) return { data: { tagsAdd: tagsPayload("gid://shopify/Product/5") } };
+    return undefined;
+  });
+  // One unresolved ID in the variables, one inline in the document.
+  const byVariables = { mutation: "productVariantsBulkUpdate", variables: { productId: "gid://shopify/Product/1", variants: [{ id: "gid://shopify/ProductVariant/404", price: "1.00" }] }, dryRun: false };
+  const byInline = { document: "mutation { tagsAdd(id: \"gid://shopify/Product/404\", tags: [\"x\"]) { node { id } } }", dryRun: false };
+  for (const args of [byVariables, byInline]) {
+    const refused = await dry(callTool, args);
+    assert.equal(refused.isError, true, refused.content[0].text);
+    assert.match(refused.content[0].text, /could not be confirmed/);
+    assert.match(refused.content[0].text, /acknowledgeIncompletePreview: true/);
+    assert.match(refused.structuredContent.reasons.join(" "), /main: 1 ID did not resolve/);
+    assert.ok(Object.values(refused.structuredContent.unresolved).flat().some((id) => id.endsWith("/404")));
+  }
+  assert.equal(mutationRequests(requests).length, 0, "nothing was applied");
+  assert.ok(requests.filter((request) => /nodes\(ids:/.test(request.query)).length >= 2, "IDs were looked up at apply time");
+
+  const resolvable = { ...byInline, document: byInline.document.replace("/404", "/5") };
+  lookupFails = true;
+  const blocked = await dry(callTool, resolvable);
+  assert.equal(blocked.isError, true);
+  assert.match(blocked.structuredContent.reasons.join(" "), /lookup returned errors/);
+  assert.equal(mutationRequests(requests).length, 0, "a failed lookup also blocks applying");
+  lookupFails = false;
+
+  const acknowledged = await dry(callTool, { ...byInline, acknowledgeIncompletePreview: true });
+  assert.ok(!/could not be confirmed/.test(acknowledged.content[0].text));
+  assert.equal(mutationRequests(requests).length, 1);
+
+  const applied = await dry(callTool, resolvable);
+  assert.notEqual(applied.isError, true, applied.content[0].text);
+  assert.equal(mutationRequests(requests).length, 2);
 });
 
 test("more than 250 targets is incomplete and applying needs acknowledgeIncompletePreview", async (t) => {

@@ -55,6 +55,10 @@ person to their own staff permissions.
 - Mutations are never resent after Shopify throttles them; the result says the
   change was not applied and is safe to retry.
 - Docs: add `docs/ACTIONS.md`.
+- `shopify_run_action` resolves every record ID again (variables and inline)
+  with `nodes(ids:)` per store right before applying. An ID that does not
+  resolve, or a failed lookup, refuses the apply unless
+  `acknowledgeIncompletePreview: true`, matching the dry-run message.
 - Hosted audit: `action_run` outcomes and failed Shopify token exchanges no
   longer store error text (a preflight coercion error quotes the input back,
   customer data included). They use the structured `error` of tool calls.

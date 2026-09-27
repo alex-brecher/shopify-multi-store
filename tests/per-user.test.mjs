@@ -62,7 +62,8 @@ async function shopifyMock(t) {
       requests.push({ token: request.headers["x-shopify-access-token"], body: JSON.parse(body) });
       response.writeHead(200, { "content-type": "application/json" });
       // Every mutation root these tests send gets a clean payload, so per-root outcomes read "applied".
-      response.end(JSON.stringify({ data: { shop: { name: "Mock Shop" }, productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] }, tagsAdd: { node: { id: "gid://shopify/Product/1" }, userErrors: [] }, productDelete: { deletedProductId: "gid://shopify/Product/1", userErrors: [] } } }));
+      const ids = JSON.parse(body).variables?.ids;
+      response.end(JSON.stringify({ data: { ...(Array.isArray(ids) ? { nodes: ids.map((id) => ({ __typename: id.split("/")[3], id })) } : {}), shop: { name: "Mock Shop" }, productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] }, tagsAdd: { node: { id: "gid://shopify/Product/1" }, userErrors: [] }, productDelete: { deletedProductId: "gid://shopify/Product/1", userErrors: [] } } }));
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
