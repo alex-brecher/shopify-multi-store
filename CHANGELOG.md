@@ -4,6 +4,26 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Hosted: work with any MCP client on any plan, not only Claude. Built-in
+  redirect URIs for Claude, ChatGPT, VS Code, VS Code Insiders, and Cursor
+  live in `src/hosted/known-clients.ts`, plus loopback on any port for Claude
+  Code, Codex, Gemini CLI, and desktop apps. `OAUTH_REDIRECT_URIS` now adds to
+  the built-ins (`OAUTH_REDIRECT_URIS_REPLACE=1` replaces them), and
+  `OAUTH_ALLOW_ANY_REDIRECT=1` accepts any https or safe private-use-scheme
+  redirect behind a mandatory consent screen.
+- Hosted: add a consent screen after Google sign-in showing the app, its
+  redirect host, and the user's email, role, and stores. CSRF protected, single
+  use, and remembered for 30 days per user, app, and redirect.
+- Hosted: `OAUTH_CIMD_ALLOWED_HOSTS` defaults to `*`. Every client metadata
+  fetch, including for named hosts, is limited to public addresses.
+- Hosted: add personal access tokens (`smsp_`) managed at `/tokens`, for clients
+  that only send a fixed Authorization header. Stored hashed, policy checked on
+  every request, audited by token id. `PERSONAL_TOKENS_ENABLED` (default 1) and
+  `PERSONAL_TOKEN_MAX_DAYS` (default 180).
+- Hosted: `SERVER_DISPLAY_NAME` sets the name shown in AI apps and on the
+  consent and token pages.
+- Docs: rewrite `docs/HOSTED.md` for any client, with per-client connection
+  steps.
 - Add `shopify-multi-store serve`: a hosted Streamable HTTP connector at `/mcp` with a built-in OAuth 2.1 authorization server (PKCE S256, Dynamic Client Registration, Client ID Metadata Documents, rotating refresh tokens) and Google Workspace sign-in.
 - Add a policy file for per-user roles (admin, editor, viewer) and store allowlists, enforced for every tool.
 - Add a JSON Lines audit log of every hosted tool call.

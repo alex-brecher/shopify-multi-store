@@ -185,7 +185,9 @@ Copy `skills/shopify-multi-store/SKILL.md` into the client's skills directory wh
 
 ## Host it for your team
 
-Run `shopify-multi-store serve` (or the included Dockerfile) once, and add `https://<host>/mcp` as an organization custom connector in Claude. Employees sign in with Google Workspace; Shopify tokens stay on the server. Roles, per-store access, and an audit log are built in. See [docs/HOSTED.md](docs/HOSTED.md).
+Run `shopify-multi-store serve` (or the included Dockerfile) once and share `https://<host>/mcp`. Each person connects from the AI app they already use, on any plan: Claude (personal custom connector), ChatGPT, Codex, Claude Code, Cursor, VS Code, Gemini CLI, Windsurf, or any MCP client that supports remote servers. They sign in with Google Workspace and approve the app on a consent screen; apps that only send a fixed header can use a personal access token from `/tokens`. Shopify tokens stay on the server. Roles, per-store access, and an audit log are built in.
+
+See [Connect from your AI app](docs/HOSTED.md#connect-from-your-ai-app) for per-client steps and [docs/HOSTED.md](docs/HOSTED.md) for setup.
 
 ## Store authentication
 

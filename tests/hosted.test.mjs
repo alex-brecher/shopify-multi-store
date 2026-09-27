@@ -1028,3 +1028,20 @@ test("SERVER_DISPLAY_NAME names the MCP server, resource metadata, consent and t
   assert.equal(unnamed.auth.displayName, "Shopify Multi-Store");
   await assert.rejects(buildHostedAppFromEnv({ ...base, SERVER_DISPLAY_NAME: "bad\nname" }), /SERVER_DISPLAY_NAME/);
 });
+
+test("hosted docs cover every client and every serve setting", async () => {
+  const hosted = await readFile(new URL("../docs/HOSTED.md", import.meta.url), "utf8");
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const serveSource = await readFile(new URL("../src/serve.ts", import.meta.url), "utf8");
+  assert.match(hosted, /^## Connect from your AI app$/m);
+  for (const client of ["Claude", "ChatGPT", "Codex", "Claude Code", "Cursor", "VS Code", "Gemini CLI", "Windsurf", "Personal access tokens"]) {
+    assert.match(hosted, new RegExp(`^### ${client}\\b`, "m"), client);
+  }
+  assert.match(hosted, /per OpenAI's current terms/);
+  assert.match(hosted, /codex mcp login shopify/);
+  assert.match(hosted, /claude mcp add --transport http shopify https:\/\/<host>\/mcp/);
+  const settings = new Set([...serveSource.matchAll(/env\.([A-Z][A-Z0-9_]+)|"([A-Z][A-Z0-9_]{3,})"/g)].map((m) => m[1] ?? m[2]).filter((name) => !name.endsWith("_FILE") && !["SIGTERM", "SIGINT"].includes(name)));
+  for (const name of settings) assert.ok(hosted.includes(`\`${name}\``), `docs/HOSTED.md documents ${name}`);
+  assert.ok(readme.includes("docs/HOSTED.md#connect-from-your-ai-app"));
+  for (const [name, text] of [["HOSTED.md", hosted], ["README.md", readme]]) assert.ok(!text.includes("\u2014"), `${name} has no em dashes`);
+});
