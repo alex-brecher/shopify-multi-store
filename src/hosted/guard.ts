@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { storeAllowed, storeScope, type ActionAuditDetails, type UserShopifyAccess } from "../runtime.js";
-import { auditArguments, canonicalJson, capString, sha256Hex, type AuditLog } from "./audit.js";
+import { auditArguments, auditError, canonicalJson, sha256Hex, type AuditLog } from "./audit.js";
 import type { Principal, Role } from "./policy.js";
 
 /** Tools only an admin may call in hosted mode, whatever their annotations say. */
@@ -139,9 +139,8 @@ export function guardServer(server: McpServer, { principal, audit, tokenId, acce
         throw error;
       } finally {
         const isError = Boolean(failure) || Boolean(result && typeof result === "object" && (result as { isError?: boolean }).isError);
-        const errorText = failure
-          ? (failure instanceof Error ? failure.message : String(failure))
-          : isError ? errorMessage(result) : undefined;
+        // Never the message text: it can quote customer data back from Shopify.
+        const errorInfo = failure ? auditError(failure) : isError ? auditError(undefined, result) : undefined;
         try {
           await audit.write({
             event: "tool_call",
@@ -154,7 +153,7 @@ export function guardServer(server: McpServer, { principal, audit, tokenId, acce
             stores,
             readOnly,
             ok: !isError,
-            ...(errorText ? { error: errorText.slice(0, 500) } : {}),
+            ...(errorInfo ? { error: errorInfo } : {}),
             durationMs: Date.now() - started,
             // Every call records a hash of its arguments and the arguments reduced by
             // auditArguments(): GraphQL documents summarized, variables and free text hashed,
@@ -186,8 +185,3 @@ function shopifyAccounts(access: UserShopifyAccess, stores: string[]): Record<st
   return out;
 }
 
-function errorMessage(result: unknown): string | undefined {
-  const content = (result as { content?: Array<{ type?: string; text?: string }> })?.content;
-  const text = content?.find((item) => item.type === "text")?.text;
-  return typeof text === "string" ? text : "Tool returned an error.";
-}

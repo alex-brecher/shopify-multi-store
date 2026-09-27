@@ -2,6 +2,80 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Kind, parse, visit } from "graphql";
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
+/** Codes recognized in plain text. Only underscore-joined upper-case tokens and a few known words. */
+const TEXT_ERROR_CODE = /\b(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|THROTTLED|UNAUTHORIZED|FORBIDDEN)\b/g;
+const FIELD_SEGMENT = /^(?:[A-Za-z_][A-Za-z0-9_]{0,63}|\d{1,9})$/;
+const MAX_ERROR_ITEMS = 20;
+function collectErrorDetail(value, codes, fields, flags, depth = 0) {
+    if (depth > 12 || value === null || typeof value !== "object")
+        return;
+    if (Array.isArray(value)) {
+        for (const item of value.slice(0, 200))
+            collectErrorDetail(item, codes, fields, flags, depth + 1);
+        return;
+    }
+    for (const [key, item] of Object.entries(value)) {
+        if (key === "code" && typeof item === "string" && ERROR_CODE.test(item))
+            codes.add(item);
+        else if (key === "field" && Array.isArray(item) && item.length) {
+            fields.add(item.slice(0, 10).map((part) => (typeof part === "string" || typeof part === "number") && FIELD_SEGMENT.test(String(part)) ? String(part) : "?").join("."));
+        }
+        if (key === "errors" && Array.isArray(item) && item.length)
+            flags.graphql = true;
+        if (key === "userErrors" && Array.isArray(item) && item.length)
+            flags.user = true;
+        collectErrorDetail(item, codes, fields, flags, depth + 1);
+    }
+}
+/**
+ * Reduce a tool failure to structured, PII-free audit detail. `thrown` is an exception the tool
+ * raised; `result` is an isError tool result. Codes and field paths come from structured content
+ * (and from JSON embedded in the message); free text only contributes the HTTP status and
+ * upper-case error codes. The full message is kept only as a sha256.
+ */
+export function auditError(thrown, result) {
+    const content = result?.content;
+    const message = thrown !== undefined
+        ? (thrown instanceof Error ? thrown.message : String(thrown))
+        : content?.find((item) => item.type === "text")?.text ?? "Tool returned an error.";
+    const codes = new Set();
+    const fields = new Set();
+    const flags = { graphql: false, user: false };
+    const structured = result?.structuredContent;
+    if (structured !== undefined)
+        collectErrorDetail(structured, codes, fields, flags);
+    // Messages often embed a JSON body ("Response: {...}") or are JSON themselves.
+    for (const start of [message.indexOf("{"), message.indexOf("[")].filter((index) => index >= 0)) {
+        try {
+            collectErrorDetail(JSON.parse(message.slice(start)), codes, fields, flags);
+            break;
+        }
+        catch {
+            // Not JSON (or truncated JSON); fall back to the text scan below.
+        }
+    }
+    for (const match of message.matchAll(TEXT_ERROR_CODE))
+        codes.add(match[0]);
+    const status = /\bHTTP (\d{3})\b/.exec(message)?.[1];
+    const httpStatus = status ? Number(status) : undefined;
+    const exception = thrown instanceof Error && /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(thrown.name) ? thrown.name : undefined;
+    const errorClass = /^Access denied:/.test(message) ? "access_denied"
+        : codes.has("THROTTLED") || /\bthrottled\b/i.test(message) ? "throttled"
+            : /did not respond within/.test(message) ? "timeout"
+                : httpStatus !== undefined ? "http_error"
+                    : flags.user ? "user_errors"
+                        : flags.graphql ? "graphql_errors"
+                            : thrown !== undefined ? "exception" : "tool_error";
+    return {
+        class: errorClass,
+        ...(exception ? { exception } : {}),
+        ...(httpStatus !== undefined ? { httpStatus } : {}),
+        ...(codes.size ? { codes: [...codes].sort().slice(0, MAX_ERROR_ITEMS) } : {}),
+        ...(fields.size ? { fields: [...fields].sort().slice(0, MAX_ERROR_ITEMS) } : {}),
+        messageSha256: sha256Hex(message)
+    };
+}
 /** Longest string kept for any logged argument value. */
 export const AUDIT_MAX_STRING = 2_000;
 /** Longest audit line, in bytes. */
@@ -139,8 +213,6 @@ export function auditLine(entry) {
         return line;
     const slim = { ...entry, truncated: true };
     delete slim.args;
-    if (typeof slim.error === "string")
-        slim.error = capString(slim.error, 500);
     if (typeof slim.reason === "string")
         slim.reason = capString(slim.reason, 500);
     line = JSON.stringify(slim);

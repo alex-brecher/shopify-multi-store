@@ -176,15 +176,16 @@ async function mcpClient(t, app, accessToken) {
   return client;
 }
 
-async function shopifyMock(t) {
+async function shopifyMock(t, respond) {
   const requests = [];
   const server = http.createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => { body += chunk; });
     request.on("end", () => {
       requests.push({ token: request.headers["x-shopify-access-token"], body: JSON.parse(body) });
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ data: { shop: { name: "Mock Shop" }, productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] } } }));
+      const custom = respond?.(JSON.parse(body));
+      response.writeHead(custom?.status ?? 200, { "content-type": "application/json" });
+      response.end(JSON.stringify(custom?.body ?? { data: { shop: { name: "Mock Shop" }, productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] } } }));
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -628,6 +629,63 @@ test("audit lines never contain customer PII from GraphQL literals, variables, o
   const customers = lines.find((line) => line.tool === "shopify_list_customers");
   assert.match(orders.args.query, /^\[sha256:[0-9a-f]{64}\]$/);
   assert.notEqual(orders.args.query, customers.args.query, "different searches hash differently");
+});
+
+test("audit lines record failed tool calls as structured codes, never the error text", async (t) => {
+  const pii = ["jane.doe@example.com", "+1 555 010 0199", "Janet Q. Sample", "12 Elm Street", "Springfield"];
+  const echo = `${pii[0]} ${pii[1]} ${pii[2]} ${pii[3]}, ${pii[4]}`;
+  await shopifyMock(t, (body) => {
+    if (/customerUpdate/.test(body.query)) {
+      return { body: { data: { customerUpdate: { customer: null, userErrors: [{ field: ["input", "email"], code: "TAKEN", message: `Email ${echo} has already been taken` }] } } } };
+    }
+    return { status: 403, body: { errors: [{ message: `Access denied for ${echo}`, extensions: { code: "ACCESS_DENIED" } }] } };
+  });
+  const { app, auditPath } = await setup(t, {
+    allowedDomains: ["example.com"],
+    policy: staticPolicy({ users: { "admin@example.com": { role: "admin", stores: "*" } }, domains: {} })
+  });
+  const { tokens } = await login(app, "admin|example.com");
+  const client = await mcpClient(t, app, tokens.access_token);
+
+  const read = await client.callTool({ name: "shopify_graphql_query", arguments: { store: "main", query: "{ shop { name } }" } });
+  assert.equal(read.isError, true);
+  assert.ok(read.content[0].text.includes(pii[0]), "the caller still sees the full message");
+  const mutation = "mutation Update($input: CustomerInput!) { customerUpdate(input: $input) { customer { id } userErrors { field code message } } }";
+  const write = await client.callTool({ name: "shopify_graphql_mutation", arguments: { store: "main", mutation, variables: { input: { id: "gid://shopify/Customer/7", email: pii[0] } }, confirm: true } });
+  assert.equal(write.isError, true);
+
+  const raw = await readFile(auditPath, "utf8");
+  for (const value of [...pii, "Access denied for", "already been taken"]) assert.ok(!raw.includes(value), `audit log contains ${value}`);
+  const lines = await auditLines(auditPath);
+  const readEntry = lines.find((line) => line.tool === "shopify_graphql_query");
+  assert.equal(readEntry.ok, false);
+  assert.equal(readEntry.error.class, "http_error");
+  assert.equal(readEntry.error.httpStatus, 403);
+  assert.deepEqual(readEntry.error.codes, ["ACCESS_DENIED"]);
+  assert.match(readEntry.error.messageSha256, /^[0-9a-f]{64}$/);
+  assert.equal(readEntry.error.messageSha256, createHash("sha256").update(read.content[0].text).digest("hex"));
+  const writeEntry = lines.find((line) => line.tool === "shopify_graphql_mutation");
+  assert.equal(writeEntry.ok, false);
+  assert.equal(writeEntry.error.class, "user_errors");
+  assert.deepEqual(writeEntry.error.codes, ["TAKEN"]);
+  assert.deepEqual(writeEntry.error.fields, ["input.email"]);
+});
+
+test("auditError keeps codes, statuses and field paths, never message text", async () => {
+  const { auditError } = await import("../dist/hosted/audit.js");
+  const thrown = new TypeError("Shopify throttled main for jane.doe@example.com at 12 Elm Street. Response: {\"errors\":[{\"message\":\"Jane Doe\",\"extensions\":{\"code\":\"THROTTLED\"}}]}");
+  const info = auditError(thrown);
+  assert.equal(info.class, "throttled");
+  assert.equal(info.exception, "TypeError");
+  assert.deepEqual(info.codes, ["THROTTLED"]);
+  const text = JSON.stringify(info);
+  for (const value of ["jane.doe@example.com", "12 Elm Street", "Jane Doe"]) assert.ok(!text.includes(value), value);
+  const denied = auditError(undefined, { isError: true, content: [{ type: "text", text: "Access denied: jane@example.com is not allowed to use store \"x\"." }] });
+  assert.equal(denied.class, "access_denied");
+  assert.ok(!JSON.stringify(denied).includes("jane@example.com"));
+  const odd = auditError(undefined, { isError: true, structuredContent: { userErrors: [{ field: ["input", "Jane Doe <jane@example.com>"], code: "not a code", message: "x" }] }, content: [{ type: "text", text: "failed" }] });
+  assert.deepEqual(odd.fields, ["input.?"]);
+  assert.equal(odd.codes, undefined);
 });
 
 test("audit argument reduction keeps only allowlisted scalars", async () => {
