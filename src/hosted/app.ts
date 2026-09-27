@@ -20,6 +20,11 @@ export interface HostedAppOptions extends AuthServerOptions {
    * "app" (the default here; serve mode defaults to per_user): the shared app token for each store.
    */
   shopifyAccessMode?: ShopifyAccessMode;
+  /**
+   * Per-user mode: whether personal access tokens may use the owner's Shopify connections.
+   * Off by default. When on, personal tokens are capped at PERSONAL_TOKEN_SHOPIFY_MAX_DAYS.
+   */
+  personalTokensShopifyAccess?: boolean;
   /** Required in per_user mode. auth, store, policy and now are filled in from these options. */
   shopifyConnect?: Omit<ShopifyConnectOptions, "auth" | "store" | "policy" | "now">;
 }
@@ -60,14 +65,18 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
  * OAuth metadata, authorization server, Google sign-in callback, health check,
  * and the Streamable HTTP MCP endpoint at /mcp behind bearer-token auth.
  */
+/** Longest personal access token lifetime when personal tokens may use Shopify (per-user mode). */
+export const PERSONAL_TOKEN_SHOPIFY_MAX_DAYS = 30;
+
 export function createHostedApp(options: HostedAppOptions): HostedApp {
   const auth = new AuthorizationServer(options);
+  const patShopify = options.shopifyAccessMode === "per_user" && options.personalTokensShopifyAccess === true;
   const tokens = new PersonalTokens({
     auth,
     store: options.store,
     policy: options.policy,
     enabled: options.personalTokensEnabled ?? true,
-    maxDays: options.personalTokenMaxDays ?? 180,
+    maxDays: patShopify ? Math.min(options.personalTokenMaxDays ?? 180, PERSONAL_TOKEN_SHOPIFY_MAX_DAYS) : options.personalTokenMaxDays ?? 180,
     ...(options.now ? { now: options.now } : {})
   });
   const accessMode: ShopifyAccessMode = options.shopifyAccessMode ?? "app";
@@ -140,6 +149,19 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
     return mcp.fetch(request, { authInfo });
   }
 
+  /**
+   * Personal access tokens are long-lived bearer secrets, so in per-user mode they carry no Shopify
+   * access unless PERSONAL_TOKENS_SHOPIFY_ACCESS=1, and then only tokens of at most 30 days.
+   */
+  async function personalTokenAccess(connections: ShopifyConnections, email: string, record: { createdAt: number; expiresAt: number }): Promise<UserShopifyAccess> {
+    const lifetimeOk = record.expiresAt - record.createdAt <= PERSONAL_TOKEN_SHOPIFY_MAX_DAYS * 24 * 3600_000;
+    if (patShopify && lifetimeOk) return connections.accessFor(email);
+    const reason = patShopify
+      ? `This personal access token lives longer than ${PERSONAL_TOKEN_SHOPIFY_MAX_DAYS} days, so it cannot use Shopify. Create a new one at ${auth.issuer}/tokens.`
+      : `Personal access tokens cannot use Shopify on this server (per-user mode). Connect your AI app with OAuth sign-in instead, or ask an administrator to set PERSONAL_TOKENS_SHOPIFY_ACCESS=1.`;
+    return { tokens: new Map(), storesUrl: connections.storesUrl, connectUrl: (alias) => connections.connectUrl(alias), now: options.now ?? Date.now, blockedReason: reason };
+  }
+
   async function handlePersonalToken(request: Request, token: string): Promise<Response> {
     const record = await tokens.verify(token);
     if (!record) {
@@ -158,7 +180,7 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
       scopes: [SCOPE],
       expiresAt: Math.floor(record.expiresAt / 1000),
       resource: new URL(auth.resource),
-      extra: { principal, tokenId: record.id, ...(shopify ? { access: await shopify.accessFor(principal.email) } : {}) }
+      extra: { principal, tokenId: record.id, ...(shopify ? { access: await personalTokenAccess(shopify, principal.email, record) } : {}) }
     };
     return mcp.fetch(request, { authInfo });
   }

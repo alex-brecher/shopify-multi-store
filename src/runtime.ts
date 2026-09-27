@@ -37,6 +37,8 @@ export interface UserShopifyAccess {
   /** The URL that starts a Shopify connection for one store. */
   connectUrl(alias: string): string;
   now(): number;
+  /** Set when this caller may not use Shopify at all (for example a personal access token); tools return it as the error. */
+  blockedReason?: string;
 }
 
 /** Details of one shopify_run_action call, for the hosted audit log. */
@@ -85,6 +87,7 @@ export function connectionStatus(access: UserShopifyAccess, alias: string): Conn
 
 /** The message a tool returns when the caller has no live Shopify token for a store. */
 export function notConnectedMessage(access: UserShopifyAccess, alias: string): string {
+  if (access.blockedReason) return access.blockedReason;
   const status = connectionStatus(access, alias);
   const url = access.connectUrl(alias);
   return status === "expired"

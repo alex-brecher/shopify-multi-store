@@ -23,6 +23,8 @@ export interface UserShopifyAccess {
     /** The URL that starts a Shopify connection for one store. */
     connectUrl(alias: string): string;
     now(): number;
+    /** Set when this caller may not use Shopify at all (for example a personal access token); tools return it as the error. */
+    blockedReason?: string;
 }
 /** Details of one shopify_run_action call, for the hosted audit log. */
 export interface ActionAuditDetails {

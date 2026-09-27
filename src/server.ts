@@ -102,7 +102,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           stores: stores.map((store) => ({ alias: store.alias, shop: store.shop, apiVersion: store.apiVersion })),
           ...(notConnected.length ? {
             notConnected,
-            hint: `These stores are not connected with your Shopify account, or the connection expired: ${notConnected.map((store) => store.alias).join(", ")}. Connect them at ${new URL("/stores", notConnected[0]!.connectUrl).toString()}.`
+            hint: currentUserAccess()?.blockedReason ?? `These stores are not connected with your Shopify account, or the connection expired: ${notConnected.map((store) => store.alias).join(", ")}. Connect them at ${new URL("/stores", notConnected[0]!.connectUrl).toString()}.`
           } : {})
         });
       } catch (error) {

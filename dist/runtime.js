@@ -35,6 +35,8 @@ export function connectionStatus(access, alias) {
 }
 /** The message a tool returns when the caller has no live Shopify token for a store. */
 export function notConnectedMessage(access, alias) {
+    if (access.blockedReason)
+        return access.blockedReason;
     const status = connectionStatus(access, alias);
     const url = access.connectUrl(alias);
     return status === "expired"

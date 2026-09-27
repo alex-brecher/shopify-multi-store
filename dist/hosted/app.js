@@ -28,14 +28,17 @@ function jsonResponse(body, status = 200, headers = {}) {
  * OAuth metadata, authorization server, Google sign-in callback, health check,
  * and the Streamable HTTP MCP endpoint at /mcp behind bearer-token auth.
  */
+/** Longest personal access token lifetime when personal tokens may use Shopify (per-user mode). */
+export const PERSONAL_TOKEN_SHOPIFY_MAX_DAYS = 30;
 export function createHostedApp(options) {
     const auth = new AuthorizationServer(options);
+    const patShopify = options.shopifyAccessMode === "per_user" && options.personalTokensShopifyAccess === true;
     const tokens = new PersonalTokens({
         auth,
         store: options.store,
         policy: options.policy,
         enabled: options.personalTokensEnabled ?? true,
-        maxDays: options.personalTokenMaxDays ?? 180,
+        maxDays: patShopify ? Math.min(options.personalTokenMaxDays ?? 180, PERSONAL_TOKEN_SHOPIFY_MAX_DAYS) : options.personalTokenMaxDays ?? 180,
         ...(options.now ? { now: options.now } : {})
     });
     const accessMode = options.shopifyAccessMode ?? "app";
@@ -103,6 +106,19 @@ export function createHostedApp(options) {
         };
         return mcp.fetch(request, { authInfo });
     }
+    /**
+     * Personal access tokens are long-lived bearer secrets, so in per-user mode they carry no Shopify
+     * access unless PERSONAL_TOKENS_SHOPIFY_ACCESS=1, and then only tokens of at most 30 days.
+     */
+    async function personalTokenAccess(connections, email, record) {
+        const lifetimeOk = record.expiresAt - record.createdAt <= PERSONAL_TOKEN_SHOPIFY_MAX_DAYS * 24 * 3600_000;
+        if (patShopify && lifetimeOk)
+            return connections.accessFor(email);
+        const reason = patShopify
+            ? `This personal access token lives longer than ${PERSONAL_TOKEN_SHOPIFY_MAX_DAYS} days, so it cannot use Shopify. Create a new one at ${auth.issuer}/tokens.`
+            : `Personal access tokens cannot use Shopify on this server (per-user mode). Connect your AI app with OAuth sign-in instead, or ask an administrator to set PERSONAL_TOKENS_SHOPIFY_ACCESS=1.`;
+        return { tokens: new Map(), storesUrl: connections.storesUrl, connectUrl: (alias) => connections.connectUrl(alias), now: options.now ?? Date.now, blockedReason: reason };
+    }
     async function handlePersonalToken(request, token) {
         const record = await tokens.verify(token);
         if (!record) {
@@ -121,7 +137,7 @@ export function createHostedApp(options) {
             scopes: [SCOPE],
             expiresAt: Math.floor(record.expiresAt / 1000),
             resource: new URL(auth.resource),
-            extra: { principal, tokenId: record.id, ...(shopify ? { access: await shopify.accessFor(principal.email) } : {}) }
+            extra: { principal, tokenId: record.id, ...(shopify ? { access: await personalTokenAccess(shopify, principal.email, record) } : {}) }
         };
         return mcp.fetch(request, { authInfo });
     }

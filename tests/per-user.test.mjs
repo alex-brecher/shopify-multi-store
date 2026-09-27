@@ -446,6 +446,42 @@ test("the raw mutation tool honors the action denylist on a hosted server", asyn
   assert.equal(requests.length, 0);
 });
 
+test("personal access tokens carry no Shopify access in per-user mode unless enabled, and are then capped at 30 days", async (t) => {
+  const requests = await shopifyMock(t);
+  const createToken = async (app, days) => {
+    const start = await call(app, "/tokens");
+    const google = new URL(start.headers.get("location"));
+    const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent("pat|bariatricpal.com")}`);
+    const tokenCookie = back.headers.get("set-cookie").split(";")[0];
+    const html = await (await call(app, "/tokens", { headers: { cookie: tokenCookie } })).text();
+    const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
+    const created = await call(app, "/tokens", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: tokenCookie }, body: new URLSearchParams({ csrf, action: "create", name: "ci", days }) });
+    return { html, status: created.status, token: /(smsp_[A-Za-z0-9_-]{43})/.exec(await created.text())?.[1] };
+  };
+
+  const off = await setup(t);
+  await connectStore(off.app, await storesSession(off.app, "pat|bariatricpal.com"));
+  const { token } = await createToken(off.app, "90");
+  const client = await mcpClient(t, off.app, token);
+  const refused = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /PERSONAL_TOKENS_SHOPIFY_ACCESS/);
+  const listed = await client.callTool({ name: "shopify_list_stores", arguments: {} });
+  assert.equal(listed.structuredContent.count, 0);
+  assert.match(listed.structuredContent.hint, /Personal access tokens cannot use Shopify/);
+  assert.equal(requests.length, 0);
+
+  const on = await setup(t, { personalTokensShopifyAccess: true });
+  await connectStore(on.app, await storesSession(on.app, "pat|bariatricpal.com"), { token: "pat-online-main" });
+  const page = await createToken(on.app, "90");
+  assert.equal(page.status, 400, "90 days is over the cap");
+  assert.ok(!page.html.includes('value="90"'));
+  const short = await createToken(on.app, "30");
+  const allowed = await (await mcpClient(t, on.app, short.token)).callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(allowed.isError, true, JSON.stringify(allowed));
+  assert.equal(requests.at(-1).token, "pat-online-main");
+});
+
 test("the raw mutation tool applies run_action's destructive confirm check in per-user mode", async (t) => {
   const requests = await shopifyMock(t);
   const { app } = await setup(t);

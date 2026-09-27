@@ -130,6 +130,7 @@ export async function buildHostedAppFromEnv(env = process.env) {
         personalTokensEnabled: env.PERSONAL_TOKENS_ENABLED === undefined || env.PERSONAL_TOKENS_ENABLED === "" ? true : flag(env.PERSONAL_TOKENS_ENABLED),
         personalTokenMaxDays: personalTokenMaxDays(env),
         shopifyAccessMode: mode,
+        personalTokensShopifyAccess: flag(env.PERSONAL_TOKENS_SHOPIFY_ACCESS),
         ...(encryptionKey ? {
             shopifyConnect: {
                 encryptionKey,

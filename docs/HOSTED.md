@@ -201,6 +201,7 @@ After Google sign-in the server shows the client name, the client_id, the redire
 | `OAUTH_SESSION_MAX_AGE_SECONDS` | no | `604800` | Maximum age of a sign-in session (7 days), counted from the Google sign-in. After it, refresh fails with `invalid_grant` and the user signs in with Google again, which re-checks the domain and the policy. |
 | `PERSONAL_TOKENS_ENABLED` | no | `1` | `0` turns off `/tokens` and refuses `smsp_` bearer tokens |
 | `PERSONAL_TOKEN_MAX_DAYS` | no | `180` | Longest personal access token lifetime a user may choose |
+| `PERSONAL_TOKENS_SHOPIFY_ACCESS` | no | `0` | Per-user mode: `1` lets personal access tokens use their owner's Shopify connections, and caps new personal tokens at 30 days. With `0`, personal tokens can sign in but every Shopify call is refused. |
 
 `ACTIONS_DENYLIST` (all modes, stdio too) adds mutations to the list `shopify_run_action` refuses; `ACTIONS_DENYLIST_REPLACE=1` makes it replace the default list. See [ACTIONS.md](ACTIONS.md#denylist).
 

@@ -14,6 +14,11 @@ export interface HostedAppOptions extends AuthServerOptions {
      * "app" (the default here; serve mode defaults to per_user): the shared app token for each store.
      */
     shopifyAccessMode?: ShopifyAccessMode;
+    /**
+     * Per-user mode: whether personal access tokens may use the owner's Shopify connections.
+     * Off by default. When on, personal tokens are capped at PERSONAL_TOKEN_SHOPIFY_MAX_DAYS.
+     */
+    personalTokensShopifyAccess?: boolean;
     /** Required in per_user mode. auth, store, policy and now are filled in from these options. */
     shopifyConnect?: Omit<ShopifyConnectOptions, "auth" | "store" | "policy" | "now">;
 }
@@ -31,4 +36,6 @@ export interface HostedApp {
  * OAuth metadata, authorization server, Google sign-in callback, health check,
  * and the Streamable HTTP MCP endpoint at /mcp behind bearer-token auth.
  */
+/** Longest personal access token lifetime when personal tokens may use Shopify (per-user mode). */
+export declare const PERSONAL_TOKEN_SHOPIFY_MAX_DAYS = 30;
 export declare function createHostedApp(options: HostedAppOptions): HostedApp;

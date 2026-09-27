@@ -26,6 +26,7 @@ Notes:
 - Shopify online tokens expire after about 24 hours and have no refresh token. Reconnecting is one click per store while the person is logged in to Shopify admin, and "Connect all" walks through every unconnected store in a row.
 - `SHOPIFY_REQUIRE_EMAIL_MATCH=1` refuses a connection when the Shopify staff email differs from the Google email. Both emails are always recorded in the audit log and shown on `/stores`.
 - The policy file is optional in per-user mode. Without it, anyone from `ALLOWED_EMAIL_DOMAINS` may sign in and Shopify decides the rest. With it, it still limits stores and roles (a `viewer` stays read-only).
+- Personal access tokens (`/tokens`) are long-lived, so in per-user mode they cannot use Shopify unless `PERSONAL_TOKENS_SHOPIFY_ACCESS=1`, which also caps new personal tokens at 30 days.
 - `SHOPIFY_ACCESS_MODE=app` keeps the previous behavior: one app token per store, and the policy file is required. Local stdio mode is unchanged and always uses the owner's app token.
 
 ## The action tools
