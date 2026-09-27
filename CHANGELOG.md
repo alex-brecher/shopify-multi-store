@@ -4,6 +4,15 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+Breaking change for `shopify-multi-store serve`: `SHOPIFY_ACCESS_MODE` now
+defaults to `per_user`. An existing deployment that relies on shared app tokens
+must set `SHOPIFY_ACCESS_MODE=app`, or it will refuse to start without
+`SHOPIFY_TOKEN_ENCRYPTION_KEY` and, once started, will require every person to
+connect their stores at `/stores`. In per-user mode without a policy file,
+every Google Workspace user in `ALLOWED_EMAIL_DOMAINS` signs in as an editor on
+every store (the server logs a warning at startup); Shopify then limits each
+person to their own staff permissions.
+
 - Hosted: per-user Shopify access (`SHOPIFY_ACCESS_MODE=per_user`, the new
   serve default). Each person connects each store with their own Shopify staff
   account at `/stores` (Shopify online tokens, `grant_options[]=per-user`), and

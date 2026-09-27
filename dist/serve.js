@@ -99,6 +99,10 @@ export async function buildHostedAppFromEnv(env = process.env) {
         : mode === "per_user"
             ? openDomainPolicy(allowedDomains)
             : new FilePolicySource(resolve(required(env, "SHOPIFY_MULTI_STORE_POLICY")));
+    if (mode === "per_user" && !policyPath) {
+        process.stderr.write(`Warning: no SHOPIFY_MULTI_STORE_POLICY file. Every Google Workspace user in ${allowedDomains.join(", ")} can sign in as an editor on every store; ` +
+            "Shopify limits each person to their own staff permissions. Set SHOPIFY_MULTI_STORE_POLICY to restrict users, roles, or stores.\n");
+    }
     // Refuse to start per-user mode without an encryption key for the stored Shopify tokens.
     const encryptionKey = mode === "per_user" ? parseEncryptionKey(env.SHOPIFY_TOKEN_ENCRYPTION_KEY) : undefined;
     const appClientId = env.SHOPIFY_APP_CLIENT_ID?.trim() || undefined;

@@ -209,7 +209,9 @@ Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, `SH
 
 ### Policy file
 
-In per-user mode the policy file is optional. Without it, anyone from `ALLOWED_EMAIL_DOMAINS` can sign in as an `editor` on every store, and Shopify limits what each person can do. With it, it works as an extra restriction layer exactly as below.
+In per-user mode the policy file is optional. Without it, anyone from `ALLOWED_EMAIL_DOMAINS` can sign in as an `editor` on every store, and Shopify limits what each person can do; the server logs a warning at startup so this is a deliberate choice. With it, it works as an extra restriction layer exactly as below.
+
+Upgrading: `serve` now defaults to per-user mode. A deployment that should keep shared app tokens must set `SHOPIFY_ACCESS_MODE=app`.
 
 ```json
 {
