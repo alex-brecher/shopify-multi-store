@@ -8,8 +8,6 @@ declare const StoreConfigSchema: z.ZodObject<{
     }, z.core.$strict>, z.ZodObject<{
         type: z.ZodLiteral<"client_credentials">;
         clientId: z.ZodString;
-    }, z.core.$strict>, z.ZodObject<{
-        type: z.ZodLiteral<"shopify_cli">;
     }, z.core.$strict>], "type">>;
     tokenEnv: z.ZodOptional<z.ZodString>;
     baseUrl: z.ZodOptional<z.ZodString>;
@@ -17,6 +15,15 @@ declare const StoreConfigSchema: z.ZodObject<{
 export type StoreConfig = z.infer<typeof StoreConfigSchema>;
 export declare function configPath(): string;
 export declare function loadStores(): Promise<StoreConfig[]>;
+/**
+ * Per-user mode: allowed stores the caller has not connected, or whose token expired, with the
+ * URL that connects each. Empty outside per-user mode.
+ */
+export declare function unconnectedStores(): Promise<Array<{
+    alias: string;
+    status: "expired" | "not_connected";
+    connectUrl: string;
+}>>;
 /** Names the first two aliases that point to the same shop, or undefined when every shop is distinct. */
 export declare function duplicateShopError(stores: readonly StoreConfig[]): string | undefined;
 export interface StoreTarget {

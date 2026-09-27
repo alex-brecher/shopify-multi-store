@@ -4,9 +4,20 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * behavior (keychain credentials, preview stores, unfiltered store list) stays the same.
  */
 let hosted = false;
-/** Called once by `shopify-multi-store serve`. Turns off keychain and local-machine features. */
-export function enableHostedMode() {
+let hostedEnv;
+/**
+ * Called once by `shopify-multi-store serve` and by the Cloudflare Worker. Turns off keychain
+ * and local-machine features. `env` holds the settings store configuration is read from
+ * (STORES_JSON and friends): process.env on Node, the Worker's env on Cloudflare.
+ */
+export function enableHostedMode(env) {
     hosted = true;
+    if (env)
+        hostedEnv = env;
+}
+/** Where configuration is read from: the hosted env when one was given, else process.env. */
+export function runtimeEnv() {
+    return hostedEnv ?? process.env;
 }
 export function isHostedMode() {
     return hosted;
@@ -22,5 +33,25 @@ export function storeAllowed(alias, scope = storeScope.getStore()) {
         return true;
     const lower = alias.toLowerCase();
     return scope.stores.some((allowed) => allowed.toLowerCase() === lower);
+}
+/** The caller's per-user Shopify access, inside a hosted tool call. */
+export function currentUserAccess() {
+    return storeScope.getStore()?.access;
+}
+export function connectionStatus(access, alias) {
+    const token = access.tokens.get(alias.toLowerCase());
+    if (!token)
+        return "not_connected";
+    return token.expiresAt > access.now() ? "connected" : "expired";
+}
+/** The message a tool returns when the caller has no live Shopify token for a store. */
+export function notConnectedMessage(access, alias) {
+    if (access.blockedReason)
+        return access.blockedReason;
+    const status = connectionStatus(access, alias);
+    const url = access.connectUrl(alias);
+    return status === "expired"
+        ? `Your Shopify connection to store "${alias}" has expired. Reconnect at ${url} (or see all stores at ${access.storesUrl}), then try again.`
+        : `You have not connected store "${alias}" with your Shopify account. Connect it at ${url} (or see all stores at ${access.storesUrl}), then try again.`;
 }
 //# sourceMappingURL=runtime.js.map

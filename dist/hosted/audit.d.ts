@@ -3,7 +3,6 @@ export interface AuditEntry {
     event?: "tool_call";
     timestamp: string;
     user: string;
-    role: string;
     tool: string;
     stores: string[];
     readOnly: boolean;
@@ -15,21 +14,44 @@ export interface AuditEntry {
     /** The arguments as auditArguments() reduces them: no free text, documents summarized. */
     args?: unknown;
     truncated?: boolean;
-    /** Set when the call was authenticated with a personal access token. The id, never the value. */
-    tokenId?: string;
+    /** Store alias to the Shopify staff email the call ran as. */
+    shopifyAccounts?: Record<string, string>;
 }
 /** Sign-in, token, and request-authorization events. Tokens are never included. */
 export interface AuthAuditEntry {
-    event: "sign_in" | "sign_in_denied" | "consent_approved" | "consent_denied" | "personal_token_created" | "personal_token_revoked" | "token_issued" | "token_refreshed" | "refresh_denied" | "request_unauthorized" | "request_forbidden";
+    event: "sign_in" | "sign_in_denied" | "consent_approved" | "consent_denied" | "token_issued" | "token_refreshed" | "refresh_denied" | "request_unauthorized" | "request_forbidden" | "shopify_connected" | "shopify_connect_denied" | "shopify_disconnected";
     timestamp: string;
     user?: string;
     clientId?: string;
-    /** Personal access token id (never the token value). */
-    tokenId?: string;
     status?: number;
     reason?: string;
+    /** Structured failure detail (never the error text). */
+    error?: AuditErrorInfo;
+    /** Store alias for Shopify connection events. */
+    store?: string;
+    /** Shopify staff account for Shopify connection events: user id and email as Shopify reported them. */
+    shopifyUserId?: string;
+    shopifyEmail?: string;
 }
-export type AuditRecord = AuditEntry | AuthAuditEntry;
+/** One shopify_run_action call. Variables are recorded only as a hash. */
+export interface ActionAuditEntry {
+    event: "action_run";
+    timestamp: string;
+    user: string;
+    mutations: string[];
+    stores: string[];
+    dryRun: boolean;
+    variablesSha256: string;
+    /** Per store; shopifyEmail is the Shopify staff account the call ran as. */
+    outcome: Array<{
+        store: string;
+        ok: boolean;
+        error?: AuditErrorInfo;
+        userErrors?: number;
+        shopifyEmail?: string;
+    }>;
+}
+export type AuditRecord = AuditEntry | AuthAuditEntry | ActionAuditEntry;
 export interface AuditLog {
     write(entry: AuditRecord): Promise<void>;
 }
@@ -40,7 +62,11 @@ export interface AuditLog {
  * sha256 of the full message so an operator can match a line against a message they hold.
  */
 export interface AuditErrorInfo {
-    /** access_denied, http_error, throttled, timeout, graphql_errors, user_errors, exception or tool_error. */
+    /**
+     * access_denied, http_error, throttled, timeout, graphql_errors, user_errors, exception or
+     * tool_error; action_run lines also use preflight, refused, dry_run_problems, not_run and
+     * the store's outcome (rejected, partial, unknown, failed).
+     */
     class: string;
     /** JavaScript error name when the tool threw (Error, TypeError, ...). */
     exception?: string;
@@ -57,7 +83,7 @@ export interface AuditErrorInfo {
  * (and from JSON embedded in the message); free text only contributes the HTTP status and
  * upper-case error codes. The full message is kept only as a sha256.
  */
-export declare function auditError(thrown: unknown, result?: unknown): AuditErrorInfo;
+export declare function auditError(thrown: unknown, result?: unknown, errorClass?: string): AuditErrorInfo;
 /** Longest string kept for any logged argument value. */
 export declare const AUDIT_MAX_STRING = 2000;
 /** Longest audit line, in bytes. */

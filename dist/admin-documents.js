@@ -23,8 +23,12 @@ export const DOCS = {
     variantsCreate: `mutation CreateVariants($productId:ID!, $variants:[ProductVariantsBulkInput!]!) { productVariantsBulkCreate(productId:$productId,variants:$variants,strategy:REMOVE_STANDALONE_VARIANT) { productVariants { id title price } userErrors { field message } } }`,
     variantsUpdate: `mutation UpdateVariants($productId:ID!, $variants:[ProductVariantsBulkInput!]!) { productVariantsBulkUpdate(productId:$productId,variants:$variants) { productVariants { id title price } userErrors { field message } } }`,
     mediaDelete: `mutation DeleteProductMedia($productId:ID!, $mediaIds:[ID!]!) { productDeleteMedia(productId:$productId,mediaIds:$mediaIds) { deletedMediaIds mediaUserErrors { field message } } }`,
-    collectionCreate: `mutation CreateCollection($input:CollectionInput!) { collectionCreate(input:$input) { collection { id title } userErrors { field message } } }`,
-    collectionUpdate: `mutation UpdateCollection($input:CollectionInput!) { collectionUpdate(input:$input) { collection { id title } userErrors { field message } } }`,
+    // 2026-07 inputs. Run pinned to COLLECTION_API_VERSION (see api-versions.ts).
+    collectionCreate: `mutation CreateCollection($input:CollectionCreateInput!) { collectionCreate(collection:$input) { collection { id title } userErrors { field message } } }`,
+    collectionUpdate: `mutation UpdateCollection($input:CollectionUpdateInput!) { collectionUpdate(collection:$input) { collection { id title } userErrors { field message } } }`,
+    // Legacy inputs with ruleSet. Run pinned to LEGACY_COLLECTION_API_VERSION.
+    collectionCreateLegacy: `mutation CreateCollectionLegacy($input:CollectionInput!) { collectionCreate(input:$input) { collection { id title } userErrors { field message } } }`,
+    collectionUpdateLegacy: `mutation UpdateCollectionLegacy($input:CollectionInput!) { collectionUpdate(input:$input) { collection { id title } userErrors { field message } } }`,
     addCollection: `mutation AddToCollection($id:ID!, $productIds:[ID!]!) { collectionAddProducts(id:$id,productIds:$productIds) { collection { id title } userErrors { field message } } }`,
     publications: `query Publications($after:String) { publications(first:100,after:$after) { nodes { id name } ${PAGE} } }`,
     publicationRead: `query PublicationRead($id:ID!, $publicationId:ID!) { node(id:$id) { ... on Product { id publishedOnPublication(publicationId:$publicationId) } ... on Collection { id publishedOnPublication(publicationId:$publicationId) } } }`,
@@ -36,7 +40,6 @@ export const DOCS = {
     stage: `mutation StageFile($input:[StagedUploadInput!]!) { stagedUploadsCreate(input:$input) { stagedTargets { url resourceUrl parameters { name value } } userErrors { field message } } }`,
     file: `mutation CreateFile($files:[FileCreateInput!]!) { fileCreate(files:$files) { files { id fileStatus } userErrors { field message code } } }`,
     fileRead: `query GetFile($id:ID!) { node(id:$id) { ... on MediaImage { id fileStatus fileErrors { code message } image { url altText } } } }`,
-    bulkStart: `mutation StartBulkQuery($query:String!) { bulkOperationRunQuery(query:$query) { bulkOperation { id status } userErrors { field message } } }`,
     bulkRead: `query BulkStatus($id:ID!) { node(id:$id) { ... on BulkOperation { id status errorCode objectCount rootObjectCount fileSize url partialDataUrl createdAt completedAt } } }`,
 };
 //# sourceMappingURL=admin-documents.js.map

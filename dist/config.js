@@ -1,12 +1,17 @@
-import { previewStores } from "./previews.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { z } from "zod/v4";
 import { DEFAULT_API_VERSION } from "./constants.js";
-import { accessTokenAccount, clientSecretAccount, readCredential } from "./credentials.js";
-import { isHostedMode, storeAllowed } from "./runtime.js";
+import { connectionStatus, currentUserAccess, isHostedMode, notConnectedMessage, runtimeEnv, storeAllowed } from "./runtime.js";
+/**
+ * The OS keychain (cross-keychain) is loaded only on the local stdio path, when a credential
+ * is actually read, so a hosted server or a Worker never loads it.
+ */
+async function keychain() {
+    return import("./credentials.js");
+}
 const AccessTokenAuthSchema = z.object({
     type: z.literal("access_token")
 }).strict();
@@ -14,7 +19,7 @@ const ClientCredentialsAuthSchema = z.object({
     type: z.literal("client_credentials"),
     clientId: z.string().min(1)
 }).strict();
-const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema, z.object({ type: z.literal("shopify_cli") }).strict()]);
+const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema]);
 const StoreConfigSchema = z.object({
     alias: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/),
     shop: z.string().min(1),
@@ -29,20 +34,45 @@ const ConfigSchema = z.object({
 const oauthTokenCache = new Map();
 const oauthTokenRequests = new Map();
 export function configPath() {
-    const configured = process.env.SHOPIFY_MULTI_STORE_CONFIG;
+    const configured = runtimeEnv().SHOPIFY_MULTI_STORE_CONFIG;
     return configured ? resolve(configured) : resolve(homedir(), ".config", "codex-shopify-multi-store", "stores.json");
 }
 export async function loadStores() {
+    const stores = await allowedStores();
+    // Per-user mode: only stores the caller has a live Shopify token for. Outside a hosted
+    // per-user tool call this is a no-op.
+    const access = currentUserAccess();
+    return access ? stores.filter((store) => connectionStatus(access, store.alias) === "connected") : stores;
+}
+/** Configured stores the caller may use, before the per-user connection filter. */
+async function allowedStores() {
     const stores = await loadAllStores();
     // Hosted mode: restrict to the caller's allowlist. Outside a hosted tool call this is a no-op.
     return stores.filter((store) => storeAllowed(store.alias));
+}
+/**
+ * Per-user mode: allowed stores the caller has not connected, or whose token expired, with the
+ * URL that connects each. Empty outside per-user mode.
+ */
+export async function unconnectedStores() {
+    const access = currentUserAccess();
+    if (!access)
+        return [];
+    const result = [];
+    for (const store of await allowedStores()) {
+        const status = connectionStatus(access, store.alias);
+        if (status !== "connected")
+            result.push({ alias: store.alias, status, connectUrl: access.connectUrl(store.alias) });
+    }
+    return result;
 }
 async function loadAllStores() {
     const hosted = isHostedMode();
     let raw;
     let source;
-    if (process.env.STORES_JSON) {
-        raw = process.env.STORES_JSON;
+    const storesJson = runtimeEnv().STORES_JSON;
+    if (storesJson) {
+        raw = storesJson;
         source = "STORES_JSON";
     }
     else {
@@ -53,11 +83,6 @@ async function loadAllStores() {
         catch (error) {
             const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
             if (code === "ENOENT") {
-                if (!hosted) {
-                    const previews = await previewStores();
-                    if (previews.length)
-                        return previews;
-                }
                 throw new Error(`No Shopify stores are configured. Run \"npm run configure -- add\" in the plugin directory. Config path: ${configPath()}`);
             }
             throw error;
@@ -65,16 +90,10 @@ async function loadAllStores() {
     }
     const parsed = JSON.parse(raw);
     const config = ConfigSchema.parse(parsed);
-    // Preview stores are created with the local Shopify CLI and never exist on a hosted server.
-    if (!hosted)
-        config.stores.push(...await previewStores());
     const aliases = new Set();
     for (const store of config.stores) {
         if (aliases.has(store.alias)) {
             throw new Error(`Duplicate store alias in ${source}: ${store.alias}`);
-        }
-        if (hosted && store.auth.type === "shopify_cli") {
-            throw new Error(`Store ${store.alias} uses Shopify CLI auth, which is not available on a hosted server.`);
         }
         aliases.add(store.alias);
         validateStoreEndpoint(store);
@@ -131,7 +150,7 @@ export async function resolveStoreTargets(aliases) {
 function validateStoreEndpoint(store) {
     if (store.baseUrl) {
         const url = new URL(store.baseUrl);
-        if (url.protocol === "http:" && process.env.SHOPIFY_MULTI_STORE_ALLOW_INSECURE_HTTP === "1")
+        if (url.protocol === "http:" && runtimeEnv().SHOPIFY_MULTI_STORE_ALLOW_INSECURE_HTTP === "1")
             return;
         if (url.protocol !== "https:")
             throw new Error(`Store ${store.alias} must use HTTPS.`);
@@ -145,6 +164,12 @@ export async function findStore(alias) {
     const stores = await loadStores();
     const store = stores.find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
     if (!store) {
+        const access = currentUserAccess();
+        if (access) {
+            const configured = (await allowedStores()).find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
+            if (configured)
+                throw new Error(notConnectedMessage(access, configured.alias));
+        }
         throw new Error(`Unknown store \"${alias}\". Available stores: ${stores.map((candidate) => candidate.alias).join(", ")}`);
     }
     return store;
@@ -153,6 +178,22 @@ function defaultTokenEnv(alias) {
     return `SHOPIFY_TOKEN_${alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
 }
 export async function getAccessToken(store) {
+    // Per-user mode: the caller's own online token, never the app token.
+    const access = currentUserAccess();
+    if (access) {
+        // Only this store's token is decrypted, and only now that a call needs it.
+        await access.load();
+        const connection = access.tokens.get(store.alias.toLowerCase());
+        if (connection && connection.expiresAt > access.now()) {
+            const token = await access.token(store.alias);
+            if (token)
+                return token;
+        }
+        throw new Error(notConnectedMessage(access, store.alias));
+    }
+    // Hosted: only the caller's own Shopify token, never a static or app-level credential.
+    if (isHostedMode())
+        throw new Error(`No Shopify connection for ${store.alias}. Sign in with Shopify on the hosted server first.`);
     const envName = store.tokenEnv ?? defaultTokenEnv(store.alias);
     const envToken = process.env[envName];
     if (envToken)
@@ -160,9 +201,7 @@ export async function getAccessToken(store) {
     if (store.auth.type === "client_credentials") {
         return getClientCredentialsToken(store);
     }
-    // Hosted mode reads credentials only from the environment (or files mounted into it).
-    if (isHostedMode())
-        throw new Error(`No credential is available for ${store.alias}. Set ${envName} on the server.`);
+    const { accessTokenAccount, readCredential } = await keychain();
     const token = await readCredential(accessTokenAccount(store.alias));
     if (token)
         return token;
@@ -172,7 +211,11 @@ async function getClientCredentialsToken(store) {
     if (store.auth.type !== "client_credentials")
         throw new Error("Client credentials are not configured.");
     const secretEnv = `SHOPIFY_CLIENT_SECRET_${store.alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
-    const clientSecret = process.env[secretEnv] ?? (isHostedMode() ? null : await readCredential(clientSecretAccount(store.alias)));
+    let clientSecret = process.env[secretEnv];
+    if (!clientSecret) {
+        const { clientSecretAccount, readCredential } = await keychain();
+        clientSecret = await readCredential(clientSecretAccount(store.alias));
+    }
     if (!clientSecret) {
         throw new Error(`No OAuth client secret is available for ${store.alias}. Set ${secretEnv} or reconnect the store.`);
     }

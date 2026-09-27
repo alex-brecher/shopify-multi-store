@@ -1,5 +1,15 @@
 import type { StoreConfig } from "./config.js";
 export declare const PACKAGE_VERSION: string;
+/**
+ * Shopify throttled a mutation before running it (HTTP 429 or a THROTTLED error with no data).
+ * Mutations are never resent automatically; the caller can safely retry after retryAfterMs.
+ */
+export declare class MutationThrottledError extends Error {
+    readonly store: string;
+    readonly retryAfterMs: number;
+    readonly notApplied = true;
+    constructor(store: string, retryAfterMs: number);
+}
 export interface GraphqlEnvelope {
     store: string;
     shop: string;

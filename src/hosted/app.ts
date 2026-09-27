@@ -2,24 +2,22 @@ import { createMcpHandler, type AuthInfo } from "@modelcontextprotocol/server";
 import { createServer } from "../server.js";
 import { PACKAGE_VERSION } from "../shopify.js";
 import type { AuditLog } from "./audit.js";
-import { guardServer } from "./guard.js";
+import type { UserShopifyAccess } from "../runtime.js";
+import { guardServer, type Principal } from "./guard.js";
 import { AuthorizationServer, SCOPE, type AuthServerOptions } from "./oauth.js";
-import type { Principal } from "./policy.js";
-import { PERSONAL_TOKEN_PREFIX, PersonalTokens } from "./tokens.js";
+import { ShopifyConnections, type ShopifyConnectOptions } from "./shopify-connect.js";
 
 export interface HostedAppOptions extends AuthServerOptions {
   audit: AuditLog;
-  /** Personal access tokens at /tokens and as bearer tokens on /mcp. Defaults to true. */
-  personalTokensEnabled?: boolean;
-  /** Longest personal access token lifetime a user may choose, in days. Defaults to 180. */
-  personalTokenMaxDays?: number;
+  /** Shopify app credentials, token encryption and the configured stores. auth, store and now come from these options. */
+  shopifyConnect: Omit<ShopifyConnectOptions, "auth" | "store" | "now">;
 }
 
 export interface HostedApp {
   fetch(request: Request): Promise<Response>;
   close(): Promise<void>;
   readonly auth: AuthorizationServer;
-  readonly tokens: PersonalTokens;
+  readonly shopify: ShopifyConnections;
 }
 
 const CORS_HEADERS = {
@@ -31,7 +29,7 @@ const CORS_HEADERS = {
 };
 
 /** Browser-facing pages. They get no CORS headers. */
-const BROWSER_PAGES = new Set(["/authorize", "/oauth/google/callback", "/consent", "/tokens"]);
+const BROWSER_PAGES = new Set(["/authorize", "/consent", "/stores", "/stores/reconnect", "/shopify/connect", "/shopify/callback", "/login/shopify"]);
 
 function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
@@ -44,32 +42,27 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
 }
 
 /**
- * The hosted connector as a web-standard fetch handler:
- * OAuth metadata, authorization server, Google sign-in callback, health check,
- * and the Streamable HTTP MCP endpoint at /mcp behind bearer-token auth.
+ * The hosted connector as a web-standard fetch handler: OAuth metadata, the authorization
+ * server, Shopify sign-in, the /stores page, a health check, and the Streamable HTTP MCP
+ * endpoint at /mcp behind bearer-token auth. Every tool call uses the caller's own Shopify
+ * online token, so Shopify's staff permissions decide what each person can do.
  */
 export function createHostedApp(options: HostedAppOptions): HostedApp {
   const auth = new AuthorizationServer(options);
-  const tokens = new PersonalTokens({
-    auth,
-    store: options.store,
-    policy: options.policy,
-    enabled: options.personalTokensEnabled ?? true,
-    maxDays: options.personalTokenMaxDays ?? 180,
-    ...(options.now ? { now: options.now } : {})
-  });
+  const shopify = new ShopifyConnections({ ...options.shopifyConnect, auth, store: options.store, ...(options.now ? { now: options.now } : {}) });
+  auth.onPageSignIn = (purpose, email) => shopify.signedIn(email, purpose);
   const mcpPath = new URL(auth.resource).pathname;
 
-  // Stateless: a fresh McpServer per request, built for the caller's role. No session state,
-  // so the server can restart or scale without breaking clients, and auth is checked every request.
+  // Stateless: a fresh McpServer per request, built for the caller. No session state, so the
+  // server can restart or scale without breaking clients, and auth is checked every request.
   const mcp = createMcpHandler(async (context) => {
     const principal = context.authInfo?.extra?.principal as Principal | undefined;
-    if (!principal) throw new Error("Unauthenticated MCP request reached the server factory.");
-    const tokenId = context.authInfo?.extra?.tokenId as string | undefined;
-    return createServer({ title: auth.displayName, beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, ...(tokenId ? { tokenId } : {}) }) });
+    const access = context.authInfo?.extra?.access as UserShopifyAccess | undefined;
+    if (!principal || !access) throw new Error("Unauthenticated MCP request reached the server factory.");
+    return createServer({ title: auth.displayName, beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, access }) });
   }, {
     legacy: "stateless",
-    onerror: (error) => process.stderr.write(`MCP error: ${error.message}\n`)
+    onerror: (error) => console.error(`MCP error: ${error.message}`)
   });
 
   const unauthorized = (description?: string): Response => {
@@ -93,48 +86,19 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
       return unauthorized();
     }
     const token = match[1]!;
-    if (token.startsWith(PERSONAL_TOKEN_PREFIX)) return handlePersonalToken(request, token);
     const record = await auth.verifyAccessToken(token);
     if (!record) {
       await auth.auditAuth({ event: "request_unauthorized", status: 401, reason: "invalid or expired access token" });
       return unauthorized("The access token is invalid or expired.");
     }
-    // Resolve the role on every request so policy changes apply immediately.
-    const principal = auth.resolvePrincipal(record.email);
-    if (!principal) {
-      await auth.auditAuth({ event: "request_forbidden", status: 403, user: record.email, clientId: record.clientId, reason: "not in the access policy" });
-      return jsonResponse({ error: "access_denied", error_description: `${record.email} no longer has access.` }, 403);
-    }
+    const principal: Principal = { email: record.email };
     const authInfo: AuthInfo = {
       token,
       clientId: record.clientId,
       scopes: [record.scope],
       expiresAt: Math.floor(record.expiresAt / 1000),
       resource: new URL(auth.resource),
-      extra: { principal }
-    };
-    return mcp.fetch(request, { authInfo });
-  }
-
-  async function handlePersonalToken(request: Request, token: string): Promise<Response> {
-    const record = await tokens.verify(token);
-    if (!record) {
-      await auth.auditAuth({ event: "request_unauthorized", status: 401, reason: "invalid, expired, or revoked personal access token" });
-      return unauthorized("The personal access token is invalid, expired, or revoked.");
-    }
-    // Same policy re-check as OAuth tokens, on every request.
-    const principal = auth.resolvePrincipal(record.email);
-    if (!principal) {
-      await auth.auditAuth({ event: "request_forbidden", status: 403, user: record.email, clientId: "personal-token", tokenId: record.id, reason: "not in the access policy" });
-      return jsonResponse({ error: "access_denied", error_description: `${record.email} no longer has access.` }, 403);
-    }
-    const authInfo: AuthInfo = {
-      token,
-      clientId: "personal-token",
-      scopes: [SCOPE],
-      expiresAt: Math.floor(record.expiresAt / 1000),
-      resource: new URL(auth.resource),
-      extra: { principal, tokenId: record.id }
+      extra: { principal, access: shopify.accessFor(principal.email) }
     };
     return mcp.fetch(request, { authInfo });
   }
@@ -156,8 +120,11 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
       return jsonResponse(auth.authorizationServerMetadata(), 200, { "cache-control": "public, max-age=3600" });
     }
     if (path === "/authorize") return method === "GET" ? auth.authorize(url) : jsonResponse({ error: "method_not_allowed" }, 405);
-    if (path === "/oauth/google/callback") return method === "GET" ? auth.googleCallback(request) : jsonResponse({ error: "method_not_allowed" }, 405);
-    if (path === "/tokens") return tokens.handle(request);
+    if (path === "/login/shopify") return shopify.chooseLogin(request);
+    if (path === "/stores") return shopify.handleStoresPage(request);
+    if (path === "/stores/reconnect") return shopify.handleReconnect(request);
+    if (path === "/shopify/connect") return shopify.connect(request);
+    if (path === "/shopify/callback") return shopify.callback(request);
     if (path === "/consent") return method === "POST" ? auth.consent(request) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/token") return method === "POST" ? auth.token(request) : jsonResponse({ error: "method_not_allowed" }, 405);
     if (path === "/register") return method === "POST" ? auth.register(request) : jsonResponse({ error: "method_not_allowed" }, 405);
@@ -167,13 +134,13 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
 
   return {
     auth,
-    tokens,
+    shopify,
     async fetch(request: Request): Promise<Response> {
       let response: Response;
       try {
         response = await route(request);
       } catch (error) {
-        process.stderr.write(`Request failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+        console.error(`Request failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
         response = jsonResponse({ error: "server_error" }, 500);
       }
       const path = new URL(request.url).pathname;

@@ -1,0 +1,246 @@
+import type { IncrementOptions, OAuthStore, RecordKind } from "../hosted/store.js";
+import { matches, RECORD_KINDS } from "../hosted/store.js";
+import type { DurableObjectNamespaceLike, DurableObjectStateLike, DurableObjectStorageLike } from "./types.js";
+
+/**
+ * The hosted OAuth store on Cloudflare: one Durable Object instance ("oauth") holds every
+ * record. A Durable Object runs one request at a time per instance, and its storage calls do
+ * not let other requests interleave (input gates), so each operation below (take, claim,
+ * deleteMatching) is atomic and strongly consistent for every Worker isolate. That is what
+ * single-use authorization codes and login states, refresh token rotation, and reuse
+ * detection need. Workers KV is eventually consistent and would let a code or refresh token
+ * be used twice, so it is not used.
+ */
+
+interface Entry {
+  value: unknown;
+  expiresAt?: number;
+}
+
+type Operation =
+  | { op: "get" | "take" | "delete"; kind: RecordKind; key: string }
+  | { op: "put"; kind: RecordKind; key: string; value: unknown; expiresAt?: number }
+  | { op: "claim"; kind: RecordKind; key: string; flag: string }
+  | { op: "increment"; kind: RecordKind; key: string; max?: number; expiresAt?: number }
+  | { op: "deleteMatching"; kind: RecordKind; match: Record<string, string | number | boolean> }
+  | { op: "count" | "entries"; kind: RecordKind };
+
+const KINDS: ReadonlySet<string> = new Set<RecordKind>(RECORD_KINDS);
+/**
+ * Kinds whose count is kept in a counter key, so count() never lists every record (the
+ * registration cap checks the client count on each registration). The counter includes
+ * records that expired but were not yet removed until the next access or sweep.
+ */
+const COUNTED: ReadonlySet<RecordKind> = new Set<RecordKind>(["client"]);
+/** How often the object sweeps expired records. */
+const SWEEP_MS = 6 * 3600_000;
+
+function storageKey(kind: RecordKind, key: string): string {
+  return `${kind}\u0000${key}`;
+}
+
+/** Outside every kind's prefix, so listing a kind never returns it. */
+function countKey(kind: RecordKind): string {
+  return `\u0001count\u0000${kind}`;
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body ?? null), { status, headers: { "content-type": "application/json" } });
+}
+
+/**
+ * The Durable Object class (wrangler.jsonc binds it as OAUTH_STORE). It speaks a small JSON
+ * protocol over fetch, so it needs no Workers-only import and can be tested in Node with an
+ * in-memory storage.
+ */
+export class OAuthStoreObject {
+  private readonly storage: DurableObjectStorageLike;
+  private readonly now: () => number;
+
+  constructor(state: DurableObjectStateLike, _env?: unknown, now: () => number = Date.now) {
+    this.storage = state.storage;
+    this.now = now;
+  }
+
+  private async live(kind: RecordKind, key: string): Promise<Entry | undefined> {
+    const entry = await this.storage.get<Entry>(storageKey(kind, key));
+    if (!entry) return undefined;
+    if (entry.expiresAt !== undefined && entry.expiresAt <= this.now()) {
+      await this.storage.delete(storageKey(kind, key));
+      await this.adjustCount(kind, -1);
+      return undefined;
+    }
+    return entry;
+  }
+
+  /** Move a counted kind's counter. A counter not yet built is left alone; count() builds it. */
+  private async adjustCount(kind: RecordKind, delta: number): Promise<void> {
+    if (!COUNTED.has(kind) || delta === 0) return;
+    const current = await this.storage.get<number>(countKey(kind));
+    if (current === undefined) return;
+    await this.storage.put(countKey(kind), Math.max(0, current + delta));
+  }
+
+  private async all(kind: RecordKind): Promise<Array<[string, Entry]>> {
+    const prefix = storageKey(kind, "");
+    const listed = await this.storage.list<Entry>({ prefix });
+    const now = this.now();
+    const out: Array<[string, Entry]> = [];
+    const expired: string[] = [];
+    for (const [key, entry] of listed) {
+      if (entry.expiresAt !== undefined && entry.expiresAt <= now) expired.push(key);
+      else out.push([key.slice(prefix.length), entry]);
+    }
+    if (expired.length) {
+      await this.deleteKeys(expired);
+      await this.adjustCount(kind, -expired.length);
+    }
+    return out;
+  }
+
+  private async deleteKeys(keys: string[]): Promise<void> {
+    // storage.delete takes at most 128 keys per call.
+    for (let i = 0; i < keys.length; i += 128) await this.storage.delete(keys.slice(i, i + 128));
+  }
+
+  /** Run one store operation. Exposed for tests; fetch() is the Durable Object entry point. */
+  async run(operation: Operation): Promise<unknown> {
+    if (!operation || typeof operation !== "object" || !KINDS.has(operation.kind)) throw new Error("Unknown record kind.");
+    const { kind } = operation;
+    switch (operation.op) {
+      case "get":
+        return (await this.live(kind, operation.key))?.value;
+      case "put":
+        if (COUNTED.has(kind) && !(await this.live(kind, operation.key))) await this.adjustCount(kind, 1);
+        await this.storage.put(storageKey(kind, operation.key), { value: operation.value, ...(operation.expiresAt !== undefined ? { expiresAt: operation.expiresAt } : {}) });
+        await this.scheduleSweep();
+        return null;
+      case "take": {
+        const entry = await this.live(kind, operation.key);
+        if (!entry) return undefined;
+        await this.storage.delete(storageKey(kind, operation.key));
+        await this.adjustCount(kind, -1);
+        return entry.value;
+      }
+      case "delete": {
+        const existed = COUNTED.has(kind) && (await this.storage.get(storageKey(kind, operation.key))) !== undefined;
+        await this.storage.delete(storageKey(kind, operation.key));
+        if (existed) await this.adjustCount(kind, -1);
+        return null;
+      }
+      case "claim": {
+        const entry = await this.live(kind, operation.key);
+        if (!entry) return undefined;
+        const value = entry.value as Record<string, unknown>;
+        if (value[operation.flag] === true) return { value, claimed: false };
+        const next = { ...value, [operation.flag]: true };
+        await this.storage.put(storageKey(kind, operation.key), { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) });
+        return { value: next, claimed: true };
+      }
+      case "deleteMatching": {
+        const doomed = (await this.all(kind)).filter(([, entry]) => matches(entry.value, operation.match)).map(([key]) => storageKey(kind, key));
+        await this.deleteKeys(doomed);
+        await this.adjustCount(kind, -doomed.length);
+        return doomed.length;
+      }
+      case "increment": {
+        const entry = await this.live(kind, operation.key);
+        const current = typeof entry?.value === "number" ? entry.value : 0;
+        if (operation.max !== undefined && current + 1 > operation.max) return { value: current, applied: false };
+        const expiresAt = entry ? entry.expiresAt : operation.expiresAt;
+        await this.storage.put(storageKey(kind, operation.key), { value: current + 1, ...(expiresAt !== undefined ? { expiresAt } : {}) });
+        await this.scheduleSweep();
+        return { value: current + 1, applied: true };
+      }
+      case "count": {
+        if (!COUNTED.has(kind)) return (await this.all(kind)).length;
+        const kept = await this.storage.get<number>(countKey(kind));
+        if (kept !== undefined) return kept;
+        // First count on this object (or after an upgrade): list once, then keep the counter.
+        const listed = (await this.all(kind)).length;
+        await this.storage.put(countKey(kind), listed);
+        return listed;
+      }
+      case "entries":
+        return (await this.all(kind)).map(([key, entry]) => [key, entry.value]);
+      default:
+        throw new Error("Unknown operation.");
+    }
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+    try {
+      const result = await this.run(await request.json() as Operation);
+      return json({ result: result === undefined ? null : result, found: result !== undefined });
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  }
+
+  private async scheduleSweep(): Promise<void> {
+    if (!this.storage.getAlarm || !this.storage.setAlarm) return;
+    if ((await this.storage.getAlarm()) === null) await this.storage.setAlarm(this.now() + SWEEP_MS);
+  }
+
+  /** Durable Object alarm: drop expired records of every kind, then schedule the next sweep. */
+  async alarm(): Promise<void> {
+    for (const kind of KINDS) await this.all(kind as RecordKind);
+    if (this.storage.setAlarm) await this.storage.setAlarm(this.now() + SWEEP_MS);
+  }
+}
+
+/** OAuthStore backed by the OAuthStoreObject Durable Object. */
+export class DurableObjectStore implements OAuthStore {
+  constructor(private readonly namespace: DurableObjectNamespaceLike, private readonly name = "oauth") {}
+
+  private async call<T>(operation: Operation): Promise<T | undefined> {
+    // A stub is an I/O object tied to the request that made it, and the hosted app outlives
+    // requests, so each operation gets its own stub (cheap: the id is derived from the name).
+    const stub = this.namespace.get(this.namespace.idFromName(this.name));
+    const response = await stub.fetch("https://oauth-store.internal/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(operation)
+    });
+    const body = await response.json() as { result?: T; found?: boolean; error?: string };
+    if (!response.ok || body.error) throw new Error(`OAuth store: ${body.error ?? `HTTP ${response.status}`}`);
+    return body.found ? body.result : undefined;
+  }
+
+  get<T>(kind: RecordKind, key: string): Promise<T | undefined> {
+    return this.call<T>({ op: "get", kind, key });
+  }
+
+  async put<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<void> {
+    await this.call({ op: "put", kind, key, value, ...(expiresAt !== undefined ? { expiresAt } : {}) });
+  }
+
+  take<T>(kind: RecordKind, key: string): Promise<T | undefined> {
+    return this.call<T>({ op: "take", kind, key });
+  }
+
+  async delete(kind: RecordKind, key: string): Promise<void> {
+    await this.call({ op: "delete", kind, key });
+  }
+
+  claim<T>(kind: RecordKind, key: string, flag: string): Promise<{ value: T; claimed: boolean } | undefined> {
+    return this.call<{ value: T; claimed: boolean }>({ op: "claim", kind, key, flag });
+  }
+
+  async deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number> {
+    return (await this.call<number>({ op: "deleteMatching", kind, match })) ?? 0;
+  }
+
+  async count(kind: RecordKind): Promise<number> {
+    return (await this.call<number>({ op: "count", kind })) ?? 0;
+  }
+
+  async increment(kind: RecordKind, key: string, options: IncrementOptions = {}): Promise<{ value: number; applied: boolean }> {
+    return (await this.call<{ value: number; applied: boolean }>({ op: "increment", kind, key, ...options })) ?? { value: 0, applied: false };
+  }
+
+  async entries<T>(kind: RecordKind): Promise<Array<[string, T]>> {
+    return (await this.call<Array<[string, T]>>({ op: "entries", kind })) ?? [];
+  }
+}

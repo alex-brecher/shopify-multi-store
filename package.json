@@ -37,6 +37,28 @@
     "access": "public",
     "provenance": true
   },
+  "cloudflare": {
+    "bindings": {
+      "AUDIT_DB": {
+        "description": "D1 database for the audit log (shopify-multi-store-audit). The Deploy to Cloudflare flow creates it. With the CLI, create it first with `npx wrangler d1 create shopify-multi-store-audit` and put its database_id in wrangler.jsonc; see docs/DEPLOY-CLOUDFLARE.md."
+      },
+      "OAUTH_STORE": {
+        "description": "Durable Object holding OAuth clients, codes, token hashes and encrypted Shopify tokens. Created from the migration in wrangler.jsonc."
+      },
+      "SHOPIFY_APP_CLIENT_ID": {
+        "description": "Client ID of your Shopify app (Dev Dashboard, app settings)."
+      },
+      "SHOPIFY_APP_CLIENT_SECRET": {
+        "description": "Client secret of your Shopify app. Also verifies Shopify's callback signature."
+      },
+      "SHOPIFY_TOKEN_ENCRYPTION_KEYS": {
+        "description": "k1: followed by 32 random bytes in base64, for example the output of: echo k1:$(openssl rand -base64 32). Encrypts stored Shopify tokens; keep it."
+      },
+      "STORES_JSON": {
+        "description": "The stores this Worker serves, for example {\"stores\":[{\"alias\":\"main\",\"shop\":\"main-store.myshopify.com\"}]}"
+      }
+    }
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -61,10 +83,12 @@
     "schemas/",
     "docs/PARITY.md",
     "docs/HOSTED.md",
+    "docs/ACTIONS.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build-ui.mjs",
+    "build": "tsc",
+    "prepare": "npm run build",
     "start": "node dist/index.js",
     "configure": "node scripts/configure-store.mjs",
     "import-legacy": "node scripts/import-legacy-stores.mjs",
@@ -73,8 +97,9 @@
     "test": "npm run build && node scripts/run-tests.mjs",
     "test:live": "npm run build && node scripts/live-smoke-test.mjs",
     "prepack": "npm run sync:skills && npm test",
-    "codegen": "tsc && node scripts/codegen.mjs",
-    "typecheck": "tsc --noEmit --skipLibCheck false"
+    "typecheck": "tsc --noEmit --skipLibCheck false",
+    "deploy": "wrangler deploy",
+    "worker:check": "wrangler deploy --dry-run --outdir .wrangler/dry-run"
   },
   "engines": {
     "node": ">=20"
@@ -87,14 +112,11 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@graphql-codegen/cli": "^7.4.0",
-    "@graphql-codegen/typescript": "^5.0.10",
     "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/ext-apps": "^1.7.5",
-    "@shopify/api-codegen-preset": "^3.0.0",
     "@types/node": "^24.10.1",
     "esbuild": "^0.28.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "wrangler": "^4.142.0"
   },
   "overrides": {
     "lodash": "^4.18.1"

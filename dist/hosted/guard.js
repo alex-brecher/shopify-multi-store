@@ -1,21 +1,10 @@
-import { storeAllowed, storeScope } from "../runtime.js";
+import { storeScope } from "../runtime.js";
 import { auditArguments, auditError, canonicalJson, sha256Hex } from "./audit.js";
-/** Tools only an admin may call in hosted mode, whatever their annotations say. */
-export const ADMIN_ONLY_TOOLS = new Set([
-    "shopify_graphql_mutation",
-    "shopify_create_preview_store",
-    "shopify_get_new_store_previews"
-]);
 /**
  * Tools that need the local machine (Shopify CLI, local preview receipts).
  * They are not registered at all in hosted mode.
  */
-export const HOSTED_DISABLED_TOOLS = new Set([
-    "shopify_create_preview_store",
-    "shopify_get_new_store_previews",
-    "shopify_get_new_store_preview_status",
-    "shopify_get_preview_store"
-]);
+export const HOSTED_DISABLED_TOOLS = new Set([]);
 /** Arguments that refer to the server's local filesystem and are refused in hosted mode. */
 export const HOSTED_DISABLED_ARGUMENTS = {
     shopify_upload_image: ["imageFile"]
@@ -25,17 +14,10 @@ export const GRAPHQL_DOCUMENT_ARGUMENTS = {
     shopify_graphql_query: ["query"],
     shopify_graphql_query_many: ["query"],
     shopify_graphql_mutation: ["mutation"],
-    shopify_bulk_export_start: ["query"]
+    shopify_run_action: ["document"]
 };
 /** Top-level argument names that select stores. */
 const STORE_ARGUMENTS = ["store", "stores", "alias"];
-export function toolAllowedForRole(role, tool, readOnly) {
-    if (role === "admin")
-        return true;
-    if (role === "editor")
-        return !ADMIN_ONLY_TOOLS.has(tool);
-    return readOnly && !ADMIN_ONLY_TOOLS.has(tool);
-}
 export function requestedStores(args) {
     if (!args || typeof args !== "object")
         return [];
@@ -54,21 +36,31 @@ export function requestedStores(args) {
 function denied(message) {
     return { isError: true, content: [{ type: "text", text: message }] };
 }
+function logAuditFailure(error) {
+    console.error(`Audit log write failed: ${error instanceof Error ? error.message : String(error)}`);
+}
 /**
- * Wrap McpServer.registerTool so every tool, including ones added later, gets:
- * role filtering (tools the role cannot call are not registered), a store allowlist
- * check on store/stores/alias arguments, a store-scoped context for loadStores(),
- * refusal of local-file arguments, and one audit line per call.
- * Must run before any tool is registered.
+ * Wrap McpServer.registerTool so every tool, including ones added later, runs in a store
+ * scope carrying the caller's own Shopify tokens (loadStores() and every Admin API call use
+ * them), refuses local-file arguments, and writes one audit line per call. Tools that need
+ * the local machine are not registered. Must run before any tool is registered.
  */
-export function guardServer(server, { principal, audit, tokenId }) {
+export function guardServer(server, { principal, audit, access }) {
+    if (!access)
+        throw new Error("A hosted tool call needs the caller's Shopify access.");
+    const auditAction = async (details) => {
+        try {
+            await audit.write({ event: "action_run", timestamp: new Date().toISOString(), user: principal.email, ...details });
+        }
+        catch (error) {
+            logAuditFailure(error);
+        }
+    };
     const register = server.registerTool.bind(server);
     const guarded = (name, config, callback) => {
         if (HOSTED_DISABLED_TOOLS.has(name))
             return undefined;
         const readOnly = config.annotations?.readOnlyHint === true;
-        if (!toolAllowedForRole(principal.role, name, readOnly))
-            return undefined;
         const hasInput = config.inputSchema !== undefined;
         const wrapped = async (...callArgs) => {
             const input = hasInput ? callArgs[0] : undefined;
@@ -77,25 +69,19 @@ export function guardServer(server, { principal, audit, tokenId }) {
             let result;
             let failure;
             try {
-                // Re-check at call time as a second line of defense.
-                if (!toolAllowedForRole(principal.role, name, readOnly)) {
-                    result = denied(`Access denied: role ${principal.role} cannot call ${name}.`);
+                // Connection metadata only; each store's token is decrypted when a call first uses it.
+                await access.load();
+                const blockedArgument = (HOSTED_DISABLED_ARGUMENTS[name] ?? []).find((key) => {
+                    const value = input && typeof input === "object" ? input[key] : undefined;
+                    return value !== undefined && value !== null && value !== "";
+                });
+                if (blockedArgument) {
+                    result = denied(`${blockedArgument} refers to a file on the server and is not available on the hosted connector. Use sourceUrl with an HTTPS image URL instead.`);
                 }
                 else {
-                    const blockedStore = stores.find((store) => !storeAllowed(store, { stores: principal.stores }));
-                    const blockedArgument = (HOSTED_DISABLED_ARGUMENTS[name] ?? []).find((key) => {
-                        const value = input && typeof input === "object" ? input[key] : undefined;
-                        return value !== undefined && value !== null && value !== "";
-                    });
-                    if (blockedStore !== undefined) {
-                        result = denied(`Access denied: ${principal.email} is not allowed to use store "${blockedStore}".`);
-                    }
-                    else if (blockedArgument) {
-                        result = denied(`${blockedArgument} refers to a file on the server and is not available on the hosted connector. Use sourceUrl with an HTTPS image URL instead.`);
-                    }
-                    else {
-                        result = await storeScope.run({ stores: principal.stores }, () => callback(...callArgs));
-                    }
+                    // Every configured store is in scope; loadStores() then keeps only the stores the
+                    // caller has a live Shopify connection to, and Shopify decides what each call may do.
+                    result = await storeScope.run({ stores: "*", access, auditAction }, () => callback(...callArgs));
                 }
                 return result;
             }
@@ -112,8 +98,7 @@ export function guardServer(server, { principal, audit, tokenId }) {
                         event: "tool_call",
                         timestamp: new Date(started).toISOString(),
                         user: principal.email,
-                        role: principal.role,
-                        ...(tokenId ? { tokenId } : {}),
+                        shopifyAccounts: shopifyAccounts(access, stores),
                         tool: name,
                         stores,
                         readOnly,
@@ -130,12 +115,23 @@ export function guardServer(server, { principal, audit, tokenId }) {
                     });
                 }
                 catch (error) {
-                    process.stderr.write(`Audit log write failed: ${error instanceof Error ? error.message : String(error)}\n`);
+                    logAuditFailure(error);
                 }
             }
         };
         return register(name, config, wrapped);
     };
     server.registerTool = guarded;
+}
+/** Store alias to Shopify staff email for the stores a call names, or every connected store when it names none. */
+function shopifyAccounts(access, stores) {
+    const out = {};
+    const wanted = stores.length ? stores.map((store) => store.toLowerCase()) : [...access.tokens.keys()];
+    for (const alias of wanted) {
+        const email = access.tokens.get(alias)?.shopifyEmail;
+        if (email)
+            out[alias] = email;
+    }
+    return out;
 }
 //# sourceMappingURL=guard.js.map

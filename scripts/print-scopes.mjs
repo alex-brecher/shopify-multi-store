@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-// Prints the comma-separated union of every Admin API scope any tool in this
-// server might need, for pasting into a shopify.app.toml [access_scopes] block.
-import { allRequiredScopes } from "../dist/scope-requirements.js";
+// Prints Admin API scopes as a comma-separated list, for a shopify.app.toml [access_scopes] block
+// or the Dev Dashboard.
+//   node scripts/print-scopes.mjs         scopes the dedicated tools need
+//   node scripts/print-scopes.mjs --full  the full set for the generic action tools (see docs/ACTIONS.md)
+import { allRequiredScopes, fullScopes } from "../dist/scope-requirements.js";
 
-console.log(allRequiredScopes().join(","));
+const full = process.argv.includes("--full");
+console.log((full ? fullScopes() : allRequiredScopes()).join(","));
