@@ -4,6 +4,7 @@ import { adminGraphql, hasGraphqlErrors } from "./shopify.js";
 import { adminSchema, validateDocument } from "./schema.js";
 import { operation } from "./operations.js";
 import { DOCS } from "./admin-documents.js";
+import { fitWriteResult, WRITE_RESULT_CHARACTER_LIMIT } from "./result-limits.js";
 export class WorkflowError extends Error {
     details;
     constructor(message, details) {
@@ -130,28 +131,34 @@ export class Workflow {
 export async function workflow(alias) {
     return new Workflow(await findStore(alias));
 }
-export function textResult(value, isError = false) {
-    if (JSON.stringify(value).length > 150_000) {
+/**
+ * A tool result. Reads that exceed the limit are refused with advice to request fewer rows.
+ * Writes (write: true) are never dropped: fitWriteResult trims them instead, so a caller always
+ * learns what a write did.
+ */
+export function textResult(value, isError = false, write = false) {
+    const shaped = write ? fitWriteResult(value) : value;
+    if (!write && JSON.stringify(shaped).length > WRITE_RESULT_CHARACTER_LIMIT) {
         return {
             isError: true,
             content: [
                 {
                     type: "text",
-                    text: "The response exceeded 150000 characters. Request fewer rows. If this followed a write, read back its outcome before retrying.",
+                    text: `The response exceeded ${WRITE_RESULT_CHARACTER_LIMIT} characters. Request fewer rows.`,
                 },
             ],
         };
     }
     return {
         ...(isError ? { isError: true } : {}),
-        content: [{ type: "text", text: JSON.stringify(value) }],
-        structuredContent: value,
+        content: [{ type: "text", text: JSON.stringify(shaped) }],
+        structuredContent: shaped,
     };
 }
-export function toolError(error) {
+export function toolError(error, write = false) {
     return textResult({
         error: error instanceof Error ? error.message : String(error),
         ...(error instanceof WorkflowError ? error.details : {}),
-    }, true);
+    }, true, write);
 }
 //# sourceMappingURL=admin-workflows.js.map

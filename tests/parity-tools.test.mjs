@@ -894,3 +894,80 @@ test("create_fulfillment: includes IN_PROGRESS fulfillment orders and fulfills r
     },
   }]);
 });
+
+function addBulkVariants(state, count) {
+  const skus = [];
+  for (let i = 1; i <= count; i++) {
+    const sku = `BULK-${i}`;
+    state.variants[sku] = {
+      id: gid("ProductVariant", 1000 + i),
+      sku,
+      price: "10.00",
+      compareAtPrice: null,
+      product: { id: gid("Product", 1000 + i), title: `Bulk product ${i} ${"x".repeat(400)}` },
+      inventoryItem: { id: gid("InventoryItem", 1000 + i), sku, unitCost: { amount: "5.00", currencyCode: "USD" } },
+    };
+    skus.push({ sku, price: "12.00" });
+  }
+  return skus;
+}
+
+test("update_prices with 250 SKUs applies, verifies, and reports success instead of a size error", async (t) => {
+  const { call, state } = await fixture(t);
+  const skus = addBulkVariants(state, 249);
+  skus.push({ sku: "SKU-MISSING", price: "1.00" });
+  const result = await call("update_prices", { skus, dryRun: false });
+  assert.notEqual(result.isError, true, result.content[0].text.slice(0, 300));
+  const body = result.structuredContent;
+  assert.ok(result.content[0].text.length <= 150_000, `result is ${result.content[0].text.length} characters`);
+  assert.equal(body.dryRun, false);
+  assert.equal(body.status, "partial");
+  assert.equal(body.succeeded, 249);
+  assert.equal(body.failed, 0);
+  assert.deepEqual(body.notFound, ["SKU-MISSING"]);
+  assert.ok(body.responseTrimmed, "the trim is reported");
+  // Every applied item is still accounted for, either in results or as a summary line.
+  const summarized = body.resultsAppliedSummary?.length ?? 0;
+  assert.equal(body.results.length + summarized + (body.responseTrimmed.appliedSummaryLinesOmitted ?? 0), 249);
+  const writes = state.requests.filter((r) => /UpdatePricesBulk/.test(r.query));
+  assert.equal(writes.length, 249);
+});
+
+test("update_prices_many with 250 SKUs on two stores keeps every store's status and counts", async (t) => {
+  const { callMulti, state } = await fixture(t);
+  const skus = addBulkVariants(state, 250);
+  const result = await callMulti("update_prices_many", { stores: ["fixture", "second"], skus, dryRun: false });
+  assert.notEqual(result.isError, true, result.content[0].text.slice(0, 300));
+  assert.ok(result.content[0].text.length <= 150_000);
+  const body = result.structuredContent;
+  assert.equal(body.succeeded, 2);
+  for (const store of body.stores) {
+    assert.equal(store.status, "ok");
+    assert.equal(store.succeeded, 250);
+  }
+});
+
+test("fitWriteResult trims applied items but keeps status, counts and every non-applied item in full", async () => {
+  const { fitWriteResult } = await import("../dist/result-limits.js");
+  const big = "y".repeat(2_000);
+  const results = [];
+  for (let i = 0; i < 200; i++) {
+    results.push({ sku: `S-${i}`, variantId: gid("ProductVariant", i), requested: { price: "2.00" }, outcome: "applied", verification: "verified", mutationResponse: { id: gid("ProductVariant", i), price: "2.00", blob: big }, verifiedState: { id: gid("ProductVariant", i), price: "2.00", product: { title: big } } });
+  }
+  results.push({ sku: "S-BAD", variantId: gid("ProductVariant", 999), requested: { price: "2.00" }, outcome: "mismatch", verification: "mismatch", mutationResponse: { id: "x", price: "2.00", blob: big }, verifiedState: { id: "x", price: "1.00", blob: big } });
+  results.push({ sku: "S-UNKNOWN", variantId: gid("ProductVariant", 998), outcome: "unknown", error: "network reset" });
+  const value = { dryRun: false, status: "partial", succeeded: 200, failed: 2, results };
+  const fitted = fitWriteResult(value, 20_000);
+  assert.ok(JSON.stringify(fitted).length <= 20_000);
+  assert.equal(fitted.status, "partial");
+  assert.equal(fitted.succeeded, 200);
+  assert.equal(fitted.failed, 2);
+  const bad = fitted.results.find((r) => r.sku === "S-BAD");
+  assert.equal(bad.outcome, "mismatch");
+  assert.deepEqual(bad.verifiedState, { id: "x", price: "1.00" }, "trimmed to the changed field");
+  assert.ok(fitted.results.some((r) => r.sku === "S-UNKNOWN" && r.error === "network reset"));
+  assert.ok(fitted.responseTrimmed.notice);
+  // Small results pass through unchanged.
+  const small = { status: "ok", results: [{ sku: "A", outcome: "applied" }] };
+  assert.equal(fitWriteResult(small), small);
+});

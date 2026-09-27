@@ -95,7 +95,7 @@ export function registerAdminTools(server) {
                         shop: w.store.shop,
                         apiVersion: w.store.apiVersion,
                         ...result,
-                    }),
+                    }, false, write),
                     ...(!write
                         ? {
                             _meta: {
@@ -121,7 +121,7 @@ export function registerAdminTools(server) {
                             }
                             : {}),
                         ...(error instanceof WorkflowError ? error.details : {}),
-                    }));
+                    }), write);
                 }
                 return toolError(error);
             }

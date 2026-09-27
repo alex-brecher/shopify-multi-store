@@ -75,6 +75,10 @@ export function sameMoney(a, b) {
     return left !== undefined && left === canonicalDecimal(b);
 }
 const SKU_LOOKUP_MAX_PAGES = 20;
+// Variants per nodes(ids:) read. Shopify responses are capped at 50,000 characters here (see
+// shopify.ts), and a variant with a long product title can take about 700, so 100 per read could
+// fail the verification read-back after a successful write.
+const VARIANT_READ_BATCH = 50;
 /**
  * Every variant whose SKU exactly equals `sku` (case-sensitive, surrounding whitespace
  * ignored). Shopify's `sku:` search is a prefix match, so results are filtered here, and
@@ -84,8 +88,8 @@ async function findVariantsByExactSku(w, sku) {
     const wanted = sku.trim();
     const ids = await findVariantIdsByExactSku(w, wanted);
     const variants = [];
-    for (let i = 0; i < ids.length; i += 100) {
-        const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + 100) });
+    for (let i = 0; i < ids.length; i += VARIANT_READ_BATCH) {
+        const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + VARIANT_READ_BATCH) });
         for (const v of d.nodes ?? [])
             if (v?.id && typeof v.sku === "string" && v.sku.trim() === wanted)
                 variants.push(v);
@@ -238,6 +242,11 @@ async function updatePricesCore(w, a) {
         list.push(r);
         byProduct.set(r.variant.product.id, list);
     }
+    const requestedOf = (entry) => ({
+        ...(entry.price ? { price: entry.price } : {}),
+        ...(entry.compareAtPrice !== undefined ? { compareAtPrice: entry.compareAtPrice } : {}),
+        ...(entry.unitCost ? { unitCost: entry.unitCost } : {}),
+    });
     const results = [];
     // Entries whose mutation response looked fine and now need an independent readback.
     const provisional = [];
@@ -313,8 +322,8 @@ async function updatePricesCore(w, a) {
     if (provisional.length) {
         const ids = [...new Set(provisional.map((p) => p.variant.id))];
         try {
-            for (let i = 0; i < ids.length; i += 100) {
-                const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + 100) });
+            for (let i = 0; i < ids.length; i += VARIANT_READ_BATCH) {
+                const d = await w.run(PDOCS.variantsForPricing, { ids: ids.slice(i, i + VARIANT_READ_BATCH) });
                 for (const v of d.nodes ?? [])
                     if (v?.id)
                         verified.set(v.id, v);
@@ -330,6 +339,7 @@ async function updatePricesCore(w, a) {
                 sku: entry.sku,
                 productId,
                 variantId: variant.id,
+                requested: requestedOf(entry),
                 outcome: "applied_unverified",
                 verification: "verification_failed",
                 mutationResponse,
@@ -347,6 +357,7 @@ async function updatePricesCore(w, a) {
             sku: entry.sku,
             productId,
             variantId: variant.id,
+            requested: requestedOf(entry),
             outcome: mismatch ? "mismatch" : "applied",
             verification: mismatch ? "mismatch" : "verified",
             mutationResponse,
@@ -410,7 +421,7 @@ export function registerParityTools(server) {
                     shop: w.store.shop,
                     apiVersion: w.store.apiVersion,
                     ...result,
-                });
+                }, false, write);
             }
             catch (error) {
                 if (w)
@@ -425,7 +436,7 @@ export function registerParityTools(server) {
                             }
                             : {}),
                         ...(error instanceof WorkflowError ? error.details : {}),
-                    }));
+                    }), write);
                 return toolError(error);
             }
         });
@@ -484,7 +495,7 @@ export function registerParityTools(server) {
                 succeeded: results.filter((r) => r.ok).length,
                 unverified: results.filter((r) => !r.ok && r.status === "unverified").length,
                 failed: results.filter((r) => !r.ok).length,
-            });
+            }, false, !a.dryRun);
         }
         catch (error) {
             return toolError(error);
