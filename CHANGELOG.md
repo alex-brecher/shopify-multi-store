@@ -38,6 +38,9 @@ This file records notable changes to Shopify Multi-Store MCP.
   read and decrypted the caller's token for every configured store.
 - Hosted: the Shopify OAuth HMAC check uses the shared `src/shopify-hmac.ts`
   instead of a second copy.
+- The `/stores` page names the server it belongs to (issuer and MCP URL), so a
+  person with more than one deployment knows which connections they are
+  looking at.
 
 Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
 ### Review 3: fixes and a smaller tool surface

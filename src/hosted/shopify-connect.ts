@@ -503,6 +503,7 @@ export class ShopifyConnections {
     const body = `<div class="card">
 <h1>Your Shopify stores</h1>
 <p class="muted">${escapeHtml(displayName)} - signed in with Shopify as ${escapeHtml(session.email)}</p>
+<p class="muted">These connections belong to this server only: <code>${escapeHtml(this.options.auth.issuer)}</code>. AI apps reach it at <code>${escapeHtml(this.options.auth.resource)}</code>. Another server URL keeps its own connections.</p>
 <p>AI apps act as you in each connected store, and Shopify allows only what your staff permissions allow. Shopify ends each connection after 24 hours, or when you log out of the Shopify admin. Reconnect all takes one click; while you are logged in to Shopify, every store reconnects without further clicks.</p>
 ${message ? `<div class="warn"><p>${escapeHtml(message)}</p></div>` : ""}
 ${first ? `<div class="actions">${this.connectForm(session, first.alias, true, `Reconnect all (${unconnected} ${unconnected === 1 ? "store" : "stores"})`, "primary")}</div>` : ""}

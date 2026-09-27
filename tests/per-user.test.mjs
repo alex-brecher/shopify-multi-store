@@ -80,6 +80,7 @@ test("the /stores sign-in connects the login store, and connect stores an encryp
   const { app, store, oauth, auditPath } = await setup(t);
   const cookie = await storesSession(app, "pat@bariatricpal.com", "main", "shpua_login");
   const before = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.ok(before.includes(`<code>${ORIGIN}</code>`) && before.includes(`<code>${ORIGIN}/mcp</code>`), "the page names the server it belongs to");
   assert.match(before, /signed in with Shopify as pat@bariatricpal\.com/);
   assert.match(before, /Connected as pat@bariatricpal\.com/, "the login store is connected");
   assert.match(before, /Not connected/);
