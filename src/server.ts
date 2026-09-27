@@ -5,7 +5,9 @@ import { registerParityTools } from "./parity-tools.js";
 import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
-import { registerActionTools } from "./actions/tools.js";
+import { registerActionTools, parseActionDocument } from "./actions/tools.js";
+import { denylist, isDenied } from "./actions/catalog.js";
+import { isHostedMode } from "./runtime.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
@@ -211,6 +213,12 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     async ({ store, mutation, variables }) => {
       try {
         requireMutation(mutation);
+        // On a hosted server the raw mutation tool honors the same denylist as shopify_run_action,
+        // so it cannot be used to mint credentials or change this app's installation or billing.
+        if (isHostedMode()) {
+          const denied = parseActionDocument(mutation).rootFields.filter((name) => isDenied(name, denylist()));
+          if (denied.length) throw new Error(`Refused: ${denied.join(", ")} is on this server's action denylist.`);
+        }
         const selected = await findStore(store);
         const result = await adminGraphql(selected, mutation, variables);
         return { ...success(result as unknown as Record<string, unknown>), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };

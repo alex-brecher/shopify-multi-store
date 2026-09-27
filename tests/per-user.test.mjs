@@ -432,3 +432,16 @@ test("shopify_run_action is open to editors in per-user mode, runs with the user
   assert.deepEqual(runs[0].outcome, [{ store: "main", ok: true }]);
   assert.equal(runs[1].outcome.find((entry) => entry.store === "wholesale").ok, false);
 });
+
+test("the raw mutation tool honors the action denylist on a hosted server", async (t) => {
+  const requests = await shopifyMock(t);
+  const { app } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  await connectStore(app, cookie);
+  const client = await mcpClient(t, app, await login(app, "pat|bariatricpal.com"));
+  const mutation = "mutation { ...F } fragment F on Mutation { delegateAccessTokenCreate(input: { delegateAccessScope: [\"write_products\"] }) { delegateAccessToken { accessToken } } }";
+  const refused = await client.callTool({ name: "shopify_graphql_mutation", arguments: { store: "main", mutation, variables: {}, confirm: true } });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /denylist/);
+  assert.equal(requests.length, 0);
+});

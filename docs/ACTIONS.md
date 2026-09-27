@@ -13,7 +13,7 @@ Two features work together so that every person on the team can make any Shopify
 2. They open `https://<host>/stores`, sign in with Google, and click Connect (or "Connect all") for each store.
 3. Shopify asks them to log in with their Shopify staff account and approve the app. The server uses Shopify's authorization-code flow in online access mode (`grant_options[]=per-user`).
 4. The server stores the resulting online token, encrypted with AES-256-GCM, together with the Shopify staff account it belongs to (`associated_user`: id, email, store owner, collaborator) and the scopes that account holds (`associated_user_scope`).
-5. From then on, every tool call for that store uses that person's token. Shopify grants the intersection of the app's scopes and the person's staff permissions. A person without "Delete products" in Shopify cannot delete products through any tool.
+5. From then on, every tool call for that store uses that person's token. Shopify limits the token to the app scopes that match the person's staff permissions (`associated_user_scope`), and a person whose staff account cannot manage, for example, orders cannot change orders through any tool. How finely Shopify maps individual staff permissions to API access is up to Shopify; test with a restricted staff account before relying on a specific permission.
 
 What people see:
 
@@ -50,7 +50,7 @@ In app mode, `shopify_run_action` and `shopify_graphql_mutation` are admin-only.
 
 ### Denylist
 
-`shopify_run_action` refuses mutations that mint credentials or change this app's own installation or billing: `delegateAccessTokenCreate`, `delegateAccessTokenDestroy`, `storefrontAccessTokenCreate`, `storefrontAccessTokenDelete`, `appUninstall`, `appRevokeAccessScopes`, `appSubscription*`, `appPurchaseOneTimeCreate`, `appUsageRecordCreate`, and `mobilePlatformApplication*`. Set `ACTIONS_DENYLIST` (comma list, `*` suffix for a prefix) to replace the list. `shopify_find_actions` marks these `denied`.
+`shopify_run_action` refuses mutations that mint credentials or change this app's own installation or billing: `delegateAccessTokenCreate`, `delegateAccessTokenDestroy`, `storefrontAccessTokenCreate`, `storefrontAccessTokenDelete`, `appUninstall`, `appRevokeAccessScopes`, `appSubscription*`, `appPurchaseOneTimeCreate`, `appUsageRecordCreate`, and `mobilePlatformApplication*`. Set `ACTIONS_DENYLIST` (comma list, `*` suffix for a prefix) to replace the list. `shopify_find_actions` marks these `denied`. On a hosted server, `shopify_graphql_mutation` refuses the same mutations.
 
 ## Worked examples
 
