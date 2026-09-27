@@ -8,7 +8,7 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createHostedApp } from "../dist/hosted/app.js";
-import { FileAuditLog } from "../dist/hosted/audit.js";
+import { AUDIT_MAX_LINE_BYTES, FileAuditLog, auditLine } from "../dist/hosted/audit.js";
 import { checkGoogleIdentity, verifyGoogleIdToken } from "../dist/hosted/google.js";
 import { toNodeListener } from "../dist/hosted/node-adapter.js";
 import { staticPolicy } from "../dist/hosted/policy.js";
@@ -454,6 +454,80 @@ test("audit log records mutations with an argument hash and hosted mode refuses 
   assert.equal(typeof entry.durationMs, "number");
   assert.ok(!JSON.stringify(lines).includes(tokens.access_token));
   assert.ok(!JSON.stringify(lines).includes("should-not-log"));
+});
+
+test("audit log records read-only argument hashes, capped query text, and redacted mutation PII", async (t) => {
+  await shopifyMock(t);
+  const { app, auditPath } = await setup(t);
+  const { tokens } = await login(app, "admin|bariatricpal.com");
+  const client = await mcpClient(t, app, tokens.access_token);
+
+  const query = `{ shop { name } }\n#${"q".repeat(5000)}`;
+  const read = await client.callTool({ name: "shopify_graphql_query", arguments: { store: "main", query } });
+  assert.notEqual(read.isError, true, JSON.stringify(read));
+
+  const mutation = "mutation Update($id: ID!) { productUpdate(product: {id: $id}) { product { id } userErrors { field message } } }";
+  const variables = {
+    id: "gid://shopify/Product/1",
+    email: "customer@example.com",
+    phone: "+15185551234",
+    shippingAddress: { address1: "1 Main St", city: "Albany", zip: "12205" },
+    note: "n".repeat(5000)
+  };
+  const write = await client.callTool({ name: "shopify_graphql_mutation", arguments: { store: "main", mutation, variables, confirm: true } });
+  assert.notEqual(write.isError, true, JSON.stringify(write));
+
+  const lines = await auditLines(auditPath);
+  const readEntry = lines.find((line) => line.tool === "shopify_graphql_query");
+  assert.match(readEntry.argsSha256, /^[0-9a-f]{64}$/);
+  assert.equal(readEntry.args, undefined);
+  assert.ok(readEntry.query.startsWith(query.slice(0, 2000)));
+  assert.ok(readEntry.query.length < 2100);
+
+  const writeEntry = lines.find((line) => line.tool === "shopify_graphql_mutation");
+  assert.match(writeEntry.args.variables.email, /^\[PII sha256:[0-9a-f]{64}\]$/);
+  assert.match(writeEntry.args.variables.phone, /^\[PII sha256:[0-9a-f]{64}\]$/);
+  assert.match(writeEntry.args.variables.shippingAddress, /^\[PII sha256:[0-9a-f]{64}\]$/);
+  assert.ok(writeEntry.args.variables.note.length < 2100);
+  const raw = await readFile(auditPath, "utf8");
+  for (const secret of ["customer@example.com", "+15185551234", "1 Main St", tokens.access_token]) assert.ok(!raw.includes(secret), secret);
+});
+
+test("audit lines are capped at 64KB", () => {
+  const huge = { timestamp: new Date().toISOString(), user: "a@b.com", role: "admin", tool: "x", stores: [], readOnly: false, ok: true, durationMs: 1, argsSha256: "0".repeat(64), args: { list: Array.from({ length: 200 }, () => "z".repeat(2000)) } };
+  const line = auditLine(huge);
+  assert.ok(Buffer.byteLength(line) <= AUDIT_MAX_LINE_BYTES);
+  const parsed = JSON.parse(line);
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.argsSha256, huge.argsSha256);
+});
+
+test("audit log records sign-in, token, refresh, and 401/403 events without tokens", async (t) => {
+  const policy = { users: { "admin@bariatricpal.com": { role: "admin", stores: "*" } } };
+  const { app, auditPath } = await setup(t, { policy: { current: () => new (class { resolve(email) { return policy.users[email] ? { email, ...policy.users[email] } : null; } })() } });
+  const { client, tokens } = await login(app, "admin|bariatricpal.com");
+  const refreshed = await tokenRequest(app, { grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id });
+  assert.equal(refreshed.response.status, 200);
+  const { body: other } = await registerClient(app);
+  const { challenge } = pkce();
+  await authorize(app, { clientId: other.client_id, challenge, account: "stranger|bariatricpal.com" });
+  const noToken = await call(app, "/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(noToken.status, 401);
+  const badToken = await call(app, "/mcp", { method: "POST", headers: { authorization: "Bearer sms_at_nope", "content-type": "application/json" }, body: "{}" });
+  assert.equal(badToken.status, 401);
+  delete policy.users["admin@bariatricpal.com"];
+  const forbidden = await call(app, "/mcp", { method: "POST", headers: { authorization: `Bearer ${refreshed.body.access_token}`, "content-type": "application/json" }, body: "{}" });
+  assert.equal(forbidden.status, 403);
+
+  const lines = await auditLines(auditPath);
+  const events = lines.map((line) => line.event);
+  for (const event of ["sign_in", "token_issued", "token_refreshed", "sign_in_denied", "request_unauthorized", "request_forbidden"]) assert.ok(events.includes(event), event);
+  assert.equal(lines.find((line) => line.event === "sign_in").user, "admin@bariatricpal.com");
+  assert.equal(lines.find((line) => line.event === "sign_in_denied").user, "stranger@bariatricpal.com");
+  assert.equal(lines.filter((line) => line.event === "request_unauthorized").length, 2);
+  assert.equal(lines.find((line) => line.event === "request_forbidden").status, 403);
+  const raw = await readFile(auditPath, "utf8");
+  for (const secret of [tokens.access_token, tokens.refresh_token, refreshed.body.access_token, refreshed.body.refresh_token]) assert.ok(!raw.includes(secret));
 });
 
 test("a user removed from the policy loses access on the next request", async (t) => {

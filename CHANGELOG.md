@@ -55,6 +55,11 @@ This file records notable changes to Shopify Multi-Store MCP.
   method definition by id instead of scanning the first 50 profiles.
 - `shopify_create_fulfillment` also fulfills IN_PROGRESS (partially fulfilled)
   fulfillment orders, sending the remaining quantity of each line item.
+- Hosted audit log: read-only calls record an argument hash and the first
+  2,000 characters of a `query` argument; mutation arguments hash customer
+  email, phone, and address fields; logged strings are capped at 2,000
+  characters and lines at 64 KB. Sign-in, token issue and refresh, refresh
+  denials, and 401/403 responses are logged as auth events.
 
 ## [1.6.0] - 2026-09-07
 

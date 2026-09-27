@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
+/** One tool call. */
 export interface AuditEntry {
+  event?: "tool_call";
   timestamp: string;
   user: string;
   role: string;
@@ -14,10 +16,80 @@ export interface AuditEntry {
   durationMs: number;
   argsSha256?: string;
   args?: unknown;
+  /** Read-only calls: the first 2,000 characters of a `query` argument. */
+  query?: string;
+  truncated?: boolean;
 }
 
+/** Sign-in, token, and request-authorization events. Tokens are never included. */
+export interface AuthAuditEntry {
+  event:
+    | "sign_in"
+    | "sign_in_denied"
+    | "token_issued"
+    | "token_refreshed"
+    | "refresh_denied"
+    | "request_unauthorized"
+    | "request_forbidden";
+  timestamp: string;
+  user?: string;
+  clientId?: string;
+  status?: number;
+  reason?: string;
+}
+
+export type AuditRecord = AuditEntry | AuthAuditEntry;
+
 export interface AuditLog {
-  write(entry: AuditEntry): Promise<void>;
+  write(entry: AuditRecord): Promise<void>;
+}
+
+/** Longest string kept for any logged argument value. */
+export const AUDIT_MAX_STRING = 2_000;
+/** Longest audit line, in bytes. */
+export const AUDIT_MAX_LINE_BYTES = 64 * 1024;
+
+/** Customer contact fields in mutation arguments. Their values are replaced with a hash. */
+const PII_KEY = /(e-?mail|phone|address|^zip$|zip_?code|postal)/i;
+
+/** Cut a string to the audit limit, saying how much was dropped. */
+export function capString(value: string, max = AUDIT_MAX_STRING): string {
+  return value.length <= max ? value : `${value.slice(0, max)}...[truncated ${value.length - max} chars]`;
+}
+
+/**
+ * Prepare mutation arguments for the audit log: secrets become [REDACTED], customer email,
+ * phone and address values become a sha256 of their canonical JSON (so equal values can still
+ * be correlated), and every string is capped at AUDIT_MAX_STRING characters.
+ */
+export function auditArguments(value: unknown, depth = 0): unknown {
+  if (depth > 20) return "[TRUNCATED]";
+  if (typeof value === "string") return capString(value);
+  if (Array.isArray(value)) return value.map((item) => auditArguments(item, depth + 1));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (SECRET_KEY.test(key)) out[key] = "[REDACTED]";
+      else if (PII_KEY.test(key) && item !== null && item !== undefined && item !== "") out[key] = `[PII sha256:${sha256Hex(canonicalJson(item))}]`;
+      else out[key] = auditArguments(item, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Serialize one audit line, dropping argument detail if the line would exceed AUDIT_MAX_LINE_BYTES. */
+export function auditLine(entry: AuditRecord): string {
+  let line = JSON.stringify(entry);
+  if (Buffer.byteLength(line) <= AUDIT_MAX_LINE_BYTES) return line;
+  const slim: Record<string, unknown> = { ...entry, truncated: true };
+  delete slim.args;
+  if (typeof slim.query === "string") slim.query = capString(slim.query, 500);
+  if (typeof slim.error === "string") slim.error = capString(slim.error, 500);
+  if (typeof slim.reason === "string") slim.reason = capString(slim.reason, 500);
+  line = JSON.stringify(slim);
+  if (Buffer.byteLength(line) <= AUDIT_MAX_LINE_BYTES) return line;
+  return JSON.stringify({ event: (entry as { event?: string }).event ?? "tool_call", timestamp: entry.timestamp, truncated: true });
 }
 
 const SECRET_KEY = /(token|secret|password|passwd|authorization|api[-_]?key|credential|cookie|private[-_]?key)/i;
@@ -57,8 +129,8 @@ export class FileAuditLog implements AuditLog {
 
   constructor(private readonly path: string) {}
 
-  write(entry: AuditEntry): Promise<void> {
-    const line = `${JSON.stringify(entry)}\n`;
+  write(entry: AuditRecord): Promise<void> {
+    const line = `${auditLine(entry)}\n`;
     this.ready ??= mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
     const next = this.queue.then(async () => {
       await this.ready;

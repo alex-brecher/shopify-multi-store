@@ -88,6 +88,17 @@ export class AuthorizationServer {
         this.now = options.now ?? Date.now;
         this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
     }
+    /** Record a sign-in, token, or authorization event. Never throws. */
+    async auditAuth(entry) {
+        if (!this.options.audit)
+            return;
+        try {
+            await this.options.audit.write({ timestamp: new Date(this.now()).toISOString(), ...entry });
+        }
+        catch (error) {
+            this.log(`Audit log write failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
     get resourceMetadataUrl() {
         return `${this.issuer}/.well-known/oauth-protected-resource${new URL(this.resource).pathname}`;
     }
@@ -326,16 +337,19 @@ export class AuthorizationServer {
             const identity = checkGoogleIdentity(claims, this.options.allowedDomains);
             if ("error" in identity) {
                 this.log(`Sign-in refused: ${identity.error}`);
+                await this.auditAuth({ event: "sign_in_denied", clientId: pending.clientId, reason: identity.error, ...(typeof claims.email === "string" ? { user: claims.email.toLowerCase() } : {}) });
                 return back({ error: "access_denied", error_description: identity.error });
             }
             email = identity.email;
         }
         catch (error) {
             this.log(`Google sign-in verification failed: ${error instanceof Error ? error.message : String(error)}`);
+            await this.auditAuth({ event: "sign_in_denied", clientId: pending.clientId, reason: "Google sign-in could not be verified." });
             return back({ error: "access_denied", error_description: "Google sign-in could not be verified." });
         }
         if (!this.options.policy.current().resolve(email)) {
             this.log(`Sign-in refused: ${email} is not in the access policy.`);
+            await this.auditAuth({ event: "sign_in_denied", user: email, clientId: pending.clientId, reason: "not in the access policy" });
             return back({ error: "access_denied", error_description: `${email} has not been granted access. Ask an administrator.` });
         }
         const authorizationCode = secret("sms_ac_");
@@ -349,6 +363,7 @@ export class AuthorizationServer {
             email
         };
         await this.options.store.put("code", sha256(authorizationCode), record, this.now() + CODE_TTL_MS);
+        await this.auditAuth({ event: "sign_in", user: email, clientId: pending.clientId });
         return back({ code: authorizationCode });
     }
     // ---------- Token endpoint ----------
@@ -441,9 +456,13 @@ export class AuthorizationServer {
         const resource = body.get("resource");
         if (resource !== null && !this.resourceMatches(resource))
             return oauthError("invalid_target", `This server only issues tokens for ${this.resource}.`);
-        if (!this.options.policy.current().resolve(record.email))
+        if (!this.options.policy.current().resolve(record.email)) {
+            await this.auditAuth({ event: "sign_in_denied", user: record.email, clientId: client.client_id, reason: "removed from the access policy before the code was redeemed" });
             return oauthError("invalid_grant", "The user no longer has access.");
-        return this.issueTokens(client, record.email, record.scope, randomUUID(), this.now());
+        }
+        const issued = await this.issueTokens(client, record.email, record.scope, randomUUID(), this.now());
+        await this.auditAuth({ event: "token_issued", user: record.email, clientId: client.client_id });
+        return issued;
     }
     async refreshTokenGrant(client, body) {
         const token = body.get("refresh_token");
@@ -478,6 +497,7 @@ export class AuthorizationServer {
             // A rotated token came back: assume it leaked and revoke the whole token family.
             await this.revokeFamily(record.familyId);
             this.log(`Refresh token reuse detected for ${record.email}; revoked token family.`);
+            await this.auditAuth({ event: "refresh_denied", user: record.email, clientId: client.client_id, reason: "refresh token reuse; token family revoked" });
             return oauthError("invalid_grant", "The refresh token was already used.");
         }
         const resource = body.get("resource");
@@ -488,18 +508,22 @@ export class AuthorizationServer {
         if (typeof record.familyStartedAt !== "number" || this.now() - record.familyStartedAt >= this.sessionMaxAgeMs) {
             await this.revokeFamily(record.familyId);
             this.log(`Session for ${record.email} reached its maximum age; sign-in required.`);
+            await this.auditAuth({ event: "refresh_denied", user: record.email, clientId: client.client_id, reason: "session maximum age reached" });
             return oauthError("invalid_grant", "The sign-in session has expired. Sign in again.");
         }
         // Re-evaluate the access policy on every refresh so removed users lose access immediately.
         if (!this.options.policy.current().resolve(record.email)) {
             await this.revokeFamily(record.familyId);
             this.log(`Refresh refused: ${record.email} is not in the access policy; revoked token family.`);
+            await this.auditAuth({ event: "refresh_denied", user: record.email, clientId: client.client_id, reason: "not in the access policy; token family revoked" });
             return oauthError("invalid_grant", "The user no longer has access.");
         }
         // Rotation: keep the old token only as a reuse tripwire until it would have expired.
         // Written before new tokens are issued, while this token's lock is held.
         await this.options.store.put("refresh", key, { ...record, rotated: true }, record.expiresAt);
-        return this.issueTokens(client, record.email, record.scope, record.familyId, record.familyStartedAt);
+        const refreshed = await this.issueTokens(client, record.email, record.scope, record.familyId, record.familyStartedAt);
+        await this.auditAuth({ event: "token_refreshed", user: record.email, clientId: client.client_id });
+        return refreshed;
     }
     async revokeFamily(familyId) {
         await this.options.store.deleteWhere("access", (value) => value.familyId === familyId);

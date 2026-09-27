@@ -1,6 +1,7 @@
 import { type GoogleLogin } from "./google.js";
 import type { Principal, PolicySource } from "./policy.js";
 import type { OAuthStore } from "./store.js";
+import type { AuditLog, AuthAuditEntry } from "./audit.js";
 export declare const SCOPE = "mcp";
 export declare const DEFAULT_REDIRECT_URIS: string[];
 export declare const DEFAULT_CIMD_HOSTS: string[];
@@ -32,6 +33,8 @@ export interface AuthServerOptions {
     maxRegisteredClients?: number;
     now?: () => number;
     log?: (message: string) => void;
+    /** Receives sign-in and token events. Tokens and codes are never passed. */
+    audit?: AuditLog;
 }
 export interface ClientRecord {
     client_id: string;
@@ -74,6 +77,8 @@ export declare class AuthorizationServer {
     /** Per refresh-token lock chain, so concurrent uses of one token are handled one at a time. */
     private readonly refreshLocks;
     constructor(options: AuthServerOptions);
+    /** Record a sign-in, token, or authorization event. Never throws. */
+    auditAuth(entry: Omit<AuthAuditEntry, "timestamp">): Promise<void>;
     get resourceMetadataUrl(): string;
     protectedResourceMetadata(): Record<string, unknown>;
     authorizationServerMetadata(): Record<string, unknown>;

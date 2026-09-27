@@ -70,12 +70,19 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
   async function handleMcp(request: Request): Promise<Response> {
     const header = request.headers.get("authorization") ?? "";
     const match = /^Bearer\s+(\S+)$/i.exec(header);
-    if (!match) return unauthorized();
+    if (!match) {
+      await auth.auditAuth({ event: "request_unauthorized", status: 401, reason: "missing bearer token" });
+      return unauthorized();
+    }
     const record = await auth.verifyAccessToken(match[1]!);
-    if (!record) return unauthorized("The access token is invalid or expired.");
+    if (!record) {
+      await auth.auditAuth({ event: "request_unauthorized", status: 401, reason: "invalid or expired access token" });
+      return unauthorized("The access token is invalid or expired.");
+    }
     // Resolve the role on every request so policy changes apply immediately.
     const principal = auth.resolvePrincipal(record.email);
     if (!principal) {
+      await auth.auditAuth({ event: "request_forbidden", status: 403, user: record.email, clientId: record.clientId, reason: "not in the access policy" });
       return jsonResponse({ error: "access_denied", error_description: `${record.email} no longer has access.` }, 403);
     }
     const authInfo: AuthInfo = {

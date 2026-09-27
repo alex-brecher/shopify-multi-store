@@ -86,7 +86,15 @@ Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, and
 
 ### Audit log
 
-One JSON line per tool call: `timestamp`, `user`, `role`, `tool`, `stores`, `readOnly`, `ok`, `error`, `durationMs`. Calls to non-read-only tools also record `argsSha256` and the arguments, with values under secret-looking keys replaced by `[REDACTED]`. Tokens are never logged.
+One JSON line per tool call (`event: "tool_call"`): `timestamp`, `user`, `role`, `tool`, `stores`, `readOnly`, `ok`, `error`, `durationMs`, and `argsSha256` (a sha256 of the canonical arguments).
+
+- Read-only calls also record the first 2,000 characters of a `query` argument, and nothing else from the arguments.
+- Other calls record the arguments. Values under secret-looking keys become `[REDACTED]`. Customer email, phone, and address fields become `[PII sha256:<hex>]`, so the same value can still be matched across lines. Every string is capped at 2,000 characters.
+- A line is capped at 64 KB. If it would be longer, the arguments are dropped and `truncated: true` is set; `argsSha256` stays.
+
+Auth events are logged to the same file with an `event` field: `sign_in`, `sign_in_denied` (with `reason`), `token_issued`, `token_refreshed`, `refresh_denied` (reuse, maximum session age, or policy), `request_unauthorized` (401), and `request_forbidden` (403). They carry `user` and `clientId` where known.
+
+Tokens and authorization codes are never logged.
 
 ## Setup
 

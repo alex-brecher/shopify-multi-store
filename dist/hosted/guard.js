@@ -1,5 +1,5 @@
 import { storeAllowed, storeScope } from "../runtime.js";
-import { canonicalJson, redact, sha256Hex } from "./audit.js";
+import { auditArguments, canonicalJson, capString, sha256Hex } from "./audit.js";
 /** Tools only an admin may call in hosted mode, whatever their annotations say. */
 export const ADMIN_ONLY_TOOLS = new Set([
     "shopify_graphql_mutation",
@@ -102,7 +102,9 @@ export function guardServer(server, { principal, audit }) {
                     ? (failure instanceof Error ? failure.message : String(failure))
                     : isError ? errorMessage(result) : undefined;
                 try {
+                    const query = input && typeof input === "object" ? input.query : undefined;
                     await audit.write({
+                        event: "tool_call",
                         timestamp: new Date(started).toISOString(),
                         user: principal.email,
                         role: principal.role,
@@ -112,9 +114,12 @@ export function guardServer(server, { principal, audit }) {
                         ok: !isError,
                         ...(errorText ? { error: errorText.slice(0, 500) } : {}),
                         durationMs: Date.now() - started,
-                        ...(!readOnly && input !== undefined
-                            ? { argsSha256: sha256Hex(canonicalJson(input)), args: redact(input) }
-                            : {})
+                        // Every call records a hash of its arguments. Read-only calls add only the start of a
+                        // query argument; mutations add the arguments with secrets and customer contact
+                        // fields redacted and long strings capped.
+                        ...(input !== undefined ? { argsSha256: sha256Hex(canonicalJson(input)) } : {}),
+                        ...(readOnly && typeof query === "string" ? { query: capString(query) } : {}),
+                        ...(!readOnly && input !== undefined ? { args: auditArguments(input) } : {})
                     });
                 }
                 catch (error) {
