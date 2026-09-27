@@ -241,7 +241,7 @@ One JSON line per tool call (`event: "tool_call"`): `timestamp`, `user`, `role`,
 
 Auth events are logged to the same file with an `event` field: `sign_in`, `sign_in_denied` (with `reason`), `consent_approved`, `consent_denied`, `token_issued`, `token_refreshed`, `refresh_denied` (reuse, maximum session age, or policy), `personal_token_created`, `personal_token_revoked`, `request_unauthorized` (401), `request_forbidden` (403), and in per-user mode `shopify_connected`, `shopify_connect_denied`, and `shopify_disconnected` (with `store`, and the Shopify `shopifyUserId` and `shopifyEmail` where known).
 
-Every `shopify_run_action` call adds an `action_run` line: `user`, `mutations`, `stores`, `dryRun`, `variablesSha256`, and a per-store `outcome`. They carry `user` and `clientId` where known. Requests and tool calls made with a personal access token carry its `tokenId`.
+Every `shopify_run_action` call adds an `action_run` line: `user`, `mutations`, `stores`, `dryRun`, `variablesSha256`, and a per-store `outcome` with the Shopify staff email the store ran as (`shopifyEmail`). In per-user mode every `tool_call` line also carries `shopifyAccounts`, mapping each store the call used to that Shopify staff email. They carry `user` and `clientId` where known. Requests and tool calls made with a personal access token carry its `tokenId`.
 
 Tokens, personal access token values, Shopify tokens, and authorization codes are never logged.
 

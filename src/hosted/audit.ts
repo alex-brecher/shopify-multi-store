@@ -21,6 +21,8 @@ export interface AuditEntry {
   truncated?: boolean;
   /** Set when the call was authenticated with a personal access token. The id, never the value. */
   tokenId?: string;
+  /** Per-user mode: store alias to the Shopify staff email the call ran as. */
+  shopifyAccounts?: Record<string, string>;
 }
 
 /** Sign-in, token, and request-authorization events. Tokens are never included. */
@@ -65,7 +67,8 @@ export interface ActionAuditEntry {
   stores: string[];
   dryRun: boolean;
   variablesSha256: string;
-  outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number }>;
+  /** Per store; shopifyEmail is the Shopify staff account the call ran as (per-user mode). */
+  outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number; shopifyEmail?: string }>;
 }
 
 export type AuditRecord = AuditEntry | AuthAuditEntry | ActionAuditEntry;

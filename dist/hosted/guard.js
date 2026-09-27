@@ -129,6 +129,7 @@ export function guardServer(server, { principal, audit, tokenId, accessMode = "a
                         user: principal.email,
                         role: principal.role,
                         ...(tokenId ? { tokenId } : {}),
+                        ...(access ? { shopifyAccounts: shopifyAccounts(access, stores) } : {}),
                         tool: name,
                         stores,
                         readOnly,
@@ -151,6 +152,17 @@ export function guardServer(server, { principal, audit, tokenId, accessMode = "a
         return register(name, config, wrapped);
     };
     server.registerTool = guarded;
+}
+/** Store alias to Shopify staff email for the stores a call names, or every connected store when it names none. */
+function shopifyAccounts(access, stores) {
+    const out = {};
+    const wanted = stores.length ? stores.map((store) => store.toLowerCase()) : [...access.tokens.keys()];
+    for (const alias of wanted) {
+        const email = access.tokens.get(alias)?.shopifyEmail;
+        if (email)
+            out[alias] = email;
+    }
+    return out;
 }
 function errorMessage(result) {
     const content = result?.content;

@@ -47,7 +47,7 @@ export interface ActionAuditDetails {
   stores: string[];
   dryRun: boolean;
   variablesSha256: string;
-  outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number }>;
+  outcome: Array<{ store: string; ok: boolean; error?: string; userErrors?: number; shopifyEmail?: string }>;
 }
 
 /** Store aliases the current hosted caller may reach. "*" means every configured store. */

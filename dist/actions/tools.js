@@ -251,8 +251,14 @@ export function registerActionTools(server) {
         let mutations = args.mutation ? [args.mutation] : [];
         const aliases = [...new Map(args.stores.map((alias) => [alias.toLowerCase(), alias])).values()];
         const audit = async (outcome) => {
-            if (auditAction)
-                await auditAction({ mutations, stores: aliases, dryRun: args.dryRun, variablesSha256, outcome });
+            if (!auditAction)
+                return;
+            const access = currentUserAccess();
+            const withAccounts = outcome.map((entry) => {
+                const shopifyEmail = access?.tokens.get(entry.store.toLowerCase())?.shopifyEmail;
+                return shopifyEmail ? { ...entry, shopifyEmail } : entry;
+            });
+            await auditAction({ mutations, stores: aliases, dryRun: args.dryRun, variablesSha256, outcome: withAccounts });
         };
         const refuse = async (message, details) => {
             await audit(aliases.map((store) => ({ store, ok: false, error: message.slice(0, 300) })));

@@ -448,8 +448,11 @@ test("shopify_run_action is open to editors in per-user mode, runs with the user
   assert.deepEqual(runs[0].stores, ["main"]);
   assert.equal(runs[0].dryRun, false);
   assert.match(runs[0].variablesSha256, /^[0-9a-f]{64}$/);
-  assert.deepEqual(runs[0].outcome, [{ store: "main", ok: true }]);
+  assert.deepEqual(runs[0].outcome, [{ store: "main", ok: true, shopifyEmail: "pat@bariatricpal.com" }]);
   assert.equal(runs[1].outcome.find((entry) => entry.store === "wholesale").ok, false);
+  assert.equal(runs[1].outcome.find((entry) => entry.store === "wholesale").shopifyEmail, undefined);
+  const call = lines.find((line) => line.tool === "shopify_run_action");
+  assert.deepEqual(call.shopifyAccounts, { main: "pat@bariatricpal.com" });
 });
 
 test("the raw mutation tool honors the action denylist on a hosted server", async (t) => {

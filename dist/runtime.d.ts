@@ -37,6 +37,7 @@ export interface ActionAuditDetails {
         ok: boolean;
         error?: string;
         userErrors?: number;
+        shopifyEmail?: string;
     }>;
 }
 /** Store aliases the current hosted caller may reach. "*" means every configured store. */
