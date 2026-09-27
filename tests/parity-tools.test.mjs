@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "graphql";
-import { registerParityTools } from "../dist/parity-tools.js";
+import { registerParityTools, sameMoney } from "../dist/parity-tools.js";
 
 const gid = (type, id = 1) => `gid://shopify/${type}/${id}`;
 const connection = (nodes) => ({
@@ -128,7 +128,7 @@ async function fixture(t) {
               sku: state.variants["SKU-FOUND"].sku,
               price: state.mismatchPrice ?? variant.price ?? state.variants["SKU-FOUND"].price,
               compareAtPrice: variant.compareAtPrice ?? null,
-              inventoryItem: { id: gid("InventoryItem", 1), unitCost: { amount: variant.inventoryItem?.cost ?? "5.00", currencyCode: "USD" } },
+              inventoryItem: { id: gid("InventoryItem", 1), unitCost: { amount: state.readbackCost ?? variant.inventoryItem?.cost ?? "5.00", currencyCode: "USD" } },
             })),
             userErrors: [],
           },
@@ -167,7 +167,7 @@ async function fixture(t) {
         };
         break;
       case "UpdateDeliveryRate":
-        if (state.deliveryRatePersists) state.appliedAmount = v.profile.locationGroupsToUpdate[0].zonesToUpdate[0].methodDefinitionsToUpdate[0].rateDefinition.price.amount;
+        if (state.deliveryRatePersists) state.appliedAmount = (state.persistFormat ?? ((x) => x))(v.profile.locationGroupsToUpdate[0].zonesToUpdate[0].methodDefinitionsToUpdate[0].rateDefinition.price.amount);
         data = { deliveryProfileUpdate: { profile: { id: v.id }, userErrors: [] } };
         break;
       case "ListThemes":
@@ -569,4 +569,44 @@ test("update_prices: duplicate exact SKUs are reported and only updated with all
     sentVariables(state, "UpdatePricesBulk").map((v) => [v.productId, v.variants.map((x) => x.id)]),
     [[gid("Product", 1), [gid("ProductVariant", 8)]], [gid("Product", 2), [gid("ProductVariant", 9)]]],
   );
+});
+
+test("update_prices: readback compares money as decimals, not strings", async (t) => {
+  const { call, state } = await fixture(t);
+  state.mismatchPrice = "12.00";
+  state.readbackCost = "6.0";
+  const applied = await call("update_prices", { skus: [{ sku: "SKU-FOUND", price: "12", unitCost: "6.000" }], dryRun: false });
+  assert.equal(applied.structuredContent.results[0].outcome, "applied", JSON.stringify(applied.structuredContent));
+  state.mismatchPrice = "12.01";
+  const mismatched = await call("update_prices", { skus: [{ sku: "SKU-FOUND", price: "12" }], dryRun: false });
+  assert.equal(mismatched.structuredContent.results[0].outcome, "mismatch");
+});
+
+test("update_delivery_rate: a persisted \"5.0\" matches a requested \"5\"", async (t) => {
+  const { call, state } = await fixture(t);
+  state.persistFormat = (amount) => Number(amount).toFixed(1);
+  const result = await call("update_delivery_rate", {
+    deliveryProfileId: gid("DeliveryProfile", 1),
+    locationGroupId: gid("DeliveryLocationGroup", 1),
+    zoneId: gid("DeliveryZone", 1),
+    methodDefinitionId: gid("DeliveryMethodDefinition", 1),
+    rateDefinitionId: gid("DeliveryRateDefinition", 1),
+    amount: "5",
+    currencyCode: "USD",
+    dryRun: false,
+  });
+  assert.equal(result.isError, undefined, result.content[0].text);
+  assert.equal(result.structuredContent.verified, true);
+});
+
+test("sameMoney: decimal equality without float rounding", () => {
+  assert.ok(sameMoney("12", "12.00"));
+  assert.ok(sameMoney("0", "0.00"));
+  assert.ok(sameMoney("-0.0", "0"));
+  assert.ok(sameMoney("007.50", "7.5"));
+  assert.ok(sameMoney(null, undefined));
+  assert.ok(!sameMoney("10", "1"));
+  assert.ok(!sameMoney("0.1", "0.10000000000000001"));
+  assert.ok(!sameMoney(null, "0.00"));
+  assert.ok(!sameMoney("abc", "abc"));
 });

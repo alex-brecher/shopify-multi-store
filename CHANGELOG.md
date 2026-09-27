@@ -44,6 +44,10 @@ This file records notable changes to Shopify Multi-Store MCP.
   candidates per page, follows full pages, keeps only exact (case-sensitive,
   trimmed) SKU matches, and skips SKUs shared by several variants unless
   `allowDuplicates: true` is passed.
+- Fix readback checks in `shopify_update_prices` and
+  `shopify_update_delivery_rate` comparing money as strings, so "12" against
+  "12.00" was reported as a mismatch and "5" against "5.0" as not persisted.
+  Amounts are now compared as decimals.
 
 ## [1.6.0] - 2026-09-07
 

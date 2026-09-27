@@ -65,6 +65,30 @@ const ORDER_INPUT_FIELDS = ["tags", "note", "email", "shippingAddress"] as const
 const CUSTOMER_INPUT_FIELDS = ["tags", "note", "email"] as const;
 const PAGE_INPUT_FIELDS = ["title", "handle", "body", "isPublished"] as const;
 
+/**
+ * Canonical form of a decimal money string ("12", "12.0" and "12.00" all become "12"),
+ * compared as text so there is no floating-point rounding. Returns undefined for
+ * anything that is not a plain decimal.
+ */
+function canonicalDecimal(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) value = String(value);
+  if (typeof value !== "string") return undefined;
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(value.trim());
+  if (!match) return undefined;
+  const whole = match[2]!.replace(/^0+(?=\d)/, "");
+  const fraction = (match[3] ?? "").replace(/0+$/, "");
+  const zero = /^0+$/.test(whole) && fraction === "";
+  return `${zero ? "" : match[1]}${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
+/** True when two money values are equal as decimals; null and undefined equal only each other. */
+export function sameMoney(a: unknown, b: unknown): boolean {
+  if (a === null || a === undefined || b === null || b === undefined)
+    return (a ?? null) === (b ?? null);
+  const left = canonicalDecimal(a);
+  return left !== undefined && left === canonicalDecimal(b);
+}
+
 const SKU_LOOKUP_MAX_PAGES = 20;
 
 /**
@@ -197,11 +221,12 @@ async function updatePricesCore(
       for (const { entry, variant } of entries) {
         const updated = after.find((v: Data) => v.id === variant.id);
         const mismatch =
-          (entry.price && updated?.price !== entry.price) ||
+          !updated ||
+          (entry.price !== undefined && !sameMoney(updated.price, entry.price)) ||
           (entry.compareAtPrice !== undefined &&
-            updated?.compareAtPrice !== entry.compareAtPrice) ||
-          (entry.unitCost &&
-            updated?.inventoryItem?.unitCost?.amount !== entry.unitCost);
+            !sameMoney(updated.compareAtPrice, entry.compareAtPrice)) ||
+          (entry.unitCost !== undefined &&
+            !sameMoney(updated.inventoryItem?.unitCost?.amount, entry.unitCost));
         results.push({
           sku: entry.sku,
           productId,
@@ -656,7 +681,7 @@ export function registerParityTools(server: McpServer) {
         .flatMap((z: Data) => z.methodDefinitions?.nodes ?? [])
         .find((m: Data) => m.id === a.methodDefinitionId);
       const persistedAmount = method?.rateProvider?.price?.amount;
-      if (String(persistedAmount) !== String(a.amount))
+      if (!sameMoney(persistedAmount, a.amount))
         throw new WorkflowError(
           "Shopify accepted the delivery rate update with no userErrors but did not persist the new amount. This is a known Shopify silent-discard behavior; read the current rate before retrying.",
           {
