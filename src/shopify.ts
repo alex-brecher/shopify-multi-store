@@ -13,6 +13,18 @@ const MAX_THROTTLE_RETRIES = 3;
 const MAX_RETRY_DELAY_MS = 60_000;
 export const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
 
+/**
+ * Shopify throttled a mutation before running it (HTTP 429 or a THROTTLED error with no data).
+ * Mutations are never resent automatically; the caller can safely retry after retryAfterMs.
+ */
+export class MutationThrottledError extends Error {
+  readonly notApplied = true;
+  constructor(readonly store: string, readonly retryAfterMs: number) {
+    super(`Shopify throttled ${store}, so the mutation was not applied. It is safe to retry after about ${Math.max(1, Math.ceil(retryAfterMs / 1_000))} seconds.`);
+    this.name = "MutationThrottledError";
+  }
+}
+
 export interface GraphqlEnvelope {
   store: string;
   shop: string;
@@ -118,8 +130,13 @@ async function adminGraphqlWithToken(store: StoreConfig, document: string, varia
   for (; attempt <= MAX_THROTTLE_RETRIES; attempt += 1) {
     ({ response, payload } = await graphqlRequest(store, document, variables, token));
     const throttled = response.status === 429 || hasThrottleError(payload);
-    // A mutation with partial data might already have applied changes. Never replay it.
-    if (operation(document).selected.operation === "mutation" && payload && typeof payload === "object" && "data" in payload && payload.data != null) break;
+    if (operation(document).selected.operation === "mutation") {
+      // Never resend a mutation. With data, some of it may have applied: return it as is.
+      // Throttled with no data: nothing ran; report that it is safe to retry.
+      const hasData = Boolean(payload && typeof payload === "object" && "data" in payload && payload.data != null);
+      if (throttled && !hasData) throw new MutationThrottledError(store.alias, retryDelay(response, attempt, payload));
+      break;
+    }
     if (!throttled || attempt === MAX_THROTTLE_RETRIES) break;
     const delay = retryDelay(response, attempt, payload);
     if (delay > MAX_RETRY_DELAY_MS) {

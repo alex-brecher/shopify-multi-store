@@ -22,7 +22,7 @@ import { canonicalJson, sha256Hex } from "../hosted/audit.js";
 import { fitMultiStoreResults } from "../result-limits.js";
 import { currentUserAccess, storeScope } from "../runtime.js";
 import { adminSchema } from "../schema.js";
-import { adminGraphql, type GraphqlEnvelope } from "../shopify.js";
+import { adminGraphql, MutationThrottledError, type GraphqlEnvelope } from "../shopify.js";
 import {
   actionCatalog,
   buildDocument,
@@ -416,6 +416,9 @@ export function registerActionTools(server: McpServer): void {
             envelope = await adminGraphql(plan.store!, plan.document!, plan.variables!);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
+            if (error instanceof MutationThrottledError) {
+              return { store: plan.alias, ok: false, outcome: "throttled", error: message, retryAfterMs: error.retryAfterMs };
+            }
             const forbidden = /HTTP 403\b/.test(message);
             return {
               store: plan.alias,

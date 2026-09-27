@@ -328,3 +328,37 @@ test("non-obvious destructive mutations need confirm", async (t) => {
   assert.match(refused.content[0].text, /confirm: "themePublish"/);
   assert.equal(requests.length, 0);
 });
+
+test("a throttled mutation is not resent and is reported as not applied, safe to retry", async (t) => {
+  let mutationCalls = 0;
+  const { callTool, requests } = await fixture(t);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (/^\s*mutation/.test(JSON.parse(init.body).query)) {
+      mutationCalls += 1;
+      return new Response(JSON.stringify({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }), { status: 429, headers: { "content-type": "application/json", "retry-after": "2" } });
+    }
+    return originalFetch(url, init);
+  };
+  const result = await callTool("shopify_run_action", { stores: ["main"], mutation: "tagsAdd", dryRun: false, variables: { id: "gid://shopify/Product/1", tags: ["x"] } });
+  assert.equal(result.isError, true);
+  assert.equal(mutationCalls, 1, "never resent");
+  const outcome = result.structuredContent.results[0];
+  assert.equal(outcome.outcome, "throttled");
+  assert.match(outcome.error, /not applied.*safe to retry after about 2 seconds/);
+  assert.equal(outcome.retryAfterMs, 2000);
+  assert.equal(requests.length, 0);
+
+  // The same holds for a GraphQL THROTTLED error with no data (HTTP 200).
+  mutationCalls = 0;
+  globalThis.fetch = async (url, init) => {
+    if (/^\s*mutation/.test(JSON.parse(init.body).query)) {
+      mutationCalls += 1;
+      return new Response(JSON.stringify({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }], extensions: { cost: { requestedQueryCost: 10, throttleStatus: { currentlyAvailable: 0, restoreRate: 50 } } } }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return originalFetch(url, init);
+  };
+  const again = await callTool("shopify_run_action", { stores: ["main"], mutation: "tagsAdd", dryRun: false, variables: { id: "gid://shopify/Product/1", tags: ["x"] } });
+  assert.equal(again.structuredContent.results[0].outcome, "throttled");
+  assert.equal(mutationCalls, 1);
+});

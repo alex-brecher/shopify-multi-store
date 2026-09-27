@@ -8,7 +8,7 @@ import { canonicalJson, sha256Hex } from "../hosted/audit.js";
 import { fitMultiStoreResults } from "../result-limits.js";
 import { currentUserAccess, storeScope } from "../runtime.js";
 import { adminSchema } from "../schema.js";
-import { adminGraphql } from "../shopify.js";
+import { adminGraphql, MutationThrottledError } from "../shopify.js";
 import { actionCatalog, buildDocument, CATEGORIES, describeAction, denylist, findMutation, isDenied, isDestructive, scopeHint, searchCatalog, } from "./catalog.js";
 const StoreAlias = z.string().min(1).max(64);
 const ApiVersion = z.string().regex(/^\d{4}-(01|04|07|10)$/).describe("Admin API version, such as 2026-04. Defaults to the store's version, or the server default.");
@@ -383,6 +383,9 @@ export function registerActionTools(server) {
                 }
                 catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
+                    if (error instanceof MutationThrottledError) {
+                        return { store: plan.alias, ok: false, outcome: "throttled", error: message, retryAfterMs: error.retryAfterMs };
+                    }
                     const forbidden = /HTTP 403\b/.test(message);
                     return {
                         store: plan.alias,
