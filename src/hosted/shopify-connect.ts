@@ -1,7 +1,7 @@
 import { aesGcmOpen, aesGcmSeal, base64UrlToBytes, bytesToBase64Url, constantTimeEqual, randomToken } from "../platform/crypto.js";
 import { shopifyHmacMessage, verifyShopifyHmacAsync } from "../shopify-hmac.js";
 import type { StoreConfig } from "../config.js";
-import type { ShopifyUserToken, UserShopifyAccess } from "../runtime.js";
+import type { ShopifyUserConnection, UserShopifyAccess } from "../runtime.js";
 import { auditError } from "./audit.js";
 import { cookie, escapeHtml, htmlPage, readCookie, sameOrigin } from "./html.js";
 import { PAGE_SIGN_IN_CLIENT, appendSetCookie, sha256, type AuthorizationServer, type PageSignInPurpose } from "./oauth.js";
@@ -276,28 +276,65 @@ export class ShopifyConnections {
 
   // ---------- Per-request access ----------
 
-  /** The caller's decrypted tokens for every store, for one MCP request. */
-  async accessFor(email: string): Promise<UserShopifyAccess> {
-    const tokens = new Map<string, ShopifyUserToken>();
-    for (const store of await this.options.loadStores()) {
-      const record = await this.options.store.get<ShopifyTokenRecord>("shopify_token", tokenKey(email, store.alias));
-      if (!record || record.shop !== store.shop) continue;
-      try {
-        const binding = { email, alias: store.alias, shop: store.shop };
-        const { token, keyId } = await decryptToken(this.options.encryptionKeys, record.encryptedToken, binding);
-        const primary = this.options.encryptionKeys[0]!;
-        if (keyId !== primary.id) {
-          // Rotation: re-encrypt with the newest key so the old key can be retired.
-          await this.options.store.put<ShopifyTokenRecord>("shopify_token", tokenKey(email, store.alias), { ...record, encryptedToken: await encryptToken(primary, token, binding) }, record.expiresAt + EXPIRED_RECORD_GRACE_MS);
+  /**
+   * The caller's Shopify access for one MCP request. Nothing is read until a tool call needs it
+   * (load()), and a store's token is decrypted only when a call uses that store (token()), so
+   * initialize and tools/list neither read nor decrypt, and a call to one store decrypts one.
+   */
+  accessFor(email: string): UserShopifyAccess {
+    const tokens = new Map<string, ShopifyUserConnection>();
+    const records = new Map<string, { store: StoreConfig; record: ShopifyTokenRecord }>();
+    const decrypted = new Map<string, Promise<string | undefined>>();
+    let loading: Promise<void> | undefined;
+    const load = (): Promise<void> => {
+      loading ??= (async () => {
+        const stores = await this.options.loadStores();
+        const found = await Promise.all(stores.map(async (store) => ({ store, record: await this.options.store.get<ShopifyTokenRecord>("shopify_token", tokenKey(email, store.alias)) })));
+        for (const { store, record } of found) {
+          if (!record || record.shop !== store.shop) continue;
+          const alias = store.alias.toLowerCase();
+          records.set(alias, { store, record });
+          tokens.set(alias, { expiresAt: record.expiresAt, ...(record.associatedUser.email ? { shopifyEmail: record.associatedUser.email } : {}) });
         }
-        tokens.set(store.alias.toLowerCase(), { token, expiresAt: record.expiresAt, ...(record.associatedUser.email ? { shopifyEmail: record.associatedUser.email } : {}) });
-      } catch {
-        // A rotated encryption key or a tampered record reads as "not connected".
-        console.error(`Stored Shopify token for ${store.alias} could not be decrypted; the user must reconnect.`);
+      })();
+      // A failed read is retried by the next caller rather than cached.
+      loading.catch(() => { loading = undefined; });
+      return loading;
+    };
+    const token = async (alias: string): Promise<string | undefined> => {
+      await load();
+      const key = alias.toLowerCase();
+      let pending = decrypted.get(key);
+      if (!pending) {
+        pending = this.decryptStored(email, records.get(key));
+        decrypted.set(key, pending);
       }
-    }
+      const value = await pending;
+      // A rotated-away key or a tampered record reads as "not connected" from here on.
+      if (value === undefined) tokens.delete(key);
+      return value;
+    };
     // Every "not connected" or "expired" tool error carries the one reconnect link.
-    return { tokens, storesUrl: this.storesUrl, connectUrl: () => this.reconnectUrl, now: this.now };
+    return { tokens, load, token, storesUrl: this.storesUrl, connectUrl: () => this.reconnectUrl, now: this.now };
+  }
+
+  /** Decrypt one stored token, re-encrypting it under the newest key after a rotation. */
+  private async decryptStored(email: string, entry: { store: StoreConfig; record: ShopifyTokenRecord } | undefined): Promise<string | undefined> {
+    if (!entry) return undefined;
+    const { store, record } = entry;
+    try {
+      const binding = { email, alias: store.alias, shop: store.shop };
+      const { token, keyId } = await decryptToken(this.options.encryptionKeys, record.encryptedToken, binding);
+      const primary = this.options.encryptionKeys[0]!;
+      if (keyId !== primary.id) {
+        // Rotation: re-encrypt with the newest key so the old key can be retired.
+        await this.options.store.put<ShopifyTokenRecord>("shopify_token", tokenKey(email, store.alias), { ...record, encryptedToken: await encryptToken(primary, token, binding) }, record.expiresAt + EXPIRED_RECORD_GRACE_MS);
+      }
+      return token;
+    } catch {
+      console.error(`Stored Shopify token for ${store.alias} could not be decrypted; the user must reconnect.`);
+      return undefined;
+    }
   }
 
   // ---------- Sign-in with Shopify ----------

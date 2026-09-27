@@ -469,3 +469,36 @@ test("a Shopify callback forwarded to another browser cannot give it the attacke
   const own = await shopifyBack(app, authorize, { email: "mallory@bariatricpal.com", cookie });
   assert.equal(own.status, 303);
 });
+
+test("store tokens are decrypted lazily: none for tools/list, only the store a call uses", async (t) => {
+  await shopifyMock(t);
+  const { app, store } = await setup(t);
+  const accessToken = await signIn(app);
+  const cookie = await storesSession(app, "pat@bariatricpal.com");
+  assert.equal((await connectStore(app, cookie)).status, 303);
+  let reads = 0;
+  const get = store.get.bind(store);
+  store.get = async (kind, key) => { if (kind === "shopify_token") reads += 1; return get(kind, key); };
+  const subtle = globalThis.crypto.subtle;
+  const decrypt = subtle.decrypt;
+  let decrypts = 0;
+  subtle.decrypt = function (...args) { decrypts += 1; return decrypt.apply(this, args); };
+  t.after(() => { subtle.decrypt = decrypt; });
+
+  const client = await mcpClient(t, app, accessToken);
+  assert.ok((await client.listTools()).tools.length > 0);
+  assert.equal(reads, 0, "tools/list reads no Shopify token record");
+  assert.equal(decrypts, 0, "tools/list decrypts nothing");
+  const info = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(info.isError, true, JSON.stringify(info));
+  assert.equal(decrypts, 1, "one store used, one token decrypted");
+  assert.equal(reads, 2, "the call reads each store's record once (metadata)");
+
+  // A token that cannot be decrypted affects only its own store, and reads as not connected.
+  const [key, record] = (await store.entries("shopify_token")).find(([, value]) => value.alias === "wholesale");
+  await store.put("shopify_token", key, { ...record, encryptedToken: record.encryptedToken.slice(0, -4) + "AAAA" }, record.expiresAt + 60_000);
+  assert.notEqual((await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } })).isError, true);
+  const broken = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "wholesale" } });
+  assert.equal(broken.isError, true);
+  assert.match(JSON.stringify(broken.content), /not connected store "wholesale"|Connect it at/);
+});

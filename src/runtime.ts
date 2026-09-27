@@ -27,9 +27,8 @@ export function isHostedMode(): boolean {
   return hosted;
 }
 
-/** One Shopify online (per-user) access token, already decrypted, for one store. */
-export interface ShopifyUserToken {
-  token: string;
+/** What is known about one store's Shopify online (per-user) token without decrypting it. */
+export interface ShopifyUserConnection {
   /** ms since epoch. */
   expiresAt: number;
   /** The Shopify staff account the token acts as. */
@@ -42,8 +41,22 @@ export interface ShopifyUserToken {
  * permissions. There is no fallback to an app token or a static token.
  */
 export interface UserShopifyAccess {
-  /** Keyed by lower-case store alias. May include expired tokens so the error can say "expired". */
-  tokens: Map<string, ShopifyUserToken>;
+  /**
+   * Keyed by lower-case store alias. May include expired tokens so the error can say "expired".
+   * Filled by load(); nothing is decrypted for it.
+   */
+  tokens: Map<string, ShopifyUserConnection>;
+  /**
+   * Read the caller's stored connections (no decryption). Idempotent. The hosted guard calls it
+   * before each tool call, so requests that call no tool (initialize, tools/list) read nothing.
+   */
+  load(): Promise<void>;
+  /**
+   * The decrypted token for one store, decrypted on first use in this request only. Undefined
+   * when the store is not connected or its token cannot be decrypted (it then reads as not
+   * connected).
+   */
+  token(alias: string): Promise<string | undefined>;
   /** The /stores page where the user connects stores. */
   storesUrl: string;
   /** The link that reconnects a store (on the hosted server, one link that reconnects every store). */

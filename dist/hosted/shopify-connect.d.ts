@@ -93,8 +93,14 @@ export declare class ShopifyConnections {
     get storesUrl(): string;
     /** One link that signs in if needed and reconnects every expired or unconnected store. */
     get reconnectUrl(): string;
-    /** The caller's decrypted tokens for every store, for one MCP request. */
-    accessFor(email: string): Promise<UserShopifyAccess>;
+    /**
+     * The caller's Shopify access for one MCP request. Nothing is read until a tool call needs it
+     * (load()), and a store's token is decrypted only when a call uses that store (token()), so
+     * initialize and tools/list neither read nor decrypt, and a call to one store decrypts one.
+     */
+    accessFor(email: string): UserShopifyAccess;
+    /** Decrypt one stored token, re-encrypting it under the newest key after a rotation. */
+    private decryptStored;
     /** Stores a person can sign in through: *.myshopify.com, with app credentials on this server. */
     private loginStores;
     /**

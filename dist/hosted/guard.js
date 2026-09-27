@@ -69,6 +69,8 @@ export function guardServer(server, { principal, audit, access }) {
             let result;
             let failure;
             try {
+                // Connection metadata only; each store's token is decrypted when a call first uses it.
+                await access.load();
                 const blockedArgument = (HOSTED_DISABLED_ARGUMENTS[name] ?? []).find((key) => {
                     const value = input && typeof input === "object" ? input[key] : undefined;
                     return value !== undefined && value !== null && value !== "";

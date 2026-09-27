@@ -33,6 +33,11 @@ This file records notable changes to Shopify Multi-Store MCP.
   `wrangler.jsonc`). Automatic creation during `wrangler deploy` depends on
   wrangler's hidden experimental provisioning. `package.json` gains
   `cloudflare.bindings` descriptions for the Deploy to Cloudflare flow.
+- Hosted: a store's Shopify token is decrypted only when a tool call uses that
+  store. Before, every MCP request (including `initialize` and `tools/list`)
+  read and decrypted the caller's token for every configured store.
+- Hosted: the Shopify OAuth HMAC check uses the shared `src/shopify-hmac.ts`
+  instead of a second copy.
 
 Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
 ### Review 3: fixes and a smaller tool surface

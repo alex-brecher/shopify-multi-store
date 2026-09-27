@@ -73,7 +73,7 @@ export function createHostedApp(options) {
             scopes: [record.scope],
             expiresAt: Math.floor(record.expiresAt / 1000),
             resource: new URL(auth.resource),
-            extra: { principal, access: await shopify.accessFor(principal.email) }
+            extra: { principal, access: shopify.accessFor(principal.email) }
         };
         return mcp.fetch(request, { authInfo });
     }

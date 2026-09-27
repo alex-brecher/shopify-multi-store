@@ -199,8 +199,13 @@ export async function getAccessToken(store: StoreConfig): Promise<string> {
   // Per-user mode: the caller's own online token, never the app token.
   const access = currentUserAccess();
   if (access) {
-    const token = access.tokens.get(store.alias.toLowerCase());
-    if (token && token.expiresAt > access.now()) return token.token;
+    // Only this store's token is decrypted, and only now that a call needs it.
+    await access.load();
+    const connection = access.tokens.get(store.alias.toLowerCase());
+    if (connection && connection.expiresAt > access.now()) {
+      const token = await access.token(store.alias);
+      if (token) return token;
+    }
     throw new Error(notConnectedMessage(access, store.alias));
   }
   // Hosted: only the caller's own Shopify token, never a static or app-level credential.
