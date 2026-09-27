@@ -95,5 +95,5 @@ The upload is about 2.8 MB (about 1.1 MB compressed, of which 0.7 MB is the sche
 
 ## Limits on Workers
 
-- The MCP Apps result view (the `ui://shopify-multi-store/results` resource that renders tool results as a page in apps that support it) is read from a file on disk, so reading it fails on the Worker. Tools and their results work normally; apps that do not render MCP Apps are unaffected.
+- Every tool runs on the bundled Admin API version (2026-07). A store or call set to another version gets an error instead of a schema download, and smart-collection `ruleSet` writes go through `shopify_run_action` (see How it is built).
 - The Workers Free plan has daily request and Durable Object limits; a team using the connector all day may need the Workers Paid plan. Check Cloudflare's current limits.

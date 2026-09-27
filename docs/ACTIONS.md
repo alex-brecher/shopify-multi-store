@@ -140,6 +140,6 @@ For a hosted server, use one Shopify app (Dev Dashboard) that is installed on ev
 ## Limits
 
 - Online tokens last at most a day. People reconnect every store with one click; tool errors link to it.
-- The action catalog comes from the bundled schemas (2026-04 and 2026-07). Other versions are fetched from Shopify's public schema proxy on first use.
+- The action catalog comes from the bundled schemas (2026-04 and 2026-07). On Node, other versions are fetched from Shopify's public schema proxy on first use. A Cloudflare Worker bundles only 2026-07 and never downloads a schema: other versions return an error.
 - Scope hints come from the mutation's description or its name prefix. They are hints, not a guarantee; Shopify's `ACCESS_DENIED` message is authoritative.
 - Responses are capped at 100,000 characters across stores; oversized per-store data is omitted with a notice. Select fewer fields in `document` if that happens.

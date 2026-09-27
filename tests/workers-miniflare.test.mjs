@@ -220,8 +220,6 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
   const tagsAdd = body(found).actions.find((action) => action.name === "tagsAdd");
   assert.equal(tagsAdd?.denied, true, JSON.stringify(body(found)).slice(0, 400));
 
-  const ui = await rpc(6, "resources/read", { uri: "ui://shopify-multi-store/results" });
-  t.diagnostic(`ui resource on workerd: ${JSON.stringify(ui).slice(0, 300)}`);
 
   const db = await mf.getD1Database("AUDIT_DB");
   const rows = (await db.prepare("SELECT event, user, tool, line FROM audit ORDER BY id").all()).results;
