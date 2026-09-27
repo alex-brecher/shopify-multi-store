@@ -95,6 +95,10 @@ export const REQUIRED_SCOPES = {
     shopify_list_blog_articles: ["read_content"],
     shopify_list_markets: ["read_markets"],
     shopify_check_access: [],
+    // src/actions/tools.ts
+    shopify_find_actions: [],
+    shopify_describe_action: [],
+    shopify_run_action: [],
 };
 /**
  * Tools whose real scope need depends on a caller-supplied GraphQL document or
@@ -110,6 +114,7 @@ export const VARIABLE_SCOPE_TOOLS = {
     shopify_set_metafields: "Scope depends on the owner resource type (e.g. write_products for a product owner).",
     shopify_delete_metafields: "Scope depends on the owner resource type.",
     shopify_tags: "Scope depends on the owner resource type (write_products, write_orders, write_customers or write_draft_orders).",
+    shopify_run_action: "Scope depends on the mutation; shopify_describe_action shows a hint. Request the full set (print-scopes --full).",
 };
 /** The union of every scope handle any tool in REQUIRED_SCOPES might need, for generating a shopify.app.toml. */
 export function allRequiredScopes() {
@@ -118,5 +123,102 @@ export function allRequiredScopes() {
         for (const scope of list)
             scopes.add(scope);
     return [...scopes].sort();
+}
+/**
+ * The "full" scope set: everything a Dev Dashboard app can reasonably request so that the
+ * generic action tools (shopify_find_actions, shopify_describe_action, shopify_run_action)
+ * can reach every Admin API mutation Shopify lets a third-party app use.
+ *
+ * A write_ scope implies its read_ scope, so mostly write_ is listed; a few read_ handles are
+ * listed too because Shopify documents them separately.
+ * In per-user mode Shopify further narrows each token to the scopes the signed-in staff member
+ * holds (associated_user_scope), so requesting the full set never gives anyone more than
+ * their own Shopify permissions.
+ *
+ * Scopes Shopify gates behind extra approval are marked. Requesting them without the approval
+ * makes the install or version release fail for that scope; drop them with SHOPIFY_APP_SCOPES
+ * if your app is not approved.
+ */
+export const FULL_SCOPES = [
+    // Orders, fulfillment and returns.
+    "read_all_orders", // APPROVAL: Shopify must grant access to orders older than 60 days (Partner Dashboard request).
+    "write_orders", // PROTECTED CUSTOMER DATA: order customer fields need protected customer data approval.
+    "write_draft_orders",
+    "write_order_edits",
+    "write_fulfillments",
+    "write_merchant_managed_fulfillment_orders",
+    "write_third_party_fulfillment_orders",
+    "write_assigned_fulfillment_orders",
+    "write_returns",
+    "write_shipping",
+    "write_payment_terms",
+    "write_packing_slip_templates",
+    "read_shopify_payments_disputes",
+    // Products, inventory, catalog.
+    "write_products",
+    "write_inventory",
+    "write_inventory_transfers",
+    "write_inventory_shipments",
+    "write_locations",
+    "write_publications",
+    "write_product_listings",
+    "write_purchase_options",
+    "write_resource_feedbacks",
+    "write_files",
+    // Customers and B2B.
+    "write_customers", // PROTECTED CUSTOMER DATA: names, emails, phones and addresses need approval.
+    "read_customer_merge",
+    "write_customer_merge",
+    "write_companies",
+    "read_companies",
+    "write_store_credit_account_transactions",
+    "write_gift_cards",
+    // Discounts and marketing.
+    "write_discounts",
+    "write_price_rules",
+    "write_marketing_events",
+    "write_pixels",
+    "write_customer_events",
+    // Content, online store, translations.
+    "write_content",
+    "write_themes",
+    "write_online_store_navigation",
+    "write_metaobjects",
+    "write_metaobject_definitions",
+    "write_translations",
+    "write_locales",
+    "write_legal_policies",
+    "read_legal_policies",
+    "write_script_tags",
+    // Markets and checkout customizations (Shopify Functions).
+    "write_markets",
+    "write_checkouts",
+    "write_checkout_branding_settings", // Shopify Plus only.
+    "write_validations",
+    "write_payment_customizations",
+    "write_delivery_customizations",
+    "write_cart_transforms",
+    "write_privacy_settings",
+    // Reporting and platform reads.
+    "read_reports",
+    "read_analytics",
+    "read_apps",
+    "read_users", // Shopify Plus and Advanced plans only.
+    "read_taxes",
+    "read_audit_events",
+];
+/** Scopes FULL_SCOPES leaves out on purpose, with the reason. Documented in docs/ACTIONS.md. */
+export const EXCLUDED_SCOPES = {
+    write_own_subscription_contracts: "APPROVAL: subscription APIs need Shopify's approval, and contracts can only be changed by the app that owns them.",
+    read_customer_payment_methods: "APPROVAL: payment mandates need Shopify's approval; not available to a custom admin tool.",
+    write_customer_payment_methods: "APPROVAL: payment mandates need Shopify's approval; not available to a custom admin tool.",
+    read_marketplace_orders: "Sales-channel (marketplace) apps only.",
+    read_marketplace_fulfillment_orders: "Sales-channel (marketplace) apps only.",
+    read_marketplace_returns: "Sales-channel (marketplace) apps only.",
+    read_financial_kyc_information: "Shopify Payments KYC data; restricted to approved apps.",
+};
+/** FULL_SCOPES plus every scope a dedicated tool needs, sorted and de-duplicated. */
+export function fullScopes() {
+    return [...new Set([...FULL_SCOPES, ...allRequiredScopes()])].sort();
 }
 //# sourceMappingURL=scope-requirements.js.map
