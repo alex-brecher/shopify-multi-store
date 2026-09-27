@@ -19,7 +19,6 @@ export const PDOCS = {
 
   // Metaobjects
   listMetaobjects: `query ListMetaobjects($type:String!, $first:Int!, $after:String) { metaobjects(type:$type, first:$first, after:$after) { nodes { id handle type displayName updatedAt fields { key value type } } ${PAGE} } }`,
-  metaobjectUpsert: `mutation UpsertMetaobject($handle:MetaobjectHandleInput!, $metaobject:MetaobjectUpsertInput!) { metaobjectUpsert(handle:$handle, metaobject:$metaobject) { metaobject { id handle type fields { key value type } } userErrors { field message code } } }`,
 
   // Redirects
   listRedirects: `query ListRedirects($query:String, $first:Int!, $after:String) { urlRedirects(first:$first, after:$after, query:$query) { nodes { id path target } ${PAGE} } }`,
@@ -28,22 +27,15 @@ export const PDOCS = {
 
   // Delivery profiles
   listDeliveryProfiles: `query ListDeliveryProfiles($first:Int!, $after:String) { deliveryProfiles(first:$first, after:$after) { nodes { id name default profileLocationGroups { locationGroup { id locations(first:10) { nodes { id name } } } locationGroupZones(first:20) { nodes { zone { id name countries { name code { countryCode restOfWorld } } } methodDefinitions(first:20) { nodes { id name active rateProvider { ... on DeliveryRateDefinition { id price { amount currencyCode } } } } } } } } } ${PAGE} } }`,
-  // Readback of one rate: the profile by id plus the method definition by id, so it does not
-  // depend on how many profiles, zones or methods the store has.
-  getDeliveryRate: `query GetDeliveryRate($profileId:ID!, $methodId:ID!) { deliveryProfile(id:$profileId) { id } method: node(id:$methodId) { ... on DeliveryMethodDefinition { id name rateProvider { ... on DeliveryRateDefinition { id price { amount currencyCode } } } } } }`,
-  updateDeliveryRate: `mutation UpdateDeliveryRate($id:ID!, $profile:DeliveryProfileInput!) { deliveryProfileUpdate(id:$id, profile:$profile) { profile { id name profileLocationGroups { locationGroupZones(first:20) { nodes { zone { id name } methodDefinitions(first:20) { nodes { id name rateProvider { ... on DeliveryRateDefinition { id price { amount currencyCode } } } } } } } } } userErrors { field message } } }`,
 
   // Themes
   listThemes: `query ListThemes($first:Int!, $after:String) { themes(first:$first, after:$after) { nodes { id name role createdAt updatedAt } ${PAGE} } }`,
   getThemeFiles: `query GetThemeFiles($id:ID!, $filenames:[String!], $first:Int!, $after:String) { theme(id:$id) { id name role files(filenames:$filenames, first:$first, after:$after) { nodes { filename checksumMd5 contentType size body { ... on OnlineStoreThemeFileBodyText { content } ... on OnlineStoreThemeFileBodyBase64 { contentBase64 } } } ${PAGE} } } }`,
-  upsertThemeFiles: `mutation UpsertThemeFiles($themeId:ID!, $files:[OnlineStoreThemeFilesUpsertFileInput!]!) { themeFilesUpsert(themeId:$themeId, files:$files) { upsertedThemeFiles { filename } userErrors { field message code } } }`,
 
   // Files
   listFiles: `query ListFiles($query:String, $first:Int!, $after:String) { files(first:$first, after:$after, query:$query) { nodes { id alt fileStatus createdAt ... on GenericFile { url mimeType originalFileSize } ... on MediaImage { image { url } } } ${PAGE} } }`,
-  deleteFiles: `mutation DeleteFiles($fileIds:[ID!]!) { fileDelete(fileIds:$fileIds) { deletedFileIds userErrors { field message code } } }`,
 
   // Orders
-  createDraftOrder: `mutation CreateDraftOrder($input:DraftOrderInput!) { draftOrderCreate(input:$input) { draftOrder { id name invoiceUrl totalPriceSet { shopMoney { amount currencyCode } } } userErrors { field message } } }`,
   getOrderTagsNote: `query GetOrderTagsNote($id:ID!) { order(id:$id) { id name tags note email } }`,
   updateOrder: `mutation UpdateOrder($input:OrderInput!) { orderUpdate(input:$input) { order { id name tags note email } userErrors { field message } } }`,
   getOrderFulfillmentOrders: `query GetOrderFulfillmentOrders($id:ID!) { order(id:$id) { id name fulfillmentOrders(first:50) { nodes { id status lineItems(first:250) { nodes { id remainingQuantity } pageInfo { hasNextPage } } } } } }`,
@@ -59,9 +51,6 @@ export const PDOCS = {
 
   // Pages
   listPages: `query ListPages($query:String, $first:Int!, $after:String) { pages(first:$first, after:$after, query:$query) { nodes { id handle title isPublished updatedAt } ${PAGE} } }`,
-  getPage: `query GetPage($id:ID!) { page(id:$id) { id handle title body isPublished } }`,
-  createPage: `mutation CreatePage($page:PageCreateInput!) { pageCreate(page:$page) { page { id handle title isPublished } userErrors { field message } } }`,
-  updatePage: `mutation UpdatePage($id:ID!, $page:PageUpdateInput!) { pageUpdate(id:$id, page:$page) { page { id handle title isPublished } userErrors { field message } } }`,
 
   // Blog articles
   listBlogArticles: `query ListBlogArticles($id:ID!, $first:Int!, $after:String) { blog(id:$id) { id title articles(first:$first, after:$after) { nodes { id handle title isPublished publishedAt } ${PAGE} } } }`,

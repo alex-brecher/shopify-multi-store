@@ -1,43 +1,20 @@
-import {registerPreviewDesignTools} from "./preview-designs.js";
-import {registerPreviewTools} from "./previews.js";
 import { registerAdminTools } from "./admin-tools.js";
 import { registerParityTools } from "./parity-tools.js";
-import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
-import { actionPolicyError, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
-import { denylist, isDenied } from "./actions/catalog.js";
-import { currentUserAccess, isHostedMode } from "./runtime.js";
+import { registerReportTools } from "./report-tools.js";
+import { registerReadTools } from "./read-tools.js";
+import { actionPolicyError, destructiveMutations, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
+import { currentUserAccess } from "./runtime.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { findStore, loadStores, resolveStoreTargets, unconnectedStores } from "./config.js";
-import {
-  catalogHealth,
-  catalogGapReport,
-  compareCatalog,
-  compareCollections,
-  compareInventory,
-  comparePrices,
-  customerGrowth,
-  duplicateSkuReport,
-  fulfillmentSlaReport,
-  getProductEverywhere,
-  listUnfulfilledOrders,
-  lowStockReport,
-  orderSummary,
-  portfolioSnapshot,
-  recentProductChanges,
-  searchProductsMany,
-  storeLocations
-} from "./reports.js";
 import { adminGraphql, hasGraphqlErrors, PACKAGE_VERSION, requireMutation, requireQuery } from "./shopify.js";
 import { fitMultiStoreResults } from "./result-limits.js";
 
 const StoreAliasSchema = z.string().min(1).max(64).describe("Configured store alias, such as main-store or wholesale-store");
 const StoreAliasesSchema = z.array(StoreAliasSchema).min(1).max(100).describe("One to one hundred configured store aliases");
-const SkuSchema = z.string().trim().min(1).max(255);
-const HandleSchema = z.string().trim().min(1).max(255).regex(/^[a-z0-9][a-z0-9-]*$/i);
 const VariablesSchema = z.record(z.string(), z.unknown()).default({}).describe("GraphQL variables as a JSON object");
 const MULTI_STORE_CHARACTER_LIMIT = 100_000;
 
@@ -77,11 +54,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     ...(options.title ? { title: options.title } : {})
   });
   options.beforeRegister?.(server);
-  registerUI(server);
   registerAdminTools(server);
   registerParityTools(server);
-  registerPreviewTools(server);
-  registerPreviewDesignTools(server);
+  registerReadTools(server);
+  registerReportTools(server);
   registerDiscoveryTools(server);
   registerActionTools(server);
 
@@ -196,29 +172,24 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     "shopify_graphql_mutation",
     {
       title: "Change a Shopify Store",
-      description: "Run one GraphQL Admin API mutation against one named store. Set confirm to true only after the user authorizes the exact store and change. The result reports each top-level mutation field as applied, rejected, or unknown, and the store as applied, rejected, partial, or unknown; after partial or unknown, retry only the rejected fields in a new document. On a hosted server in per-user mode, destructive mutations (see shopify_describe_action) need confirm set to the mutation name instead, and denylisted mutations are refused, exactly as in shopify_run_action.",
+      description: "Run one GraphQL Admin API mutation against one named store. Set confirm to true only after the user authorizes the exact store and change. Destructive mutations (see shopify_describe_action; some are destructive only with certain arguments, such as a product status of ARCHIVED or notifyCustomer true) need confirm set to the mutation name instead, and denylisted mutations are refused, exactly as in shopify_run_action. The result reports each top-level mutation field as applied, rejected, or unknown, and the store as applied, rejected, partial, or unknown; after partial or unknown, retry only the rejected fields in a new document.",
       inputSchema: z.object({
         store: StoreAliasSchema,
         mutation: z.string().min(1).max(50_000).describe("A GraphQL mutation document."),
         variables: VariablesSchema,
-        confirm: z.union([z.literal(true), z.string().min(1).max(2_000)]).describe("True after the user authorizes the exact change and store. In hosted per-user mode, destructive mutations need the mutation name (several: comma-separated, in document order).")
+        confirm: z.union([z.literal(true), z.string().min(1).max(2_000)]).describe("True after the user authorizes the exact change and store. Destructive mutations need the mutation name instead (several: comma-separated, in document order).")
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
     },
     async ({ store, mutation, variables, confirm }) => {
       try {
         requireMutation(mutation);
-        // Hosted: the raw mutation tool honors the same denylist as shopify_run_action. In per-user
-        // mode, where editors can call it, it also applies the same destructive confirm check.
-        if (currentUserAccess()) {
-          const refusal = actionPolicyError(parseActionDocument(mutation).rootFields, confirm, true);
-          if (refusal) throw new Error(refusal);
-        } else if (isHostedMode()) {
-          const denied = parseActionDocument(mutation).rootFields.filter((name) => isDenied(name, denylist()));
-          if (denied.length) throw new Error(`Refused: ${denied.join(", ")} is on this server's action denylist.`);
-        } else if (confirm !== true && typeof confirm === "string") {
-          throw new Error("confirm must be true.");
-        }
+        // Every mode (local stdio, hosted app token, hosted per-user) applies the same write
+        // policy as shopify_run_action: denylisted mutations are refused, and destructive ones,
+        // by name or by argument values, need confirm set to the mutation names.
+        const parsed = parseActionDocument(mutation);
+        const refusal = actionPolicyError(parsed.rootFields, confirm, true, destructiveMutations(parsed, [variables]));
+        if (refusal) throw new Error(refusal);
         const selected = await findStore(store);
         // Each root field is judged on its own (applied, rejected, unknown); see docs/ACTIONS.md.
         const result = await sendMutationWithOutcome(selected, mutation, variables);
@@ -226,351 +197,6 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         // "applied" is success.
         const failed = result.outcome !== "applied";
         return { ...success(result), ...(failed ? { isError: true } : {}) };
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_portfolio_snapshot",
-    {
-      title: "Create Shopify Portfolio Snapshot",
-      description: "Create a read-only operating snapshot across selected stores or every configured store. Includes shop identity and product, order, customer, and location counts when scopes permit.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema.optional().describe("Stores to include. Omit this field to include every configured store.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores }) => {
-      try {
-        return success(await portfolioSnapshot(stores));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_compare_inventory",
-    {
-      title: "Compare Shopify Inventory",
-      description: "Compare inventory, price, product status, and catalog details for selected SKUs across multiple Shopify stores.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        skus: z.array(SkuSchema).min(1).max(50).describe("One to fifty exact SKUs to compare.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, skus }) => {
-      try {
-        return success(await compareInventory(stores, skus));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_get_product_everywhere",
-    {
-      title: "Find a Product Across Shopify Stores",
-      description: "Find one exact SKU or product handle across selected stores and return a normalized product, price, status, and inventory matrix.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        identifier: z.string().trim().min(1).max(255).describe("Exact SKU or product handle to find."),
-        matchBy: z.enum(["sku", "handle"]).describe("Whether the identifier is an exact SKU or exact product handle.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, identifier, matchBy }) => {
-      try {
-        return success(await getProductEverywhere(stores, identifier, matchBy));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_search_products_many",
-    {
-      title: "Search Products Across Shopify Stores",
-      description: "Search products across selected stores using plain terms or Shopify product-search syntax. Returns bounded per-store results and completeness indicators.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        query: z.string().trim().min(1).max(1_000).describe("Product search terms or Shopify product-search syntax."),
-        first: z.number().int().min(1).max(100).default(25).describe("Maximum products returned per store.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, query, first }) => {
-      try {
-        return success(await searchProductsMany(stores, query, first));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_list_unfulfilled_orders",
-    {
-      title: "List Unfulfilled Orders Across Stores",
-      description: "List recent open, unfulfilled orders across multiple Shopify stores with independent per-store results.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        days: z.number().int().min(1).max(365).default(7).describe("Lookback window in days."),
-        first: z.number().int().min(1).max(100).default(25).describe("Maximum orders returned per store.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, days, first }) => {
-      try {
-        return success(await listUnfulfilledOrders(stores, days, first));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_fulfillment_sla_report",
-    {
-      title: "Report Shopify Fulfillment SLA Breaches",
-      description: "Group open unfulfilled orders into age buckets and identify orders older than a configurable fulfillment SLA across selected stores.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        lookbackDays: z.number().int().min(1).max(365).default(90).describe("How far back to search for open unfulfilled orders."),
-        slaDays: z.number().int().min(1).max(90).default(2).describe("Order age in days after which the fulfillment SLA is breached."),
-        first: z.number().int().min(1).max(250).default(100).describe("Maximum orders returned per store, oldest first.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, lookbackDays, slaDays, first }) => {
-      try {
-        return success(await fulfillmentSlaReport(stores, lookbackDays, slaDays, first));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_compare_catalog",
-    {
-      title: "Compare Shopify Catalogs",
-      description: "Compare product titles, status, vendor, product type, and inventory for exact handles across multiple Shopify stores.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        handles: z.array(HandleSchema).min(1).max(50).describe("One to fifty exact product handles to compare.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, handles }) => {
-      try {
-        return success(await compareCatalog(stores, handles));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_catalog_gap_report",
-    {
-      title: "Find Catalog Gaps Across Shopify Stores",
-      description: "Discover products that are missing or have different publication statuses across selected stores. Bounded scans are labeled as potential rather than definitive gaps.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        first: z.number().int().min(1).max(250).default(250).describe("Maximum products scanned per store in title order.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, first }) => {
-      try {
-        return success(await catalogGapReport(stores, first));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_order_summary",
-    {
-      title: "Summarize Orders Across Shopify Stores",
-      description: "Summarize recent order values, discounts, shipping, tax, cancellations, and financial and fulfillment statuses across selected stores. Currency totals remain separate.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        days: z.number().int().min(1).max(365).default(30).describe("Lookback window in days."),
-        first: z.number().int().min(1).max(250).default(100).describe("Maximum orders included per store.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, days, first }) => {
-      try {
-        return success(await orderSummary(stores, days, first));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_low_stock_report",
-    {
-      title: "Find Low Stock Across Shopify Stores",
-      description: "Find every active product variant at or below an inventory threshold across selected stores. Separates low, zero, and negative inventory.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        threshold: z.number().int().min(-1_000).max(100_000).default(10).describe("Maximum aggregate inventory quantity to include.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, threshold }) => {
-      try {
-        return success(await lowStockReport(stores, threshold));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_catalog_health",
-    {
-      title: "Audit Shopify Catalog Health",
-      description: "Audit recent products across selected stores for missing vendor, product type, SEO fields, featured media, media alt text, and active products without inventory.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        first: z.number().int().min(1).max(250).default(100).describe("Maximum recently updated products scanned per store.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, first }) => {
-      try {
-        return success(await catalogHealth(stores, first));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_recent_product_changes",
-    {
-      title: "List Recent Product Changes Across Stores",
-      description: "List products updated during a selected lookback window across multiple stores, including status, inventory, vendor, and product type.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        days: z.number().int().min(1).max(365).default(7).describe("Lookback window in days."),
-        first: z.number().int().min(1).max(250).default(100).describe("Maximum products returned per store.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, days, first }) => {
-      try {
-        return success(await recentProductChanges(stores, days, first));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_customer_growth",
-    {
-      title: "Compare Shopify Customer Growth",
-      description: "Compare new-customer counts across the current and previous periods for selected stores. Count precision remains visible when Shopify caps a count.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        days: z.number().int().min(1).max(365).default(30).describe("Length of each comparison period in days.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, days }) => {
-      try {
-        return success(await customerGrowth(stores, days));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_compare_collections",
-    {
-      title: "Compare Shopify Collections",
-      description: "Compare exact collection handles across stores, including titles, sort order, product counts, SEO fields, and collection images.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        handles: z.array(HandleSchema).min(1).max(50).describe("One to fifty exact collection handles to compare.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, handles }) => {
-      try {
-        return success(await compareCollections(stores, handles));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_store_locations",
-    {
-      title: "Review Shopify Store Locations",
-      description: "Review active, inactive, legacy, fulfillment, inventory, and address status for locations across selected stores or the full portfolio.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema.optional().describe("Stores to include. Omit this field to include every configured store.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores }) => {
-      try {
-        return success(await storeLocations(stores));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_duplicate_sku_report",
-    {
-      title: "Find Duplicate Shopify SKUs",
-      description: "Find duplicate SKUs inside each store and identify SKUs shared across stores. The report labels incomplete scans when a store exceeds the row limit.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        first: z.number().int().min(1).max(250).default(250).describe("Maximum SKU-bearing variants scanned per store.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, first }) => {
-      try {
-        return success(await duplicateSkuReport(stores, first));
-      } catch (error) {
-        return failure(error);
-      }
-    }
-  );
-
-  server.registerTool(
-    "shopify_compare_prices",
-    {
-      title: "Compare Shopify Prices",
-      description: "Compare price and compare-at price for exact SKUs across selected stores and highlight mismatches or missing variants.",
-      inputSchema: z.object({
-        stores: StoreAliasesSchema,
-        skus: z.array(SkuSchema).min(1).max(50).describe("One to fifty exact SKUs to compare.")
-      }).strict(),
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-    },
-    async ({ stores, skus }) => {
-      try {
-        return success(await comparePrices(stores, skus));
       } catch (error) {
         return failure(error);
       }

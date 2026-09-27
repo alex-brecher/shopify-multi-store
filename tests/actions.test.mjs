@@ -124,7 +124,7 @@ test("shopify_describe_action expands productVariantsBulkUpdate", async (t) => {
   const described = result.structuredContent;
   assert.equal(described.category, "products");
   assert.equal(described.destructive, false);
-  assert.ok(described.dedicatedTools.includes("shopify_update_prices_many"));
+  assert.ok(described.dedicatedTools.includes("shopify_update_prices"));
   assert.deepEqual(described.scopeHint, ["write_products"]);
   const variants = described.arguments.find((arg) => arg.name === "variants");
   assert.equal(variants.type, "[ProductVariantsBulkInput!]!");
@@ -283,7 +283,7 @@ test("ACCESS_DENIED becomes a sentence naming the missing scope and the store", 
   const { callTool } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
     ? { errors: [{ message: "Access denied for giftCardCreate field. Required access: `write_gift_cards` access scope.", extensions: { code: "ACCESS_DENIED" } }], data: { giftCardCreate: null } }
     : undefined);
-  const result = await callTool("shopify_run_action", { stores: ["main"], mutation: "giftCardCreate", dryRun: false, variables: { input: { initialValue: "25.00" } } });
+  const result = await callTool("shopify_run_action", { stores: ["main"], mutation: "giftCardCreate", dryRun: false, confirm: "giftCardCreate", variables: { input: { initialValue: "25.00" } } });
   assert.equal(result.isError, true);
   const outcome = result.structuredContent.results[0];
   assert.equal(outcome.ok, false);
@@ -682,4 +682,88 @@ test("search-derived mutations are never a complete preview and need confirm plu
   assert.equal(byIds.structuredContent.results[0].preview.complete, true);
   const bySearch = await dry(callTool, { mutation: "discountCodeBulkDelete", variables: { search: "" } });
   assert.equal(bySearch.structuredContent.results[0].preview.complete, false);
+});
+
+test("argument-driven destructive rules: status, strategy and notifyCustomer make a safe-looking mutation destructive", async () => {
+  const { DESTRUCTIVE_ARGUMENT_RULES, describeAction } = await import("../dist/actions/catalog.js");
+  const { destructiveMutations, parseActionDocument } = await import("../dist/actions/tools.js");
+  // Name-only checks stay as they were.
+  assert.equal(isDestructive("productUpdate"), false);
+  assert.equal(isDestructive("productChangeStatus"), false);
+  // Always destructive now: customer-visible, customer email, or money-equivalent.
+  for (const name of ["publishablePublish", "orderInvoiceSend", "draftOrderInvoiceSend", "giftCardCreate", "giftCardCredit", "storeCreditAccountCredit", "discountCodeActivate"]) {
+    assert.ok(isDestructive(name), name);
+  }
+  // Argument rules.
+  assert.ok(isDestructive("productChangeStatus", { productId: "gid://shopify/Product/1", status: "ARCHIVED" }));
+  assert.ok(isDestructive("productChangeStatus", { status: "DRAFT" }));
+  assert.ok(!isDestructive("productChangeStatus", { status: "ACTIVE" }));
+  assert.ok(isDestructive("productUpdate", { product: { id: "gid://shopify/Product/1", status: "ARCHIVED" } }));
+  assert.ok(isDestructive("productUpdate", { input: { id: "gid://shopify/Product/1", status: "DRAFT" } }));
+  assert.ok(!isDestructive("productUpdate", { product: { id: "gid://shopify/Product/1", title: "x" } }));
+  assert.ok(isDestructive("productVariantsBulkCreate", { strategy: "REMOVE_STANDALONE_VARIANT" }));
+  assert.ok(isDestructive("fulfillmentCreate", { fulfillment: { notifyCustomer: true } }));
+  assert.ok(!isDestructive("fulfillmentCreate", { fulfillment: { notifyCustomer: false } }));
+  // One table holds every argument rule.
+  assert.ok(DESTRUCTIVE_ARGUMENT_RULES.every((rule) => typeof rule.when === "function" && rule.reason));
+  const described = await describeAction("productUpdate", "2026-07");
+  assert.equal(described.destructive, false);
+  assert.ok(described.destructiveWhen.some((reason) => /ARCHIVED/.test(reason)));
+
+  // Inline literals and variables are both inspected.
+  const inline = parseActionDocument('mutation { productUpdate(product: { id: "gid://shopify/Product/1", status: ARCHIVED }) { userErrors { message } } }');
+  assert.deepEqual(destructiveMutations(inline), ["productUpdate"]);
+  const viaVariables = parseActionDocument("mutation M($p: ProductUpdateInput!) { productUpdate(product: $p) { userErrors { message } } }");
+  assert.deepEqual(destructiveMutations(viaVariables, [{ p: { id: "gid://shopify/Product/1", title: "x" } }]), []);
+  assert.deepEqual(destructiveMutations(viaVariables, [{ p: { id: "gid://shopify/Product/1", title: "x" } }, { p: { id: "gid://shopify/Product/2", status: "DRAFT" } }]), ["productUpdate"]);
+});
+
+test("shopify_run_action needs confirm for productUpdate with status ARCHIVED, by variables or per-store variables", async (t) => {
+  const { callTool, requests } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] } } }
+    : undefined);
+  const archive = { product: { id: "gid://shopify/Product/1", status: "ARCHIVED" } };
+  const refused = await callTool("shopify_run_action", { stores: ["main"], mutation: "productUpdate", variables: archive, dryRun: false });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /productUpdate is destructive/);
+  const perStore = await callTool("shopify_run_action", { stores: ["main", "wholesale"], mutation: "productUpdate", variables: { product: { id: "gid://shopify/Product/1", title: "x" } }, variablesByStore: { wholesale: archive }, dryRun: false });
+  assert.equal(perStore.isError, true);
+  assert.match(perStore.content[0].text, /confirm: "productUpdate"/);
+  assert.equal(mutationRequests(requests).length, 0, "nothing sent without confirm");
+  const preview = await callTool("shopify_run_action", { stores: ["main"], mutation: "productUpdate", variables: archive });
+  assert.equal(preview.structuredContent.confirmRequired, "productUpdate");
+  const applied = await callTool("shopify_run_action", { stores: ["main"], mutation: "productUpdate", variables: archive, dryRun: false, confirm: "productUpdate" });
+  assert.notEqual(applied.isError, true, applied.content[0].text);
+  const plain = await callTool("shopify_run_action", { stores: ["main"], mutation: "productUpdate", variables: { product: { id: "gid://shopify/Product/1", title: "x" } }, dryRun: false });
+  assert.notEqual(plain.isError, true, plain.content[0].text);
+});
+
+test("local shopify_graphql_mutation applies the denylist and destructive confirm like shopify_run_action", async (t) => {
+  const { requests } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { productDelete: { deletedProductId: "gid://shopify/Product/1", userErrors: [] }, productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] } } }
+    : undefined);
+  const { createServer } = await import("../dist/server.js");
+  const tools = new Map();
+  createServer({ beforeRegister: (server) => {
+    const register = server.registerTool.bind(server);
+    server.registerTool = (name, definition, callback) => { tools.set(name, { definition, callback }); return register(name, definition, callback); };
+  } });
+  const call = (args) => {
+    const tool = tools.get("shopify_graphql_mutation");
+    return tool.callback(tool.definition.inputSchema.parse(args));
+  };
+  const deletion = "mutation { productDelete(input: { id: \"gid://shopify/Product/1\" }) { deletedProductId userErrors { message } } }";
+  const refused = await call({ store: "main", mutation: deletion, variables: {}, confirm: true });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /productDelete is destructive/);
+  const denied = await call({ store: "main", mutation: "mutation { webhookSubscriptionDelete(id: \"gid://shopify/WebhookSubscription/1\") { userErrors { message } } }", variables: {}, confirm: "webhookSubscriptionDelete" });
+  assert.equal(denied.isError, true);
+  assert.match(denied.content[0].text, /denylist/);
+  const archive = "mutation A($p: ProductUpdateInput!) { productUpdate(product: $p) { userErrors { message } } }";
+  const archiveRefused = await call({ store: "main", mutation: archive, variables: { p: { id: "gid://shopify/Product/1", status: "ARCHIVED" } }, confirm: true });
+  assert.equal(archiveRefused.isError, true);
+  assert.equal(mutationRequests(requests).length, 0, "refused before anything was sent");
+  const confirmed = await call({ store: "main", mutation: deletion, variables: {}, confirm: "productDelete" });
+  assert.notEqual(confirmed.isError, true, confirmed.content[0].text);
+  assert.equal(mutationRequests(requests).length, 1);
 });

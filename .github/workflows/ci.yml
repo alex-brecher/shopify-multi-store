@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  # Weekly, so tests/api-versions.test.mjs fails before a pinned Admin API version loses support even without a push.
+  schedule:
+    - cron: "17 12 * * 1"
 
 permissions:
   contents: read

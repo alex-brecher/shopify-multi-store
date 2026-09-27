@@ -120,9 +120,82 @@ export const DESTRUCTIVE_MUTATIONS = new Set([
     "subscriptionContractPause",
     // Runs arbitrary mutations in bulk; denylisted by default, destructive if an operator allows it.
     "bulkOperationRunMutation",
+    // Change what customers see at once: publish to a sales channel, or make a discount live.
+    "publishablePublish",
+    "publishablePublishToCurrentChannel",
+    "productPublish",
+    "collectionPublish",
+    "discountAutomaticActivate",
+    "discountCodeActivate",
+    "discountCodeBulkActivate",
+    // Email customers; a sent message cannot be recalled.
+    "orderInvoiceSend",
+    "draftOrderInvoiceSend",
+    "paymentReminderSend",
+    "customerSendAccountInviteEmail",
+    "customerPaymentMethodSendUpdateEmail",
+    "companyContactSendWelcomeEmail",
+    "giftCardSendNotificationToCustomer",
+    "giftCardSendNotificationToRecipient",
+    // Issue money or money-equivalent value.
+    "giftCardCreate",
+    "giftCardCredit",
+    "storeCreditAccountCredit",
 ]);
-export function isDestructive(name) {
-    return DESTRUCTIVE_MUTATIONS.has(name) || DESTRUCTIVE_PATTERN.test(name);
+const record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+const hidesProduct = (status) => status === "ARCHIVED" || status === "DRAFT";
+/** True when key holds `true` anywhere in value (nested inputs and lists included). */
+function deepTrue(value, key, depth = 0) {
+    if (depth > 8 || !value || typeof value !== "object")
+        return false;
+    if (Array.isArray(value))
+        return value.some((item) => deepTrue(item, key, depth + 1));
+    return Object.entries(value).some(([name, item]) => (name === key && item === true) || deepTrue(item, key, depth + 1));
+}
+/**
+ * Mutations whose names look safe but whose arguments can make them destructive. The arguments
+ * are the call's resolved values: inline literals with variables substituted. Keep this the only
+ * table of argument rules.
+ */
+export const DESTRUCTIVE_ARGUMENT_RULES = [
+    {
+        mutation: "productChangeStatus",
+        reason: "status ARCHIVED or DRAFT takes the product off every sales channel.",
+        when: (args) => hidesProduct(args.status),
+    },
+    {
+        mutation: "productUpdate",
+        reason: "product.status (or legacy input.status) ARCHIVED or DRAFT takes the product off every sales channel.",
+        when: (args) => hidesProduct(record(args.product)?.status) || hidesProduct(record(args.input)?.status),
+    },
+    {
+        mutation: "productVariantsBulkCreate",
+        reason: "strategy REMOVE_STANDALONE_VARIANT deletes the product's default variant.",
+        when: (args) => args.strategy === "REMOVE_STANDALONE_VARIANT",
+    },
+    {
+        mutation: "*",
+        reason: "notifyCustomer true emails the customer; a sent message cannot be recalled.",
+        when: (args) => deepTrue(args, "notifyCustomer"),
+    },
+];
+function argumentRules(name) {
+    return DESTRUCTIVE_ARGUMENT_RULES.filter((rule) => rule.mutation === name || rule.mutation === "*");
+}
+/** Reasons a call to `name` can be destructive depending on its arguments (for describe output). */
+export function destructiveWhen(name) {
+    return DESTRUCTIVE_ARGUMENT_RULES.filter((rule) => rule.mutation === name).map((rule) => rule.reason);
+}
+/**
+ * Whether a mutation is destructive. By name alone when args is omitted; with args (the call's
+ * resolved argument values), argument rules from DESTRUCTIVE_ARGUMENT_RULES apply as well.
+ */
+export function isDestructive(name, args) {
+    if (DESTRUCTIVE_MUTATIONS.has(name) || DESTRUCTIVE_PATTERN.test(name))
+        return true;
+    if (!args)
+        return false;
+    return argumentRules(name).some((rule) => rule.when(args));
 }
 /**
  * Mutations refused by default: ones that mint credentials or change this app's own installation
@@ -165,36 +238,28 @@ export function isDenied(name, list = denylist()) {
 /** Mutations that already have a dedicated, guided tool. */
 export const DEDICATED_TOOLS = {
     productCreate: ["shopify_create_product"],
-    productUpdate: ["shopify_update_product", "shopify_bulk_update_product_status"],
+    productUpdate: ["shopify_update_product"],
     productVariantsBulkCreate: ["shopify_create_product"],
-    productVariantsBulkUpdate: ["shopify_update_product", "shopify_update_prices", "shopify_update_prices_many"],
+    productVariantsBulkUpdate: ["shopify_update_product", "shopify_update_prices"],
     productDeleteMedia: ["shopify_update_product"],
     collectionCreate: ["shopify_create_collection"],
     collectionUpdate: ["shopify_update_collection"],
-    collectionAddProducts: ["shopify_add_to_collection"],
-    publishablePublish: ["shopify_publish_resource", "shopify_create_collection"],
+    collectionAddProducts: ["shopify_create_collection", "shopify_update_collection"],
+    publishablePublish: ["shopify_create_collection"],
     inventorySetQuantities: ["shopify_set_inventory"],
     discountCodeBasicCreate: ["shopify_create_discount"],
     stagedUploadsCreate: ["shopify_upload_image"],
     fileCreate: ["shopify_upload_image"],
-    fileDelete: ["shopify_delete_files"],
-    bulkOperationRunQuery: ["shopify_bulk_export_start"],
-    metafieldsSet: ["shopify_set_metafields"],
-    metafieldsDelete: ["shopify_delete_metafields"],
-    metaobjectUpsert: ["shopify_upsert_metaobject"],
-    urlRedirectCreate: ["shopify_create_redirects"],
-    urlRedirectDelete: ["shopify_delete_redirects"],
-    deliveryProfileUpdate: ["shopify_update_delivery_rate"],
-    themeFilesUpsert: ["shopify_upsert_theme_files"],
-    draftOrderCreate: ["shopify_create_draft_order"],
+    metafieldsSet: ["shopify_metafields"],
+    metafieldsDelete: ["shopify_metafields"],
+    urlRedirectCreate: ["shopify_redirects"],
+    urlRedirectDelete: ["shopify_redirects"],
     orderUpdate: ["shopify_update_order"],
     fulfillmentCreate: ["shopify_create_fulfillment"],
     fulfillmentCreateV2: ["shopify_create_fulfillment"],
-    tagsAdd: ["shopify_tags"],
-    tagsRemove: ["shopify_tags"],
+    tagsAdd: ["shopify_tags", "shopify_update_product", "shopify_update_order", "shopify_update_customer"],
+    tagsRemove: ["shopify_tags", "shopify_update_product", "shopify_update_order", "shopify_update_customer"],
     customerUpdate: ["shopify_update_customer"],
-    pageCreate: ["shopify_upsert_page"],
-    pageUpdate: ["shopify_upsert_page"],
 };
 /** Best-effort scope hints by name prefix; the first match wins. Scopes named in the description win over these. */
 const SCOPE_RULES = [
@@ -379,7 +444,8 @@ function describeInput(type, depth, seen) {
         })),
     };
 }
-const LABEL_FIELDS = ["title", "name", "displayName", "handle", "sku", "email", "status", "code"];
+/** Scalar fields that label a record in previews and default selections. */
+export const LABEL_FIELDS = ["title", "name", "displayName", "handle", "sku", "email", "status", "code"];
 function simpleField(type, name) {
     if (!isObjectType(type) && !isInterfaceType(type))
         return false;
@@ -495,6 +561,7 @@ export async function describeAction(name, version, depth = 3) {
         category: classifyMutation(field.name) ?? "platform",
         destructive: isDestructive(field.name),
         ...(isDestructive(field.name) ? { confirmRequired: field.name } : {}),
+        ...(destructiveWhen(field.name).length ? { destructiveWhen: destructiveWhen(field.name), confirmRequiredWhen: field.name } : {}),
         denied: isDenied(field.name),
         ...(field.deprecationReason != null ? { deprecated: field.deprecationReason } : {}),
         dedicatedTools: [...(DEDICATED_TOOLS[field.name] ?? [])],

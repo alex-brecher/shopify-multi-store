@@ -7,7 +7,6 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src ./src
-COPY ui ./ui
 COPY scripts ./scripts
 RUN npm run build
 

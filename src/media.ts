@@ -116,6 +116,6 @@ export async function uploadImage(
     status: "PROCESSING",
     complete: false,
     notice:
-      "Use shopify_get_uploaded_image with this file ID. Do not upload it again.",
+      "Use shopify_get with resource uploaded_image and this file ID. Do not upload it again.",
   };
 }

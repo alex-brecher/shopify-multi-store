@@ -181,7 +181,7 @@ const ID_KEY = /(^id$|^ids$|Id$|Ids$)/;
 const SHOPIFY_GID = /^gid:\/\/shopify\/[A-Za-z]+\/\d+$/;
 const NUMERIC_ID = /^\d{1,20}$/;
 /** Keys that carry a fixed set of values (status and sort enums, match modes). */
-const ENUM_KEY = /(^status$|Status$|^sortKey$|^sortOrder$|^matchBy$|^layout$|^currencyCode$)/;
+const ENUM_KEY = /(^status$|Status$|^sortKey$|^sortOrder$|^matchBy$|^layout$|^currencyCode$|^resource$|^report$|^action$)/;
 const ENUM_VALUE = /^(?:[A-Z][A-Z0-9_]{0,39}|[a-z][a-z0-9-]{0,39})$/;
 
 /** Cut a string to the audit limit, saying how much was dropped. */

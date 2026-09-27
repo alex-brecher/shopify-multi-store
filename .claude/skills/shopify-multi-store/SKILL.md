@@ -8,46 +8,27 @@ description: Connect, query, compare, report on, and manage multiple Shopify Adm
 1. Call `shopify_list_stores` before a cross-store task.
 2. Use the store alias in every store tool call.
 3. Call `shopify_get_shop_info` before a sensitive change.
-4. Use `shopify_portfolio_snapshot` for a fast overview of several stores.
-5. Use `shopify_order_summary` for bounded order-value, discount, tax, cancellation, and order-status totals. Keep currencies separate.
-6. Use `shopify_list_unfulfilled_orders` for the operational fulfillment queue.
-7. Use `shopify_compare_inventory` for exact SKU inventory comparisons.
-8. Use `shopify_get_product_everywhere` to find one exact SKU or handle across stores.
-9. Use `shopify_search_products_many` to search products across selected stores.
-10. Use `shopify_low_stock_report` for low inventory and cross-store transfer opportunities.
-11. Treat each transfer opportunity as information. Do not assume that inventory can move between stores.
-12. Use `shopify_compare_prices` to highlight price or compare-at-price differences for exact SKUs.
-13. Use `shopify_duplicate_sku_report` to find repeated SKUs inside stores and shared SKUs across stores.
-14. Use `shopify_compare_catalog` for exact product handle comparisons.
-15. Use `shopify_catalog_gap_report` to find missing products and status differences across stores.
-16. Treat a bounded gap report as a list of potential gaps.
-17. Use `shopify_catalog_health` for missing merchandising, SEO, media, alt text, and inventory data.
-18. Use `shopify_recent_product_changes` to review recently updated products.
-19. Use `shopify_compare_collections` for collection content and configuration consistency.
-20. Use `shopify_fulfillment_sla_report` for order age buckets and SLA breaches.
-21. Use `shopify_customer_growth` to compare new-customer counts across equal periods.
-22. Use `shopify_store_locations` to review location, fulfillment, inventory, and address coverage.
-23. Use `shopify_graphql_query` for other read-only Admin GraphQL operations.
-24. Use `shopify_graphql_query_many` for one read-only query across two or more stores. Pass only the stores that you need.
-25. For a new custom operation, read [references/shopify-admin-companion.md](references/shopify-admin-companion.md) before you write GraphQL.
-26. Use `shopify_graphql_mutation` only after the user authorizes the exact store and change.
-27. Set `confirm` to `true` only when that authorization exists.
-28. Use cursor pagination and request only necessary fields.
-29. Preserve Shopify GraphQL user errors and per-store partial failures in the response.
+4. Use `shopify_report` for cross-store reports. Set `report` and pass `stores`:
+   - `portfolio_snapshot` for a fast overview of several stores.
+   - `order_summary` for bounded order-value, discount, tax, cancellation, and order-status totals. Keep currencies separate.
+   - `list_unfulfilled_orders` for the operational fulfillment queue, and `fulfillment_sla_report` for order age buckets and SLA breaches.
+   - `compare_inventory` for exact SKU inventory, and `low_stock_report` for low inventory and transfer opportunities. Treat each transfer opportunity as information; do not assume that inventory can move between stores.
+   - `get_product_everywhere` to find one exact SKU or handle across stores.
+   - `compare_prices` for price or compare-at-price differences, and `duplicate_sku_report` for repeated and shared SKUs.
+   - `compare_catalog` for exact product handles, and `catalog_gap_report` for missing products and status differences. Treat a bounded gap report as a list of potential gaps.
+   - `catalog_health` for missing merchandising, SEO, media, alt text, and inventory data, and `recent_product_changes` for recently updated products.
+   - `compare_collections`, `customer_growth`, `store_locations`, and `analytics` (ShopifyQL) as named.
+5. Use `shopify_search` to list or search one kind of record (`resource`) on one store, or on several with `stores`. Use `shopify_get` to read one record by GID.
+6. Guided write tools default to `dryRun: true`. Show the preview, get the user's authorization for the exact store and change, then call again with `dryRun: false`.
+7. For tags, use `addTags` and `removeTags`. Use `replaceTags` only when the user wants every other tag removed; the preview lists what would go.
+8. For a write no guided tool covers, use `shopify_find_actions`, `shopify_describe_action`, then `shopify_run_action`.
+9. Use `shopify_graphql_query` for other read-only Admin GraphQL operations.
+10. Use `shopify_graphql_query_many` for one read-only query across two or more stores. Pass only the stores that you need.
+11. For a new custom operation, read [references/shopify-admin-companion.md](references/shopify-admin-companion.md) before you write GraphQL.
+12. Use `shopify_graphql_mutation` only after the user authorizes the exact store and change.
+13. Set `confirm` to `true` only when that authorization exists; destructive mutations need `confirm` set to the mutation name.
+14. Use cursor pagination and request only necessary fields.
+15. Preserve Shopify GraphQL user errors and per-store partial failures in the response.
 
 Do not call the official Shopify `switch_shop` tool for a multi-store task. That tool revokes the current store token.
 
-## Preview stores and product concepts
-
-For a new-store request, use `shopify_get_new_store_previews` with the user's product, audience, and style brief.
-Generate one to three concrete design specifications and relevant demo product concepts from that brief.
-Supply a stable UUID requestId. Reuse it after an interruption.
-The tool returns a pending job ID. Poll `shopify_get_new_store_preview_status` until it completes or reports a failure.
-The completed job contains separate temporary Shopify stores, published designs, and preview and claim links.
-Do not use it to restyle an existing store. Do not claim a store or start a subscription without the user's instruction.
-Use the returned preview aliases with the ordinary product, collection, inventory, and image tools.
-
-For product inspiration, use `shopify_find_sample_product` to search the published Shopify category catalogs.
-If the catalog lacks suitable examples, generate original concepts and pass them as generatedCandidates.
-Keep sample products clearly identified as concepts. Do not imply that a supplier, price, claim, or certification is verified.
-Only supply relevant available image URLs. Keep images absent when no suitable image exists.

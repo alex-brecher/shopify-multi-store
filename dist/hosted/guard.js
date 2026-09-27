@@ -4,12 +4,7 @@ import { auditArguments, auditError, canonicalJson, sha256Hex } from "./audit.js
  * Tools that need the local machine (Shopify CLI, local preview receipts).
  * They are not registered at all in hosted mode.
  */
-export const HOSTED_DISABLED_TOOLS = new Set([
-    "shopify_create_preview_store",
-    "shopify_get_new_store_previews",
-    "shopify_get_new_store_preview_status",
-    "shopify_get_preview_store"
-]);
+export const HOSTED_DISABLED_TOOLS = new Set([]);
 /** Arguments that refer to the server's local filesystem and are refused in hosted mode. */
 export const HOSTED_DISABLED_ARGUMENTS = {
     shopify_upload_image: ["imageFile"]
@@ -19,7 +14,7 @@ export const GRAPHQL_DOCUMENT_ARGUMENTS = {
     shopify_graphql_query: ["query"],
     shopify_graphql_query_many: ["query"],
     shopify_graphql_mutation: ["mutation"],
-    shopify_bulk_export_start: ["query"]
+    shopify_run_action: ["document"]
 };
 /** Top-level argument names that select stores. */
 const STORE_ARGUMENTS = ["store", "stores", "alias"];

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "graphql";
 import { registerParityTools, sameMoney } from "../dist/parity-tools.js";
+import { registerReadTools } from "../dist/read-tools.js";
 
 const gid = (type, id = 1) => `gid://shopify/${type}/${id}`;
 const connection = (nodes) => ({
@@ -47,6 +48,7 @@ async function fixture(t, { extraStores = [] } = {}) {
       tools.set(name, { definition, callback }),
   };
   registerParityTools(server);
+  registerReadTools(server);
 
   const state = {
     requests: [],
@@ -413,7 +415,7 @@ test("update_prices: a failed verification read is applied_unverified and the st
   assert.ok(result.structuredContent.verificationNotice);
 
   state.requests.length = 0;
-  const many = await callMulti("update_prices_many", {
+  const many = await callMulti("update_prices", {
     stores: ["fixture", "second"],
     skus: [{ sku: "SKU-FOUND", price: "12.00" }],
     dryRun: false,
@@ -506,9 +508,9 @@ test("update_prices: ambiguous SKU matches are reported, not applied", async (t)
   assert.equal(result.structuredContent.wouldApply.length, 0);
 });
 
-test("update_prices_many: applies the same SKU list across stores independently", async (t) => {
+test("update_prices with stores: applies the same SKU list across stores independently", async (t) => {
   const { callMulti } = await fixture(t);
-  const result = await callMulti("update_prices_many", {
+  const result = await callMulti("update_prices", {
     stores: ["fixture", "second"],
     skus: [{ sku: "SKU-FOUND", price: "12.00" }],
   });
@@ -521,7 +523,7 @@ test("multi-store tools refuse two aliases for one shop and never run an action 
   const { callMulti, state } = await fixture(t, {
     extraStores: [{ alias: "fixture-copy", shop: "FIXTURE.myshopify.com", apiVersion: "2026-07" }],
   });
-  const result = await callMulti("update_prices_many", {
+  const result = await callMulti("update_prices", {
     stores: ["fixture", "fixture-copy"],
     skus: [{ sku: "SKU-FOUND", price: "12.00" }],
     dryRun: false,
@@ -540,9 +542,9 @@ test("multi-store tools refuse two aliases for one shop and never run an action 
   assert.deepEqual((await resolveStoreTargets(["fixture", "FIXTURE", "second"])).map((target) => target.store.alias), ["fixture", "second"]);
 });
 
-test("update_prices_many: aggregates mixed outcomes across stores into an ok/status per store", async (t) => {
+test("update_prices with stores: aggregates mixed outcomes across stores into an ok/status per store", async (t) => {
   const { callMulti } = await fixture(t);
-  const result = await callMulti("update_prices_many", {
+  const result = await callMulti("update_prices", {
     stores: ["fixture", "second"],
     skus: [
       { sku: "SKU-FOUND", price: "12.00" },
@@ -562,80 +564,6 @@ test("update_prices_many: aggregates mixed outcomes across stores into an ok/sta
   assert.equal(body.failed, 2);
 });
 
-test("update_delivery_rate: detects Shopify's silent-discard (no userErrors, value not persisted)", async (t) => {
-  const { call, state } = await fixture(t);
-  state.deliveryRatePersists = false;
-  const result = await call("update_delivery_rate", {
-    deliveryProfileId: gid("DeliveryProfile", 1),
-    locationGroupId: gid("DeliveryLocationGroup", 1),
-    zoneId: gid("DeliveryZone", 1),
-    methodDefinitionId: gid("DeliveryMethodDefinition", 1),
-    rateDefinitionId: gid("DeliveryRateDefinition", 1),
-    amount: "12.00",
-    currencyCode: "USD",
-    dryRun: false,
-  });
-  assert.equal(result.isError, true);
-  assert.match(result.structuredContent.error, /silent-discard|did not persist/i);
-  assert.equal(result.structuredContent.persistedAmount, "5.00");
-  assert.equal(result.structuredContent.requestedAmount, "12.00");
-});
-
-test("update_delivery_rate: succeeds when the readback confirms the new amount", async (t) => {
-  const { call, state } = await fixture(t);
-  state.deliveryRatePersists = true;
-  const result = await call("update_delivery_rate", {
-    deliveryProfileId: gid("DeliveryProfile", 1),
-    locationGroupId: gid("DeliveryLocationGroup", 1),
-    zoneId: gid("DeliveryZone", 1),
-    methodDefinitionId: gid("DeliveryMethodDefinition", 1),
-    rateDefinitionId: gid("DeliveryRateDefinition", 1),
-    amount: "12.00",
-    currencyCode: "USD",
-    dryRun: false,
-  });
-  assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.verified, true);
-  assert.equal(result.structuredContent.appliedAmount, "12.00");
-});
-
-test("upsert_theme_files: refuses to write to the live (MAIN) theme without allowLiveTheme", async (t) => {
-  const { call, state } = await fixture(t);
-  state.themeRole = "MAIN";
-  const result = await call("upsert_theme_files", {
-    themeId: gid("OnlineStoreTheme", 1),
-    files: [{ filename: "layout/theme.liquid", content: "<html></html>" }],
-    dryRun: false,
-  });
-  assert.equal(result.isError, true);
-  assert.match(result.structuredContent.error, /live \(MAIN\) theme/i);
-});
-
-test("upsert_theme_files: allowLiveTheme:true permits writing to the live theme", async (t) => {
-  const { call, state } = await fixture(t);
-  state.themeRole = "MAIN";
-  const result = await call("upsert_theme_files", {
-    themeId: gid("OnlineStoreTheme", 1),
-    files: [{ filename: "layout/theme.liquid", content: "<html></html>" }],
-    allowLiveTheme: true,
-    dryRun: false,
-  });
-  assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.upserted.length, 1);
-});
-
-test("upsert_theme_files: a non-live theme applies without allowLiveTheme", async (t) => {
-  const { call, state } = await fixture(t);
-  state.themeRole = "UNPUBLISHED";
-  const result = await call("upsert_theme_files", {
-    themeId: gid("OnlineStoreTheme", 1),
-    files: [{ filename: "layout/theme.liquid", content: "<html></html>" }],
-    dryRun: false,
-  });
-  assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.upserted.length, 1);
-});
-
 test("check_access: diffs granted scopes against every tool's requirement", async (t) => {
   const { callMulti, state } = await fixture(t);
   state.scopes = ["read_products"];
@@ -646,7 +574,7 @@ test("check_access: diffs granted scopes against every tool's requirement", asyn
   assert.ok(report.missingScopes.includes("write_products"));
   const productTool = report.failingTools.find((f) => f.tool === "shopify_update_prices");
   assert.ok(productTool.missingScopes.includes("write_inventory"));
-  const readOnlyProductTool = report.failingTools.find((f) => f.tool === "shopify_search_products");
+  const readOnlyProductTool = report.failingTools.find((f) => f.tool === "shopify_search:products");
   assert.equal(readOnlyProductTool, undefined);
   assert.ok(report.variableScopeTools.some((v) => v.tool === "shopify_tags"));
 });
@@ -660,22 +588,24 @@ test("check_access: checks every configured store when none is named", async (t)
 test("metafields: get, set and delete round-trip", async (t) => {
   const { call } = await fixture(t);
   const owner = gid("Product", 1);
-  const got = await call("get_metafields", { ownerId: owner });
+  const got = await call("get", { resource: "metafields", id: owner });
   assert.equal(got.structuredContent.metafields.length, 1);
-  const setPreview = await call("set_metafields", {
-    metafields: [{ ownerId: owner, namespace: "custom", key: "note", value: "hi" }],
+  const setPreview = await call("metafields", {
+    set: [{ ownerId: owner, namespace: "custom", key: "note", value: "hi" }],
   });
   assert.equal(setPreview.structuredContent.dryRun, true);
-  const setApplied = await call("set_metafields", {
-    metafields: [{ ownerId: owner, namespace: "custom", key: "note", value: "hi" }],
+  const setApplied = await call("metafields", {
+    set: [{ ownerId: owner, namespace: "custom", key: "note", value: "hi" }],
     dryRun: false,
   });
   assert.equal(setApplied.structuredContent.metafields.length, 1);
-  const deleted = await call("delete_metafields", {
-    metafields: [{ ownerId: owner, namespace: "custom", key: "note" }],
+  const deleted = await call("metafields", {
+    delete: [{ ownerId: owner, namespace: "custom", key: "note" }],
     dryRun: false,
   });
   assert.equal(deleted.structuredContent.deletedMetafields.length, 1);
+  const neither = await call("metafields", {});
+  assert.equal(neither.isError, true);
 });
 
 test("tags: requires add or remove and previews under dryRun", async (t) => {
@@ -702,26 +632,11 @@ const sentVariables = (state, operation) =>
     .filter((r) => parse(r.query).definitions.find((d) => d.kind === "OperationDefinition").name?.value === operation)
     .map((r) => r.variables);
 
-test("create_draft_order: dryRun:false sends only DraftOrderInput fields", async (t) => {
-  const { call, state } = await fixture(t);
-  const result = await call("create_draft_order", {
-    email: "d@example.com",
-    note: "n",
-    tags: ["t"],
-    lineItems: [{ variantId: gid("ProductVariant", 1), quantity: 2 }],
-    dryRun: false,
-  });
-  assert.equal(result.isError, undefined, result.content[0].text);
-  assert.deepEqual(sentVariables(state, "CreateDraftOrder"), [
-    { input: { email: "d@example.com", note: "n", tags: ["t"], lineItems: [{ variantId: gid("ProductVariant", 1), quantity: 2 }] } },
-  ]);
-});
-
 test("update_order: dryRun:false sends only OrderInput fields", async (t) => {
   const { call, state } = await fixture(t);
   const result = await call("update_order", {
     id: gid("Order", 1),
-    tags: ["x"],
+    replaceTags: ["x"],
     note: null,
     shippingAddress: { city: "Albany" },
     dryRun: false,
@@ -739,16 +654,6 @@ test("update_customer: dryRun:false sends only CustomerInput fields", async (t) 
   assert.deepEqual(sentVariables(state, "UpdateCustomer"), [
     { input: { id: gid("Customer", 1), note: "n" } },
   ]);
-});
-
-test("upsert_page: dryRun:false create and update send only page input fields", async (t) => {
-  const { call, state } = await fixture(t);
-  const created = await call("upsert_page", { title: "T", body: "<p>b</p>", dryRun: false });
-  assert.equal(created.isError, undefined, created.content[0].text);
-  assert.deepEqual(sentVariables(state, "CreatePage"), [{ page: { title: "T", body: "<p>b</p>" } }]);
-  const updated = await call("upsert_page", { id: gid("Page", 1), isPublished: false, dryRun: false });
-  assert.equal(updated.isError, undefined, updated.content[0].text);
-  assert.deepEqual(sentVariables(state, "UpdatePage"), [{ id: gid("Page", 1), page: { isPublished: false } }]);
 });
 
 const variantWithSku = (id, sku, productId = 1) => ({
@@ -815,23 +720,6 @@ test("update_prices: readback compares money as decimals, not strings", async (t
   assert.equal(mismatched.structuredContent.results[0].outcome, "mismatch");
 });
 
-test("update_delivery_rate: a persisted \"5.0\" matches a requested \"5\"", async (t) => {
-  const { call, state } = await fixture(t);
-  state.persistFormat = (amount) => Number(amount).toFixed(1);
-  const result = await call("update_delivery_rate", {
-    deliveryProfileId: gid("DeliveryProfile", 1),
-    locationGroupId: gid("DeliveryLocationGroup", 1),
-    zoneId: gid("DeliveryZone", 1),
-    methodDefinitionId: gid("DeliveryMethodDefinition", 1),
-    rateDefinitionId: gid("DeliveryRateDefinition", 1),
-    amount: "5",
-    currencyCode: "USD",
-    dryRun: false,
-  });
-  assert.equal(result.isError, undefined, result.content[0].text);
-  assert.equal(result.structuredContent.verified, true);
-});
-
 test("sameMoney: decimal equality without float rounding", () => {
   assert.ok(sameMoney("12", "12.00"));
   assert.ok(sameMoney("0", "0.00"));
@@ -850,25 +738,6 @@ test("create_fulfillment: works with merchant-managed fulfillment order scopes a
   const applied = await call("create_fulfillment", { orderId: gid("Order", 1), dryRun: false });
   assert.equal(applied.isError, undefined, applied.content[0].text);
   assert.equal(applied.structuredContent.fulfillment.status, "SUCCESS");
-});
-
-test("update_delivery_rate: reads the rate back from the specific profile and method by id", async (t) => {
-  const { call, state } = await fixture(t);
-  const result = await call("update_delivery_rate", {
-    deliveryProfileId: gid("DeliveryProfile", 1),
-    locationGroupId: gid("DeliveryLocationGroup", 1),
-    zoneId: gid("DeliveryZone", 1),
-    methodDefinitionId: gid("DeliveryMethodDefinition", 1),
-    rateDefinitionId: gid("DeliveryRateDefinition", 1),
-    amount: "7.25",
-    currencyCode: "USD",
-    dryRun: false,
-  });
-  assert.equal(result.structuredContent.verified, true);
-  assert.deepEqual(sentVariables(state, "GetDeliveryRate"), [
-    { profileId: gid("DeliveryProfile", 1), methodId: gid("DeliveryMethodDefinition", 1) },
-  ]);
-  assert.equal(sentVariables(state, "ListDeliveryProfiles").length, 0);
 });
 
 test("create_fulfillment: includes IN_PROGRESS fulfillment orders and fulfills remaining quantities", async (t) => {
@@ -893,4 +762,142 @@ test("create_fulfillment: includes IN_PROGRESS fulfillment orders and fulfills r
       trackingInfo: { number: "1Z" },
     },
   }]);
+});
+
+function addBulkVariants(state, count) {
+  const skus = [];
+  for (let i = 1; i <= count; i++) {
+    const sku = `BULK-${i}`;
+    state.variants[sku] = {
+      id: gid("ProductVariant", 1000 + i),
+      sku,
+      price: "10.00",
+      compareAtPrice: null,
+      product: { id: gid("Product", 1000 + i), title: `Bulk product ${i} ${"x".repeat(400)}` },
+      inventoryItem: { id: gid("InventoryItem", 1000 + i), sku, unitCost: { amount: "5.00", currencyCode: "USD" } },
+    };
+    skus.push({ sku, price: "12.00" });
+  }
+  return skus;
+}
+
+test("update_prices with 250 SKUs applies, verifies, and reports success instead of a size error", async (t) => {
+  const { call, state } = await fixture(t);
+  const skus = addBulkVariants(state, 249);
+  skus.push({ sku: "SKU-MISSING", price: "1.00" });
+  const result = await call("update_prices", { skus, dryRun: false });
+  assert.notEqual(result.isError, true, result.content[0].text.slice(0, 300));
+  const body = result.structuredContent;
+  assert.ok(result.content[0].text.length <= 150_000, `result is ${result.content[0].text.length} characters`);
+  assert.equal(body.dryRun, false);
+  assert.equal(body.status, "partial");
+  assert.equal(body.succeeded, 249);
+  assert.equal(body.failed, 0);
+  assert.deepEqual(body.notFound, ["SKU-MISSING"]);
+  assert.ok(body.responseTrimmed, "the trim is reported");
+  // Every applied item is still accounted for, either in results or as a summary line.
+  const summarized = body.resultsAppliedSummary?.length ?? 0;
+  assert.equal(body.results.length + summarized + (body.responseTrimmed.appliedSummaryLinesOmitted ?? 0), 249);
+  const writes = state.requests.filter((r) => /UpdatePricesBulk/.test(r.query));
+  assert.equal(writes.length, 249);
+});
+
+test("update_prices with stores and 250 SKUs on two stores keeps every store's status and counts", async (t) => {
+  const { callMulti, state } = await fixture(t);
+  const skus = addBulkVariants(state, 250);
+  const result = await callMulti("update_prices", { stores: ["fixture", "second"], skus, dryRun: false });
+  assert.notEqual(result.isError, true, result.content[0].text.slice(0, 300));
+  assert.ok(result.content[0].text.length <= 150_000);
+  const body = result.structuredContent;
+  assert.equal(body.succeeded, 2);
+  for (const store of body.stores) {
+    assert.equal(store.status, "ok");
+    assert.equal(store.succeeded, 250);
+  }
+});
+
+test("fitWriteResult trims applied items but keeps status, counts and every non-applied item in full", async () => {
+  const { fitWriteResult } = await import("../dist/result-limits.js");
+  const big = "y".repeat(2_000);
+  const results = [];
+  for (let i = 0; i < 200; i++) {
+    results.push({ sku: `S-${i}`, variantId: gid("ProductVariant", i), requested: { price: "2.00" }, outcome: "applied", verification: "verified", mutationResponse: { id: gid("ProductVariant", i), price: "2.00", blob: big }, verifiedState: { id: gid("ProductVariant", i), price: "2.00", product: { title: big } } });
+  }
+  results.push({ sku: "S-BAD", variantId: gid("ProductVariant", 999), requested: { price: "2.00" }, outcome: "mismatch", verification: "mismatch", mutationResponse: { id: "x", price: "2.00", blob: big }, verifiedState: { id: "x", price: "1.00", blob: big } });
+  results.push({ sku: "S-UNKNOWN", variantId: gid("ProductVariant", 998), outcome: "unknown", error: "network reset" });
+  const value = { dryRun: false, status: "partial", succeeded: 200, failed: 2, results };
+  const fitted = fitWriteResult(value, 20_000);
+  assert.ok(JSON.stringify(fitted).length <= 20_000);
+  assert.equal(fitted.status, "partial");
+  assert.equal(fitted.succeeded, 200);
+  assert.equal(fitted.failed, 2);
+  const bad = fitted.results.find((r) => r.sku === "S-BAD");
+  assert.equal(bad.outcome, "mismatch");
+  assert.deepEqual(bad.verifiedState, { id: "x", price: "1.00" }, "trimmed to the changed field");
+  assert.ok(fitted.results.some((r) => r.sku === "S-UNKNOWN" && r.error === "network reset"));
+  assert.ok(fitted.responseTrimmed.notice);
+  // Small results pass through unchanged.
+  const small = { status: "ok", results: [{ sku: "A", outcome: "applied" }] };
+  assert.equal(fitWriteResult(small), small);
+});
+
+test("redirects create and delete carry applied, rejected and unknown per item and derive status", async (t) => {
+  const { call } = await fixture(t);
+  const mocked = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    const path = body.variables?.urlRedirect?.path;
+    const id = body.variables?.id;
+    if (path === "/net" || id === gid("UrlRedirect", 99)) throw new Error("simulated network reset");
+    if (path === "/rej") return Response.json({ data: { urlRedirectCreate: { urlRedirect: null, userErrors: [{ field: ["path"], message: "Path already taken" }] } } });
+    return mocked(url, options);
+  };
+  const created = await call("redirects", {
+    create: [{ path: "/ok", target: "/new" }, { path: "/rej", target: "/new" }, { path: "/net", target: "/new" }],
+    dryRun: false,
+  });
+  const body = created.structuredContent;
+  assert.deepEqual(body.results.map((r) => r.outcome), ["applied", "rejected", "unknown"]);
+  assert.deepEqual(body.results.map((r) => r.ok), [true, false, false]);
+  assert.equal(body.status, "partial");
+  assert.equal(body.succeeded, 1);
+  assert.equal(body.failed, 1);
+  assert.equal(body.unknown, 1);
+  assert.ok(body.results[2].doNotBlindlyRetry);
+
+  const onlyUnknown = await call("redirects", { delete: [gid("UrlRedirect", 99)], dryRun: false });
+  assert.equal(onlyUnknown.structuredContent.status, "unknown", "an unknown outcome is not flattened into failed");
+  const deleted = await call("redirects", { delete: [gid("UrlRedirect", 1)], dryRun: false });
+  assert.equal(deleted.structuredContent.status, "ok");
+  assert.equal(deleted.structuredContent.results[0].outcome, "applied");
+});
+
+test("update_order and update_customer add and remove tags without replacing the list", async (t) => {
+  const { call, state } = await fixture(t);
+  const preview = await call("update_order", { id: gid("Order", 1), addTags: ["vip"] });
+  assert.equal(preview.structuredContent.dryRun, true);
+  assert.deepEqual(preview.structuredContent.before.tags, ["old"]);
+  assert.deepEqual(preview.structuredContent.wouldApply.addTags, ["vip"]);
+  const order = await call("update_order", { id: gid("Order", 1), addTags: ["vip"], removeTags: ["old"], dryRun: false });
+  assert.equal(order.isError, undefined, order.content[0].text);
+  assert.equal(sentVariables(state, "UpdateOrder").length, 0, "orderUpdate (a full tag replace) is not sent for tag-only changes");
+  assert.deepEqual(sentVariables(state, "AddTags"), [{ id: gid("Order", 1), tags: ["vip"] }]);
+  assert.deepEqual(sentVariables(state, "RemoveTags"), [{ id: gid("Order", 1), tags: ["old"] }]);
+  const replace = await call("update_order", { id: gid("Order", 1), replaceTags: ["a"] });
+  assert.deepEqual(replace.structuredContent.wouldApply.tagsRemoved, ["old"]);
+  const customer = await call("update_customer", { id: gid("Customer", 1), note: "n", addTags: ["vip"], dryRun: false });
+  assert.equal(customer.isError, undefined, customer.content[0].text);
+  assert.deepEqual(sentVariables(state, "UpdateCustomer"), [{ input: { id: gid("Customer", 1), note: "n" } }]);
+  assert.deepEqual(sentVariables(state, "AddTags").at(-1), { id: gid("Customer", 1), tags: ["vip"] });
+  const both = await call("update_customer", { id: gid("Customer", 1), replaceTags: ["a"], removeTags: ["b"] });
+  assert.equal(both.isError, true);
+});
+
+test("every parity document validates against the pinned API version", async () => {
+  const { PDOCS } = await import("../dist/parity-documents.js");
+  const { PARITY_API_VERSION } = await import("../dist/api-versions.js");
+  const { validateDocument } = await import("../dist/schema.js");
+  for (const [name, document] of Object.entries(PDOCS)) {
+    assert.deepEqual(await validateDocument(document, PARITY_API_VERSION), [], name);
+  }
 });

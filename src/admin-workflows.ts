@@ -4,8 +4,19 @@ import { adminGraphql, hasGraphqlErrors } from "./shopify.js";
 import { adminSchema, validateDocument } from "./schema.js";
 import { operation } from "./operations.js";
 import { DOCS } from "./admin-documents.js";
+import { PDOCS } from "./parity-documents.js";
+import { COLLECTION_API_VERSION, LEGACY_COLLECTION_API_VERSION } from "./api-versions.js";
+import { fitWriteResult, WRITE_RESULT_CHARACTER_LIMIT } from "./result-limits.js";
 
 export type Data = Record<string, any>;
+
+/** Documents pinned to the API version whose inputs they use, whatever the store is configured for. */
+const DOCUMENT_VERSIONS = new Map<string, string>([
+  [DOCS.collectionCreate, COLLECTION_API_VERSION],
+  [DOCS.collectionUpdate, COLLECTION_API_VERSION],
+  [DOCS.collectionCreateLegacy, LEGACY_COLLECTION_API_VERSION],
+  [DOCS.collectionUpdateLegacy, LEGACY_COLLECTION_API_VERSION],
+]);
 export class WorkflowError extends Error {
   constructor(
     message: string,
@@ -19,11 +30,9 @@ export class Workflow {
   constructor(public store: StoreConfig) {}
   async run(document: string, variables: Data = {}): Promise<Data> {
     const { selected } = operation(document);
-    // Shopify replaced legacy collection inputs in 2026-07. Keep those workflows on the supported 2026-04 contract.
-    const target =
-      document === DOCS.collectionCreate || document === DOCS.collectionUpdate
-        ? { ...this.store, apiVersion: "2026-04" }
-        : this.store;
+    // Documents written for one API version's inputs run on that version (see api-versions.ts).
+    const pinned = DOCUMENT_VERSIONS.get(document);
+    const target = pinned ? { ...this.store, apiVersion: pinned } : this.store;
     const errors = await validateDocument(document, target.apiVersion);
     if (errors.length)
       throw new WorkflowError(
@@ -171,30 +180,72 @@ export class Workflow {
 export async function workflow(alias: string) {
   return new Workflow(await findStore(alias));
 }
-export function textResult(value: Data, isError = false) {
-  if (JSON.stringify(value).length > 150_000) {
+/**
+ * A tool result. Reads that exceed the limit are refused with advice to request fewer rows.
+ * Writes (write: true) are never dropped: fitWriteResult trims them instead, so a caller always
+ * learns what a write did.
+ */
+export function textResult(value: Data, isError = false, write = false) {
+  const shaped = write ? fitWriteResult(value) : value;
+  if (!write && JSON.stringify(shaped).length > WRITE_RESULT_CHARACTER_LIMIT) {
     return {
       isError: true,
       content: [
         {
           type: "text" as const,
-          text: "The response exceeded 150000 characters. Request fewer rows. If this followed a write, read back its outcome before retrying.",
+          text: `The response exceeded ${WRITE_RESULT_CHARACTER_LIMIT} characters. Request fewer rows.`,
         },
       ],
     };
   }
   return {
     ...(isError ? { isError: true } : {}),
-    content: [{ type: "text" as const, text: JSON.stringify(value) }],
-    structuredContent: value,
+    content: [{ type: "text" as const, text: JSON.stringify(shaped) }],
+    structuredContent: shaped,
   };
 }
-export function toolError(error: unknown) {
+export function toolError(error: unknown, write = false) {
   return textResult(
     {
       error: error instanceof Error ? error.message : String(error),
       ...(error instanceof WorkflowError ? error.details : {}),
     },
     true,
+    write,
   );
+}
+
+/** Tag arguments shared by the product, order and customer update tools. */
+export interface TagArgs {
+  replaceTags?: string[];
+  addTags?: string[];
+  removeTags?: string[];
+}
+
+/** Refuse replaceTags together with addTags or removeTags: the result would depend on order. */
+export function checkTagArgs(a: TagArgs): void {
+  if (a.replaceTags && (a.addTags?.length || a.removeTags?.length))
+    throw new Error("Use replaceTags alone, or addTags and/or removeTags; not both.");
+}
+
+/** The tag change a preview shows: the full new list for replaceTags, else what is added and removed. */
+export function tagPreview(a: TagArgs, currentTags: unknown): Data {
+  if (a.replaceTags)
+    return {
+      replaceTags: a.replaceTags,
+      tagsNotice: "replaceTags replaces every tag. Tags not in the list are removed.",
+      ...(Array.isArray(currentTags)
+        ? { tagsRemoved: currentTags.filter((t) => !a.replaceTags!.includes(t)) }
+        : {}),
+    };
+  return {
+    ...(a.addTags?.length ? { addTags: a.addTags } : {}),
+    ...(a.removeTags?.length ? { removeTags: a.removeTags } : {}),
+  };
+}
+
+/** Add and remove tags with tagsAdd and tagsRemove, leaving every other tag alone. */
+export async function applyTagChanges(w: Workflow, id: string, a: TagArgs): Promise<void> {
+  if (a.addTags?.length) await w.run(PDOCS.tagsAdd, { id, tags: a.addTags });
+  if (a.removeTags?.length) await w.run(PDOCS.tagsRemove, { id, tags: a.removeTags });
 }

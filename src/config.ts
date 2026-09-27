@@ -1,4 +1,3 @@
-import {previewStores} from "./previews.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -24,7 +23,7 @@ const ClientCredentialsAuthSchema = z.object({
   clientId: z.string().min(1)
 }).strict();
 
-const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema, z.object({type:z.literal("shopify_cli")}).strict()]);
+const StoreAuthSchema = z.discriminatedUnion("type", [AccessTokenAuthSchema, ClientCredentialsAuthSchema]);
 
 const StoreConfigSchema = z.object({
   alias: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/),
@@ -94,9 +93,6 @@ async function loadAllStores(): Promise<StoreConfig[]> {
     } catch (error) {
       const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
       if (code === "ENOENT") {
-        if (!hosted) {
-          const previews=await previewStores(); if(previews.length)return previews;
-        }
         throw new Error(`No Shopify stores are configured. Run \"npm run configure -- add\" in the plugin directory. Config path: ${configPath()}`);
       }
       throw error;
@@ -105,15 +101,10 @@ async function loadAllStores(): Promise<StoreConfig[]> {
 
   const parsed: unknown = JSON.parse(raw);
   const config = ConfigSchema.parse(parsed);
-  // Preview stores are created with the local Shopify CLI and never exist on a hosted server.
-  if (!hosted) config.stores.push(...await previewStores());
   const aliases = new Set<string>();
   for (const store of config.stores) {
     if (aliases.has(store.alias)) {
       throw new Error(`Duplicate store alias in ${source}: ${store.alias}`);
-    }
-    if (hosted && store.auth.type === "shopify_cli") {
-      throw new Error(`Store ${store.alias} uses Shopify CLI auth, which is not available on a hosted server.`);
     }
     aliases.add(store.alias);
     validateStoreEndpoint(store);
