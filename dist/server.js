@@ -1,8 +1,5 @@
-import { registerPreviewDesignTools } from "./preview-designs.js";
-import { registerPreviewTools } from "./previews.js";
 import { registerAdminTools } from "./admin-tools.js";
 import { registerParityTools } from "./parity-tools.js";
-import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
 import { actionPolicyError, destructiveMutations, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
@@ -43,11 +40,8 @@ export function createServer(options = {}) {
         ...(options.title ? { title: options.title } : {})
     });
     options.beforeRegister?.(server);
-    registerUI(server);
     registerAdminTools(server);
     registerParityTools(server);
-    registerPreviewTools(server);
-    registerPreviewDesignTools(server);
     registerDiscoveryTools(server);
     registerActionTools(server);
     server.registerTool("shopify_list_stores", {

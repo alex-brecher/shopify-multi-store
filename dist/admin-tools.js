@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { UI_META } from "./ui.js";
 import { z } from "zod/v4";
 import { DOCS } from "./admin-documents.js";
 import { workflow, textResult, toolError, WorkflowError, } from "./admin-workflows.js";
@@ -72,7 +71,6 @@ export function registerAdminTools(server) {
     function register(name, description, shape, write, handler) {
         server.registerTool(`shopify_${name}`, {
             description,
-            _meta: UI_META,
             inputSchema: z
                 .object({ store, ...shape, ...(write ? { confirm } : {}) })
                 .strict(),
@@ -96,16 +94,6 @@ export function registerAdminTools(server) {
                         apiVersion: w.store.apiVersion,
                         ...result,
                     }, false, write),
-                    ...(!write
-                        ? {
-                            _meta: {
-                                uiContext: {
-                                    toolName: `shopify_${name}`,
-                                    args: { store: w.store.alias, ...input },
-                                },
-                            },
-                        }
-                        : {}),
                 };
             }
             catch (error) {
@@ -128,10 +116,6 @@ export function registerAdminTools(server) {
         });
     }
     register("get_store_capabilities", "Inspect store identity and granted access scopes.", {}, false, async (w) => w.run(DOCS.capabilities));
-    register("switch_shop", "Resolve a named store without disconnecting other stores. Continue to pass the store alias on every call.", {}, false, async (w) => ({
-        ...(await w.run(DOCS.shop)),
-        routing: "explicit_store_per_call",
-    }));
     register("search_products", "Search products with cursor pagination.", { query: z.string().max(1000).optional(), ...page }, false, (w, a) => w.run(DOCS.products, a));
     register("get_product", "Get product details, variants and media. Follow each returned cursor independently.", { id: gid("Product"), ...page, mediaAfter: after }, false, (w, a) => w.product(a.id, a.first, a.after, a.mediaAfter));
     register("search_collections", "Search manual and smart collections with cursor pagination.", { query: z.string().max(1000).optional(), ...page }, false, (w, a) => w.run(DOCS.collections, a));

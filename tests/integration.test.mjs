@@ -169,13 +169,8 @@ test("lists two stores and routes a shop query to the selected store", async () 
   try {
     await client.connect(transport);
     const listed = await client.listTools();
-    const resources = await client.listResources();
-    assert.ok(resources.resources.some(r => r.uri === 'ui://shopify-multi-store/results'));
-    const ui = await client.readResource({ uri: 'ui://shopify-multi-store/results' });
-    assert.equal(ui.contents[0].mimeType, 'text/html;profile=mcp-app');
-    assert.match(ui.contents[0].text, /Shopify Multi Store/);
-    assert.ok(listed.tools.find(t => t.name === 'shopify_create_product')._meta.ui.resourceUri);
-    assert.ok(listed.tools.length > 45);
+    // The MCP Apps UI resource was removed in 1.7.0; results are text and structured JSON.
+    assert.ok(!listed.tools.some((tool) => tool._meta?.ui));
     const originalTools = [
       "shopify_catalog_gap_report",
       "shopify_catalog_health",

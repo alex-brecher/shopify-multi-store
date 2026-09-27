@@ -65,7 +65,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build-ui.mjs",
+    "build": "tsc",
     "start": "node dist/index.js",
     "configure": "node scripts/configure-store.mjs",
     "import-legacy": "node scripts/import-legacy-stores.mjs",
@@ -74,7 +74,6 @@
     "test": "npm run build && node scripts/run-tests.mjs",
     "test:live": "npm run build && node scripts/live-smoke-test.mjs",
     "prepack": "npm run sync:skills && npm test",
-    "codegen": "tsc && node scripts/codegen.mjs",
     "typecheck": "tsc --noEmit --skipLibCheck false"
   },
   "engines": {
@@ -88,13 +87,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@graphql-codegen/cli": "^7.4.0",
-    "@graphql-codegen/typescript": "^5.0.10",
     "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/ext-apps": "^1.7.5",
-    "@shopify/api-codegen-preset": "^3.0.0",
     "@types/node": "^24.10.1",
-    "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
   },
   "overrides": {

@@ -437,7 +437,6 @@ test("store queues serialize same-store work and release after a failure", async
 test("all read workflows return data through versioned schema validation", async (t) => {
   const { call } = await fixture(t);
   for (const [name, args] of [
-    ["switch_shop", {}],
     ["get_store_capabilities", {}],
     ["search_products", { query: "shirt" }],
     ["get_product", { id: gid("Product") }],

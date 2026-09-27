@@ -11,7 +11,6 @@
 export const REQUIRED_SCOPES: Record<string, string[]> = {
   // src/admin-tools.ts
   shopify_get_store_capabilities: [],
-  shopify_switch_shop: [],
   shopify_search_products: ["read_products"],
   shopify_get_product: ["read_products"],
   shopify_search_collections: ["read_products"],
@@ -64,13 +63,6 @@ export const REQUIRED_SCOPES: Record<string, string[]> = {
 
   // src/discovery-tools.ts
   shopify_search_docs_chunks: [],
-  shopify_find_sample_product: [],
-
-  // src/preview-designs.ts, src/previews.ts (operate on temporary shopify_cli stores)
-  shopify_get_new_store_preview_status: [],
-  shopify_get_new_store_previews: [],
-  shopify_create_preview_store: [],
-  shopify_get_preview_store: [],
 
   // src/parity-tools.ts
   // read_products is needed to look up SKUs; write_inventory is only actually required at

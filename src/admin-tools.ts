@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { UI_META } from "./ui.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { DOCS } from "./admin-documents.js";
@@ -96,7 +95,6 @@ export function registerAdminTools(server: McpServer) {
       `shopify_${name}`,
       {
         description,
-        _meta: UI_META,
         inputSchema: z
           .object({ store, ...shape, ...(write ? { confirm } : {}) })
           .strict(),
@@ -121,16 +119,6 @@ export function registerAdminTools(server: McpServer) {
               apiVersion: w.store.apiVersion,
               ...result,
             }, false, write),
-            ...(!write
-              ? {
-                  _meta: {
-                    uiContext: {
-                      toolName: `shopify_${name}`,
-                      args: { store: w.store.alias, ...input },
-                    },
-                  },
-                }
-              : {}),
           };
         } catch (error) {
           if (w) {
@@ -165,16 +153,6 @@ export function registerAdminTools(server: McpServer) {
     {},
     false,
     async (w) => w.run(DOCS.capabilities),
-  );
-  register(
-    "switch_shop",
-    "Resolve a named store without disconnecting other stores. Continue to pass the store alias on every call.",
-    {},
-    false,
-    async (w) => ({
-      ...(await w.run(DOCS.shop)),
-      routing: "explicit_store_per_call",
-    }),
   );
   register(
     "search_products",
