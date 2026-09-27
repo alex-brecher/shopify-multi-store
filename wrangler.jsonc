@@ -1,0 +1,28 @@
+{
+  // Cloudflare Workers deployment of the hosted connector. See docs/DEPLOY-CLOUDFLARE.md.
+  // Secrets (never put them here): wrangler secret put SHOPIFY_APP_CLIENT_ID,
+  // SHOPIFY_APP_CLIENT_SECRET, SHOPIFY_TOKEN_ENCRYPTION_KEYS, STORES_JSON.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "shopify-multi-store-mcp",
+  "main": "src/workers/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  // The package version for /healthz and serverInfo; a test keeps it equal to package.json.
+  "define": { "__SMS_PACKAGE_VERSION__": "\"1.6.0\"" },
+  // A hosted server never reads the OS keychain; keep its native code out of the bundle.
+  "alias": { "cross-keychain": "./src/workers/stubs/cross-keychain.ts" },
+  // The bundled Admin schema stays gzipped in the script (one version only).
+  "rules": [{ "type": "Data", "globs": ["**/*.json.gz"], "fallthrough": false }],
+  // OAuth clients, codes, token hashes and encrypted Shopify tokens: one strongly consistent object.
+  "durable_objects": { "bindings": [{ "name": "OAUTH_STORE", "class_name": "OAuthStoreObject" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OAuthStoreObject"] }],
+  // Audit log. `wrangler deploy` creates the database on first deploy if it does not exist.
+  "d1_databases": [{ "binding": "AUDIT_DB", "database_name": "shopify-multi-store-audit" }],
+  "observability": { "enabled": true },
+  "vars": {
+    // Optional. Leave empty to use the host the Worker is reached on (workers.dev or a custom domain).
+    "MCP_PUBLIC_URL": "",
+    "SERVER_DISPLAY_NAME": "Shopify Multi-Store"
+  }
+}

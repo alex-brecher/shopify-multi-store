@@ -30,6 +30,17 @@ Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged)
 - Existing Google sign-in sessions, refresh tokens and personal access tokens
   stop working. People sign in again with Shopify.
 
+- Hosted on Cloudflare Workers (optional; local stdio stays the default):
+  `wrangler.jsonc`, `src/workers/`, and a Deploy to Cloudflare button. OAuth
+  state lives in one Durable Object (strongly consistent single-use codes,
+  refresh rotation and reuse detection), the audit log in D1, and one gzipped
+  Admin schema is bundled and inflated on first use. See
+  docs/DEPLOY-CLOUDFLARE.md. `serve` and the Dockerfile remain the "any
+  server" option; both share the settings code (`src/hosted/config.ts`).
+- Hosted internals: token encryption and Shopify HMAC use Web Crypto (the
+  stored token format is unchanged, no migration); client metadata documents
+  are fetched with plain `fetch` on Workers and with DNS pinning on Node; the
+  OS keychain is imported only on the local stdio path.
 - Hosted: per-user Shopify access. Each person's tool calls use their own
   Shopify online token for each store (`grant_options[]=per-user`), so Shopify
   enforces their permissions. Tokens are encrypted with AES-256-GCM

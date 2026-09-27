@@ -1060,5 +1060,10 @@ test("hosted docs cover every client and every serve setting", async () => {
     assert.ok(!new RegExp(`^\\| \`${removed}\``, "m").test(hosted), `${removed} is not documented as a setting`);
   }
   assert.ok(readme.includes("docs/HOSTED.md#connect-from-your-ai-app"));
-  for (const [name, text] of [["HOSTED.md", hosted], ["README.md", readme]]) assert.ok(!text.includes("—"), `${name} has no em dashes`);
+  const deploy = await readFile(new URL("../docs/DEPLOY-CLOUDFLARE.md", import.meta.url), "utf8");
+  for (const [name, text] of [["HOSTED.md", hosted], ["README.md", readme], ["DEPLOY-CLOUDFLARE.md", deploy]]) assert.ok(!text.includes("\u2014"), `${name} has no em dashes`);
+  assert.match(readme, /deploy\.workers\.cloudflare\.com\/\?url=https:\/\/github\.com\/alex-brecher\/shopify-multi-store/);
+  assert.match(deploy, /deploy\.workers\.cloudflare\.com\/\?url=/);
+  for (const secret of ["SHOPIFY_APP_CLIENT_ID", "SHOPIFY_APP_CLIENT_SECRET", "SHOPIFY_TOKEN_ENCRYPTION_KEYS", "STORES_JSON"]) assert.ok(deploy.includes(`wrangler secret put ${secret}`), secret);
+  assert.ok(deploy.includes("https://<worker-host>/shopify/callback"));
 });

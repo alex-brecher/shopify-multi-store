@@ -189,7 +189,10 @@ Local use on your own computer (above) is the default. Hosting is optional: whoe
 
 People sign in with their own Shopify staff account, and every call runs with that person's own Shopify permissions: Shopify decides what they can do, with no roles or policy file on the server. Shopify tokens stay on the server, encrypted. Reconnecting is at most once a day and one click for all stores. Every tool call is audited.
 
-Run `shopify-multi-store serve` (or the included Dockerfile) on any server and share `https://<host>/mcp`.
+Two ways to host, both self-hosted by whoever wants a shared server:
+
+- Cloudflare Workers: [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/alex-brecher/shopify-multi-store) Step-by-step in [docs/DEPLOY-CLOUDFLARE.md](docs/DEPLOY-CLOUDFLARE.md): create a Shopify app, set four secrets, deploy, add the MCP URL in your AI app.
+- Any server: run `shopify-multi-store serve` (or the included Dockerfile) and share `https://<host>/mcp`.
 
 See [Connect from your AI app](docs/HOSTED.md#connect-from-your-ai-app) for per-client steps, [docs/HOSTED.md](docs/HOSTED.md) for setup, and [docs/ACTIONS.md](docs/ACTIONS.md) for per-user access and the generic action tools.
 

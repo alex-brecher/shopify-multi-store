@@ -540,9 +540,12 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
                 method: "POST",
                 headers: { "content-type": "application/json", accept: "application/json" },
                 body: JSON.stringify({ client_id: this.options.clientId(store), client_secret: secret, code }),
-                redirect: "error",
+                // "manual" and a status check rather than "error", which Workers' fetch does not accept.
+                redirect: "manual",
                 signal: AbortSignal.timeout(15_000)
             });
+            if (response.status >= 300 && response.status < 400)
+                throw new Error(`HTTP ${response.status} redirect`);
             payload = await response.json().catch(() => ({}));
             if (!response.ok || typeof payload.access_token !== "string")
                 throw new Error(`HTTP ${response.status}`);

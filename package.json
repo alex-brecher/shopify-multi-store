@@ -75,7 +75,9 @@
     "test:live": "npm run build && node scripts/live-smoke-test.mjs",
     "prepack": "npm run sync:skills && npm test",
     "codegen": "tsc && node scripts/codegen.mjs",
-    "typecheck": "tsc --noEmit --skipLibCheck false"
+    "typecheck": "tsc --noEmit --skipLibCheck false",
+    "deploy": "wrangler deploy",
+    "worker:check": "wrangler deploy --dry-run --outdir .wrangler/dry-run"
   },
   "engines": {
     "node": ">=20"
@@ -95,7 +97,8 @@
     "@shopify/api-codegen-preset": "^3.0.0",
     "@types/node": "^24.10.1",
     "esbuild": "^0.28.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "wrangler": "^4.142.0"
   },
   "overrides": {
     "lodash": "^4.18.1"

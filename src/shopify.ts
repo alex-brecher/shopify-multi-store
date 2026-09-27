@@ -11,7 +11,11 @@ const CHARACTER_LIMIT = 50_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_THROTTLE_RETRIES = 3;
 const MAX_RETRY_DELAY_MS = 60_000;
-export const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
+/** Set at bundle time by wrangler.jsonc `define` for the Cloudflare Worker, which has no package.json on disk. */
+declare const __SMS_PACKAGE_VERSION__: string | undefined;
+export const PACKAGE_VERSION = typeof __SMS_PACKAGE_VERSION__ === "string"
+  ? __SMS_PACKAGE_VERSION__
+  : String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "unknown");
 
 /**
  * Shopify throttled a mutation before running it (HTTP 429 or a THROTTLED error with no data).
