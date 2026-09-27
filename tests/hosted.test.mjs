@@ -994,3 +994,37 @@ test("PERSONAL_TOKENS_ENABLED=0 turns off the page and bearer use", async (t) =>
   assert.equal((await call(app, "/tokens")).status, 404);
   assert.equal((await mcpPost(app, `smsp_${"A".repeat(43)}`)).status, 401);
 });
+
+test("SERVER_DISPLAY_NAME names the MCP server, resource metadata, consent and tokens pages", async (t) => {
+  const { app } = await setup(t, { displayName: "Acme <Ops>" });
+  const metadata = await (await call(app, "/.well-known/oauth-protected-resource")).json();
+  assert.equal(metadata.resource_name, "Acme <Ops>");
+  const { body: client } = await registerClient(app);
+  const page = await startToCallback(app, { clientId: client.client_id, account: "admin|bariatricpal.com" });
+  const { html } = await consentForm(page.clone());
+  assert.ok(html.includes("Acme &lt;Ops&gt;") && !html.includes("Acme <Ops>"));
+  const approved = await submitConsent(app, page);
+  const code = new URL(approved.headers.get("location")).searchParams.get("code");
+  assert.ok(code);
+  const session = await tokensSession(app, "admin|bariatricpal.com");
+  assert.ok(session.html.includes("Acme &lt;Ops&gt;"));
+  const { token } = await session.create("display");
+  const mcp = await mcpClient(t, app, token);
+  assert.equal(mcp.getServerVersion().title, "Acme <Ops>");
+  assert.equal(mcp.getServerVersion().name, "shopify-multi-store-mcp-server");
+
+  const { app: plain } = await setup(t);
+  assert.equal((await (await call(plain, "/.well-known/oauth-protected-resource")).json()).resource_name, "Shopify Multi-Store");
+
+  const dir = await mkdtemp(join(tmpdir(), "sms-env-"));
+  const policyPath = join(dir, "policy.json");
+  await writeFile(policyPath, JSON.stringify(POLICY));
+  const base = { MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_MULTI_STORE_POLICY: policyPath, GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "s", SHOPIFY_MULTI_STORE_DATA_DIR: dir };
+  const named = (await buildHostedAppFromEnv({ ...base, SERVER_DISPLAY_NAME: "Netrition Stores" })).app;
+  t.after(() => named.close());
+  assert.equal(named.auth.displayName, "Netrition Stores");
+  const unnamed = (await buildHostedAppFromEnv(base)).app;
+  t.after(() => unnamed.close());
+  assert.equal(unnamed.auth.displayName, "Shopify Multi-Store");
+  await assert.rejects(buildHostedAppFromEnv({ ...base, SERVER_DISPLAY_NAME: "bad\nname" }), /SERVER_DISPLAY_NAME/);
+});

@@ -5,6 +5,7 @@ import type { AuditLog, AuthAuditEntry } from "./audit.js";
 import { RedirectPolicy, isLoopbackRedirect, type RedirectClass } from "./known-clients.js";
 export { isLoopbackRedirect };
 export declare const SCOPE = "mcp";
+export declare const DEFAULT_DISPLAY_NAME = "Shopify Multi-Store";
 /** Built-in redirect URIs. See known-clients.ts. */
 export declare const DEFAULT_REDIRECT_URIS: readonly string[];
 /** Client ID Metadata Document hosts. "*" allows any HTTPS host; every fetch is limited to public addresses. */
@@ -45,7 +46,7 @@ export interface AuthServerOptions {
     log?: (message: string) => void;
     /** Receives sign-in and token events. Tokens and codes are never passed. */
     audit?: AuditLog;
-    /** Name shown on the consent page and in resource metadata. */
+    /** Name shown on the consent page, the tokens page, resource metadata and serverInfo.title. */
     displayName?: string;
 }
 export interface ClientRecord {

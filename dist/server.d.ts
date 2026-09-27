@@ -6,6 +6,8 @@ export interface CreateServerOptions {
      * Stdio mode passes nothing, so local behavior is unchanged.
      */
     beforeRegister?: (server: McpServer) => void;
+    /** Display name reported as serverInfo.title. Hosted mode sets it from SERVER_DISPLAY_NAME; stdio leaves it unset. */
+    title?: string;
 }
 /** Build a fully registered MCP server. Used by stdio (one per process) and HTTP (one per request). */
 export declare function createServer(options?: CreateServerOptions): McpServer;

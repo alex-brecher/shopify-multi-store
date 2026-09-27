@@ -6,7 +6,7 @@ import { FileAuditLog } from "./hosted/audit.js";
 import { googleLogin } from "./hosted/google.js";
 import { toNodeListener } from "./hosted/node-adapter.js";
 import { redirectListFromEnv } from "./hosted/known-clients.js";
-import { DEFAULT_CIMD_HOSTS } from "./hosted/oauth.js";
+import { DEFAULT_CIMD_HOSTS, DEFAULT_DISPLAY_NAME } from "./hosted/oauth.js";
 import { FilePolicySource } from "./hosted/policy.js";
 import { FileStore } from "./hosted/store.js";
 import { enableHostedMode } from "./runtime.js";
@@ -50,6 +50,13 @@ function positiveInt(env: NodeJS.ProcessEnv, name: string, fallback: number): nu
   return value;
 }
 
+function displayName(env: NodeJS.ProcessEnv): string {
+  const value = env.SERVER_DISPLAY_NAME?.trim();
+  if (!value) return DEFAULT_DISPLAY_NAME;
+  if (value.length > 100 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error("SERVER_DISPLAY_NAME must be 1 to 100 characters with no control characters.");
+  return value;
+}
+
 function personalTokenMaxDays(env: NodeJS.ProcessEnv): number {
   const days = positiveInt(env, "PERSONAL_TOKEN_MAX_DAYS", 180);
   if (days > 3650) throw new Error("PERSONAL_TOKEN_MAX_DAYS must be at most 3650.");
@@ -83,6 +90,7 @@ export async function buildHostedAppFromEnv(env: NodeJS.ProcessEnv = process.env
     ...(allowedDomains.length === 1 ? { hostedDomainHint: allowedDomains[0] } : {})
   });
   const app = createHostedApp({
+    displayName: displayName(env),
     issuer: origin,
     resource: `${origin}/mcp`,
     google,

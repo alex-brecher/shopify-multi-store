@@ -62,13 +62,16 @@ export interface CreateServerOptions {
    * Stdio mode passes nothing, so local behavior is unchanged.
    */
   beforeRegister?: (server: McpServer) => void;
+  /** Display name reported as serverInfo.title. Hosted mode sets it from SERVER_DISPLAY_NAME; stdio leaves it unset. */
+  title?: string;
 }
 
 /** Build a fully registered MCP server. Used by stdio (one per process) and HTTP (one per request). */
 export function createServer(options: CreateServerOptions = {}): McpServer {
   const server = new McpServer({
     name: "shopify-multi-store-mcp-server",
-    version: PACKAGE_VERSION
+    version: PACKAGE_VERSION,
+    ...(options.title ? { title: options.title } : {})
   });
   options.beforeRegister?.(server);
   registerUI(server);

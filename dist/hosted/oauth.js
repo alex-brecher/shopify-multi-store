@@ -7,6 +7,7 @@ import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDispla
 import { cookie, escapeHtml, formActionSource, htmlPage, readCookie, sameOrigin } from "./html.js";
 export { isLoopbackRedirect };
 export const SCOPE = "mcp";
+export const DEFAULT_DISPLAY_NAME = "Shopify Multi-Store";
 /** Built-in redirect URIs. See known-clients.ts. */
 export const DEFAULT_REDIRECT_URIS = KNOWN_REDIRECT_URIS;
 /** Client ID Metadata Document hosts. "*" allows any HTTPS host; every fetch is limited to public addresses. */
@@ -76,7 +77,7 @@ export class AuthorizationServer {
         this.issuer = trimSlash(options.issuer);
         this.resource = trimSlash(options.resource);
         this.googleRedirectUri = `${this.issuer}/oauth/google/callback`;
-        this.displayName = options.displayName ?? "Shopify Multi-Store";
+        this.displayName = options.displayName ?? DEFAULT_DISPLAY_NAME;
         this.redirects = new RedirectPolicy({
             exact: options.redirectAllowlist ?? KNOWN_REDIRECT_URIS,
             allowLoopback: options.allowLoopbackRedirects ?? true,
@@ -110,7 +111,7 @@ export class AuthorizationServer {
             authorization_servers: [this.issuer],
             scopes_supported: [SCOPE],
             bearer_methods_supported: ["header"],
-            resource_name: "Shopify Multi-Store"
+            resource_name: this.displayName
         };
     }
     authorizationServerMetadata() {

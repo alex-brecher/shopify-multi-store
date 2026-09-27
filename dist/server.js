@@ -37,7 +37,8 @@ function failure(error) {
 export function createServer(options = {}) {
     const server = new McpServer({
         name: "shopify-multi-store-mcp-server",
-        version: PACKAGE_VERSION
+        version: PACKAGE_VERSION,
+        ...(options.title ? { title: options.title } : {})
     });
     options.beforeRegister?.(server);
     registerUI(server);

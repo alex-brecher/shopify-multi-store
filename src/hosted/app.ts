@@ -66,7 +66,7 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
     const principal = context.authInfo?.extra?.principal as Principal | undefined;
     if (!principal) throw new Error("Unauthenticated MCP request reached the server factory.");
     const tokenId = context.authInfo?.extra?.tokenId as string | undefined;
-    return createServer({ beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, ...(tokenId ? { tokenId } : {}) }) });
+    return createServer({ title: auth.displayName, beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, ...(tokenId ? { tokenId } : {}) }) });
   }, {
     legacy: "stateless",
     onerror: (error) => process.stderr.write(`MCP error: ${error.message}\n`)
