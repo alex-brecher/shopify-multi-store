@@ -3,11 +3,11 @@ import { lookup as dnsLookup } from "node:dns";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP } from "node:net";
 import { checkGoogleIdentity } from "./google.js";
+import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect } from "./known-clients.js";
+export { isLoopbackRedirect };
 export const SCOPE = "mcp";
-export const DEFAULT_REDIRECT_URIS = [
-    "https://claude.ai/api/mcp/auth_callback",
-    "https://claude.com/api/mcp/auth_callback"
-];
+/** Built-in redirect URIs. See known-clients.ts. */
+export const DEFAULT_REDIRECT_URIS = KNOWN_REDIRECT_URIS;
 export const DEFAULT_CIMD_HOSTS = ["claude.ai", "claude.com"];
 const PENDING_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 2 * 60_000;
@@ -48,24 +48,12 @@ export function errorPage(status, message) {
 function redirect(location) {
     return new Response(null, { status: 302, headers: { location, ...NO_STORE } });
 }
-/** Loopback redirect per RFC 8252 section 7.3: http, a loopback host, any port and path. */
-export function isLoopbackRedirect(uri) {
-    let url;
-    try {
-        url = new URL(uri);
-    }
-    catch {
-        return false;
-    }
-    return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) && !url.username && !url.password && !url.hash;
-}
 export class AuthorizationServer {
     options;
     issuer;
     resource;
     googleRedirectUri;
-    redirectAllowlist;
-    allowLoopback;
+    redirects;
     cimdHosts;
     accessTtlMs;
     refreshTtlMs;
@@ -81,8 +69,11 @@ export class AuthorizationServer {
         this.issuer = trimSlash(options.issuer);
         this.resource = trimSlash(options.resource);
         this.googleRedirectUri = `${this.issuer}/oauth/google/callback`;
-        this.redirectAllowlist = options.redirectAllowlist ?? DEFAULT_REDIRECT_URIS;
-        this.allowLoopback = options.allowLoopbackRedirects ?? true;
+        this.redirects = new RedirectPolicy({
+            exact: options.redirectAllowlist ?? KNOWN_REDIRECT_URIS,
+            allowLoopback: options.allowLoopbackRedirects ?? true,
+            allowAny: options.allowAnyRedirect ?? false
+        });
         this.cimdHosts = (options.cimdAllowedHosts ?? DEFAULT_CIMD_HOSTS).map((host) => host.toLowerCase());
         this.accessTtlMs = (options.accessTokenTtlSeconds ?? 3600) * 1000;
         this.refreshTtlMs = (options.refreshTokenTtlSeconds ?? 30 * 24 * 3600) * 1000;
@@ -131,9 +122,10 @@ export class AuthorizationServer {
         };
     }
     redirectUriAllowed(uri) {
-        if (this.redirectAllowlist.includes(uri))
-            return true;
-        return this.allowLoopback && isLoopbackRedirect(uri);
+        return this.redirects.allowed(uri);
+    }
+    redirectUriClass(uri) {
+        return this.redirects.classify(uri);
     }
     resourceMatches(value) {
         return trimSlash(value) === this.resource;
@@ -332,7 +324,7 @@ export class AuthorizationServer {
         const loginState = url.searchParams.get("state");
         const pending = loginState ? await this.options.store.take("pending", loginState) : undefined;
         if (!pending)
-            return errorPage(400, "This sign-in link expired or was already used. Start again from Claude.");
+            return errorPage(400, "This sign-in link expired or was already used. Start again from your AI app.");
         const back = (params) => redirect(this.clientRedirect(pending.redirectUri, { ...params, state: pending.clientState }));
         if (url.searchParams.get("error"))
             return back({ error: "access_denied", error_description: "Google sign-in was cancelled or failed." });

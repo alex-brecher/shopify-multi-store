@@ -5,7 +5,8 @@ import { createHostedApp } from "./hosted/app.js";
 import { FileAuditLog } from "./hosted/audit.js";
 import { googleLogin } from "./hosted/google.js";
 import { toNodeListener } from "./hosted/node-adapter.js";
-import { DEFAULT_CIMD_HOSTS, DEFAULT_REDIRECT_URIS } from "./hosted/oauth.js";
+import { redirectListFromEnv } from "./hosted/known-clients.js";
+import { DEFAULT_CIMD_HOSTS } from "./hosted/oauth.js";
 import { FilePolicySource } from "./hosted/policy.js";
 import { FileStore } from "./hosted/store.js";
 import { enableHostedMode } from "./runtime.js";
@@ -35,6 +36,9 @@ function list(value) {
     if (value === undefined)
         return undefined;
     return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+function flag(value) {
+    return value !== undefined && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 function positiveInt(env, name, fallback) {
     const raw = env[name];
@@ -73,8 +77,10 @@ export async function buildHostedAppFromEnv(env = process.env) {
         policy,
         store,
         audit,
-        redirectAllowlist: list(env.OAUTH_REDIRECT_URIS) ?? DEFAULT_REDIRECT_URIS,
+        // OAUTH_REDIRECT_URIS adds to the built-in known clients; OAUTH_REDIRECT_URIS_REPLACE=1 replaces them.
+        redirectAllowlist: redirectListFromEnv(list(env.OAUTH_REDIRECT_URIS), flag(env.OAUTH_REDIRECT_URIS_REPLACE)),
         allowLoopbackRedirects: env.OAUTH_ALLOW_LOOPBACK_REDIRECTS !== "0",
+        allowAnyRedirect: flag(env.OAUTH_ALLOW_ANY_REDIRECT),
         cimdAllowedHosts: list(env.OAUTH_CIMD_ALLOWED_HOSTS) ?? DEFAULT_CIMD_HOSTS,
         accessTokenTtlSeconds: positiveInt(env, "OAUTH_ACCESS_TOKEN_TTL_SECONDS", 3600),
         refreshTokenTtlSeconds: positiveInt(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS", 30 * 24 * 3600),

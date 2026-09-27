@@ -15,6 +15,9 @@ import { fetchMetadataDocument, isForbiddenAddress } from "../dist/hosted/oauth.
 import { staticPolicy } from "../dist/hosted/policy.js";
 import { FileStore, MemoryStore } from "../dist/hosted/store.js";
 import { enableHostedMode } from "../dist/runtime.js";
+import { KNOWN_CLIENT_REDIRECTS, RedirectPolicy, isSafePrivateUseRedirect, redirectListFromEnv } from "../dist/hosted/known-clients.js";
+import { buildHostedAppFromEnv } from "../dist/serve.js";
+import { writeFile } from "node:fs/promises";
 
 // This file runs in its own process (node --test isolates files), so hosted mode stays contained.
 enableHostedMode();
@@ -614,4 +617,67 @@ test("file store persists atomically and serves over node:http", async (t) => {
   assert.equal((await health.json()).ok, true);
   const tooLarge = await fetch(`${base}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: "x".repeat(4096) });
   assert.equal(tooLarge.status, 413);
+});
+
+test("redirect policy accepts known MCP clients and loopback by default", async (t) => {
+  const policy = new RedirectPolicy();
+  for (const uri of [
+    "https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback",
+    "https://chatgpt.com/connector_platform_oauth_redirect", "https://vscode.dev/redirect",
+    "https://insiders.vscode.dev/redirect", "cursor://anysphere.cursor-mcp/oauth/callback"
+  ]) assert.equal(policy.classify(uri), "listed", uri);
+  for (const uri of ["http://localhost:33418/callback", "http://127.0.0.1:8976/oauth/callback", "http://[::1]:1234/x"]) assert.equal(policy.classify(uri), "loopback", uri);
+  for (const uri of ["https://evil.example/callback", "https://chatgpt.com/aip/g-1/oauth/callback", "http://evil.example/cb", "myapp://cb", "http://localhost:1/cb#frag"]) {
+    assert.equal(policy.classify(uri), null, uri);
+  }
+  assert.ok(KNOWN_CLIENT_REDIRECTS.every((entry) => entry.client && entry.uri));
+
+  const { app } = await setup(t);
+  for (const uri of ["https://chatgpt.com/connector_platform_oauth_redirect", "cursor://anysphere.cursor-mcp/oauth/callback", "https://vscode.dev/redirect"]) {
+    const { response } = await registerClient(app, { redirect_uris: [uri] });
+    assert.equal(response.status, 201, uri);
+  }
+});
+
+test("OAUTH_ALLOW_ANY_REDIRECT admits https and safe custom schemes but never dangerous ones", async (t) => {
+  const policy = new RedirectPolicy({ allowAny: true });
+  for (const uri of ["https://app.example.com/oauth/cb", "com.example.app:/oauth2redirect", "vendorapp://ide.example/mcp/callback"]) assert.equal(policy.classify(uri), "open", uri);
+  for (const uri of [
+    "javascript:alert(1)", "JavaScript://x/%0aalert(1)", "data:text/html,hi", "file:///etc/passwd", "http://evil.example/cb",
+    "httpx://evil.example/cb", "https.evil://cb", "hxxps://cb", "vbscript:x", "blob:https://x/1", "ws://x/", "myapp://user:pw@host/cb",
+    "myapp://host/cb#frag", "my app://cb", "https://user@evil.example/cb"
+  ]) {
+    assert.equal(policy.classify(uri), null, uri);
+  }
+  assert.equal(isSafePrivateUseRedirect("cursor://anysphere.cursor-mcp/oauth/callback"), true);
+
+  const { app } = await setup(t, { allowAnyRedirect: true });
+  assert.equal((await registerClient(app, { redirect_uris: ["https://app.example.com/cb"] })).response.status, 201);
+  assert.equal((await registerClient(app, { redirect_uris: ["javascript:alert(1)"] })).response.status, 400);
+});
+
+test("OAUTH_REDIRECT_URIS adds to the built-ins unless OAUTH_REDIRECT_URIS_REPLACE is set", async (t) => {
+  const added = redirectListFromEnv(["https://tools.example.com/cb"], false);
+  assert.ok(added.includes("https://claude.ai/api/mcp/auth_callback"));
+  assert.ok(added.includes("https://tools.example.com/cb"));
+  assert.deepEqual(redirectListFromEnv(["https://tools.example.com/cb"], true), ["https://tools.example.com/cb"]);
+
+  const dir = await mkdtemp(join(tmpdir(), "sms-env-"));
+  const policyPath = join(dir, "policy.json");
+  await writeFile(policyPath, JSON.stringify(POLICY));
+  const base = {
+    MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_MULTI_STORE_POLICY: policyPath,
+    GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret", SHOPIFY_MULTI_STORE_DATA_DIR: dir
+  };
+  const additive = (await buildHostedAppFromEnv({ ...base, OAUTH_REDIRECT_URIS: "https://tools.example.com/cb" })).app;
+  t.after(() => additive.close());
+  assert.equal(additive.auth.redirectUriClass("https://tools.example.com/cb"), "listed");
+  assert.equal(additive.auth.redirectUriClass("https://chatgpt.com/connector_platform_oauth_redirect"), "listed");
+  assert.equal(additive.auth.redirectUriClass("https://other.example.com/cb"), null);
+  const replaced = (await buildHostedAppFromEnv({ ...base, OAUTH_REDIRECT_URIS: "https://tools.example.com/cb", OAUTH_REDIRECT_URIS_REPLACE: "1" })).app;
+  t.after(() => replaced.close());
+  assert.equal(replaced.auth.redirectUriClass("https://claude.ai/api/mcp/auth_callback"), null);
+  const open = (await buildHostedAppFromEnv({ ...base, OAUTH_ALLOW_ANY_REDIRECT: "1" })).app;
+  t.after(() => open.close());
+  assert.equal(open.auth.redirectUriClass("https://other.example.com/cb"), "open");
 });

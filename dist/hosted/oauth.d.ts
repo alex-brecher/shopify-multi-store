@@ -2,8 +2,11 @@ import { type GoogleLogin } from "./google.js";
 import type { Principal, PolicySource } from "./policy.js";
 import type { OAuthStore } from "./store.js";
 import type { AuditLog, AuthAuditEntry } from "./audit.js";
+import { RedirectPolicy, isLoopbackRedirect, type RedirectClass } from "./known-clients.js";
+export { isLoopbackRedirect };
 export declare const SCOPE = "mcp";
-export declare const DEFAULT_REDIRECT_URIS: string[];
+/** Built-in redirect URIs. See known-clients.ts. */
+export declare const DEFAULT_REDIRECT_URIS: readonly string[];
 export declare const DEFAULT_CIMD_HOSTS: string[];
 declare const AUTH_METHODS: readonly ["none", "client_secret_post", "client_secret_basic"];
 type AuthMethod = (typeof AUTH_METHODS)[number];
@@ -16,8 +19,14 @@ export interface AuthServerOptions {
     allowedDomains: string[];
     policy: PolicySource;
     store: OAuthStore;
-    redirectAllowlist?: string[];
+    /** Exact redirect URIs accepted. Defaults to the built-in known clients (known-clients.ts). */
+    redirectAllowlist?: readonly string[];
     allowLoopbackRedirects?: boolean;
+    /**
+     * Accept any https or private-use-scheme redirect a client registers (DCR or CIMD).
+     * Redirects admitted only by this always show the consent screen.
+     */
+    allowAnyRedirect?: boolean;
     /** Hosts allowed to serve Client ID Metadata Documents. "*" allows any HTTPS host. */
     cimdAllowedHosts?: string[];
     /** Fetches a Client ID Metadata Document. Injected by tests; defaults to a bounded HTTPS fetch. */
@@ -57,15 +66,12 @@ export interface AccessRecord {
 }
 export declare function sha256(value: string): string;
 export declare function errorPage(status: number, message: string): Response;
-/** Loopback redirect per RFC 8252 section 7.3: http, a loopback host, any port and path. */
-export declare function isLoopbackRedirect(uri: string): boolean;
 export declare class AuthorizationServer {
     private readonly options;
     readonly issuer: string;
     readonly resource: string;
     readonly googleRedirectUri: string;
-    private readonly redirectAllowlist;
-    private readonly allowLoopback;
+    readonly redirects: RedirectPolicy;
     private readonly cimdHosts;
     private readonly accessTtlMs;
     private readonly refreshTtlMs;
@@ -83,6 +89,7 @@ export declare class AuthorizationServer {
     protectedResourceMetadata(): Record<string, unknown>;
     authorizationServerMetadata(): Record<string, unknown>;
     redirectUriAllowed(uri: string): boolean;
+    redirectUriClass(uri: string): RedirectClass | null;
     private resourceMatches;
     register(request: Request): Promise<Response>;
     private resolveClient;
@@ -111,4 +118,3 @@ export declare function isForbiddenAddress(address: string): boolean;
 export declare function fetchMetadataDocument(url: string, { restrictAddresses }?: {
     restrictAddresses?: boolean;
 }): Promise<unknown>;
-export {};
