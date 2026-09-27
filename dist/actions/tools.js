@@ -10,6 +10,7 @@ import { currentUserAccess, storeScope } from "../runtime.js";
 import { adminSchema } from "../schema.js";
 import { adminGraphql, MutationThrottledError } from "../shopify.js";
 import { actionCatalog, buildDocument, CATEGORIES, describeAction, denylist, findMutation, isDenied, isDestructive, scopeHint, searchCatalog, } from "./catalog.js";
+import { evaluateOutcome, instrumentMutation, RESERVED_ALIAS_PREFIX } from "./outcomes.js";
 const StoreAlias = z.string().min(1).max(64);
 const ApiVersion = z.string().regex(/^\d{4}-(01|04|07|10)$/).describe("Admin API version, such as 2026-04. Defaults to the store's version, or the server default.");
 const Variables = z.record(z.string(), z.unknown());
@@ -120,22 +121,6 @@ export function resolveQuery(schema, ids) {
     }
     return `query ResolveActionTargets($ids: [ID!]!) { nodes(ids: $ids) { __typename id ${fragments.join(" ")} } }`;
 }
-/** Every entry of every *userErrors list in the response data. */
-export function collectUserErrors(value, path = [], out = [], depth = 0) {
-    if (depth > 30 || !value || typeof value !== "object")
-        return out;
-    if (Array.isArray(value)) {
-        value.forEach((item, index) => collectUserErrors(item, [...path, String(index)], out, depth + 1));
-        return out;
-    }
-    for (const [key, child] of Object.entries(value)) {
-        if (/userErrors$/i.test(key) && Array.isArray(child))
-            out.push(...child.map((error) => ({ path: [...path, key], error })));
-        else
-            collectUserErrors(child, [...path, key], out, depth + 1);
-    }
-    return out;
-}
 /** Turn Shopify ACCESS_DENIED errors (or HTTP 403) into a plain sentence naming the scope and store. */
 export function accessDeniedMessage(errors, alias, mutations) {
     const list = Array.isArray(errors) ? errors : [];
@@ -174,6 +159,50 @@ export function actionPolicyError(mutations, confirm, applying) {
         return `${expected} is destructive. Run a dry run first, then pass confirm: "${expected}" with dryRun: false.`;
     }
     return undefined;
+}
+/**
+ * Send one mutation document to one store with every root's error lists injected, and judge each
+ * root on its own. Used by shopify_graphql_mutation. When the document cannot be checked against
+ * the schema (it does not validate, or the schema cannot be loaded), it is sent unchanged, as
+ * before, and the result says the outcome was not analyzed.
+ */
+export async function sendMutationWithOutcome(store, document, variables) {
+    let instrumented;
+    let skipped = "";
+    try {
+        const schema = await adminSchema(store.apiVersion);
+        const shape = parseActionDocument(document);
+        const validation = validate(schema, shape.ast);
+        const coerced = validation.length ? undefined : getVariableValues(schema, shape.operation.variableDefinitions ?? [], variables);
+        if (validation.length)
+            skipped = `The document does not validate against Admin API ${store.apiVersion}.`;
+        else if (coerced?.errors)
+            skipped = "The variables do not match the document.";
+        else
+            instrumented = instrumentMutation(schema, shape.ast, coerced?.coerced ?? {});
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes(RESERVED_ALIAS_PREFIX))
+            throw error;
+        skipped = message;
+    }
+    const envelope = await adminGraphql(store, instrumented?.document ?? document, variables);
+    if (!instrumented) {
+        return { ...envelope, outcomeNotice: `Per-field outcome not analyzed: ${skipped}`.slice(0, 500) };
+    }
+    const report = evaluateOutcome(instrumented.roots, envelope);
+    const { userErrors: _ignored, ...rest } = envelope;
+    void _ignored;
+    return {
+        ...rest,
+        data: report.data,
+        ...(report.userErrors.length ? { userErrors: report.userErrors } : {}),
+        outcome: report.outcome,
+        roots: report.roots,
+        ...(report.outcome === "partial" || report.outcome === "unknown" ? { applied: report.applied, rejected: report.rejected, unknown: report.unknown } : {}),
+        ...(report.advice ? { advice: report.advice } : {}),
+    };
 }
 // ---------- Tools ----------
 export function registerActionTools(server) {
@@ -317,6 +346,10 @@ export function registerActionTools(server) {
                     if (coerced.errors)
                         plan.errors.push(...coerced.errors.slice(0, 20).map((error) => `Variables: ${error.message}`));
                     plan.variables = variables;
+                    // The document actually sent carries every root's error lists under reserved aliases.
+                    const instrumented = instrumentMutation(schema, shape.ast, coerced.coerced ?? {});
+                    plan.sent = instrumented.document;
+                    plan.roots = instrumented.roots;
                 }
                 catch (error) {
                     plan.errors.push(error instanceof Error ? error.message : String(error));
@@ -385,7 +418,7 @@ export function registerActionTools(server) {
             const outcomes = await mapConcurrent(plans, async (plan) => {
                 let envelope;
                 try {
-                    envelope = await adminGraphql(plan.store, plan.document, plan.variables);
+                    envelope = await adminGraphql(plan.store, plan.sent, plan.variables);
                 }
                 catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
@@ -401,21 +434,23 @@ export function registerActionTools(server) {
                         ...(forbidden ? {} : { notice: "Read the affected records before retrying. The mutation might have applied." }),
                     };
                 }
-                const userErrors = collectUserErrors(envelope.data);
                 const errors = Array.isArray(envelope.errors) ? envelope.errors : [];
                 const denied = accessDeniedMessage(errors, plan.alias, mutations);
-                const success = errors.length === 0 && userErrors.length === 0;
+                const report = evaluateOutcome(plan.roots, envelope);
                 return {
                     store: plan.alias,
-                    ok: success,
-                    // "rejected": Shopify returned userErrors (normally nothing changed). "partial": top-level
-                    // errors alongside data, so some of a multi-field document may have applied.
-                    outcome: success ? "applied" : errors.length ? (envelope.data && Object.values(envelope.data).some((value) => value != null) ? "partial" : "failed") : "rejected",
+                    ok: report.outcome === "applied",
+                    // Judged per root: "applied" (every root applied), "rejected" (every root refused,
+                    // nothing changed), "partial" (some applied), "unknown" (none known to have applied).
+                    outcome: report.outcome,
+                    roots: report.roots,
+                    ...(report.outcome === "partial" || report.outcome === "unknown" ? { applied: report.applied, rejected: report.rejected, unknown: report.unknown } : {}),
+                    ...(report.advice ? { advice: report.advice } : {}),
                     ...(denied ? { error: denied } : {}),
-                    ...(userErrors.length ? { userErrors } : {}),
+                    ...(report.userErrors.length ? { userErrors: report.userErrors } : {}),
                     ...(errors.length ? { errors } : {}),
                     ...(plan.warnings.length ? { warnings: plan.warnings } : {}),
-                    result: { data: envelope.data, requestId: envelope.requestId, elapsedMs: envelope.elapsedMs },
+                    result: { data: report.data, requestId: envelope.requestId, elapsedMs: envelope.elapsedMs },
                 };
             }, RUN_CONCURRENCY);
             await audit(outcomes.map((outcome) => ({

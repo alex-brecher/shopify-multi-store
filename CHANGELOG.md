@@ -24,6 +24,13 @@ person to their own staff permissions.
   `SHOPIFY_APP_CLIENT_SECRET`, `SHOPIFY_APP_SCOPES`,
   `SHOPIFY_REQUIRE_EMAIL_MATCH`. `SHOPIFY_ACCESS_MODE=app` keeps the previous
   behavior.
+- `shopify_run_action` and `shopify_graphql_mutation` judge each top-level
+  mutation field on its own. The server injects every payload error list under
+  a reserved `smsUserErrors_<field>` alias before sending, so an aliased or
+  unselected `userErrors` can no longer hide a rejection. A store's outcome is
+  `applied`, `rejected`, `partial`, or `unknown`; for `partial` and `unknown`
+  the result lists which roots applied and advises retrying only the rejected
+  roots in a new document, never rerunning the whole document.
 - Add `shopify_find_actions`, `shopify_describe_action`, and
   `shopify_run_action`: search, describe, and run any Admin API mutation on up
   to 100 stores, with dry runs that resolve every record ID, confirm for

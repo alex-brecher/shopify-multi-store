@@ -5,7 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { parse, validate } from "graphql";
 import { CATEGORIES, actionCatalog, buildDocument, classifyMutation, isDestructive, mutationFields } from "../dist/actions/catalog.js";
-import { registerActionTools } from "../dist/actions/tools.js";
+import { registerActionTools, sendMutationWithOutcome } from "../dist/actions/tools.js";
+import { findStore } from "../dist/config.js";
 import { adminSchema } from "../dist/schema.js";
 
 const BUNDLED = ["2026-04", "2026-07"];
@@ -285,13 +286,14 @@ test("ACCESS_DENIED becomes a sentence naming the missing scope and the store", 
   assert.equal(result.isError, true);
   const outcome = result.structuredContent.results[0];
   assert.equal(outcome.ok, false);
-  assert.equal(outcome.outcome, "failed");
+  assert.equal(outcome.outcome, "rejected");
+  assert.equal(outcome.roots[0].reason, "access denied");
   assert.equal(outcome.error, "Your Shopify account or the app lacks write_gift_cards on main. Add the scope to the app and reinstall or re-authorize it.");
 });
 
 test("userErrors from any *UserErrors list mark the store as rejected", async (t) => {
   const { callTool } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
-    ? { data: { orderCancel: { job: null, orderCancelUserErrors: [{ field: ["orderId"], message: "Order is already cancelled", code: "INVALID" }], userErrors: [] } } }
+    ? { data: { orderCancel: { job: null, orderCancelUserErrors: [{ field: ["orderId"], message: "Order is already cancelled", code: "INVALID" }], userErrors: [], smsUserErrors_orderCancelUserErrors: [{ field: ["orderId"], message: "Order is already cancelled", code: "INVALID" }], smsUserErrors_userErrors: [] } } }
     : undefined);
   const result = await callTool("shopify_run_action", { stores: ["main"], mutation: "orderCancel", dryRun: false, confirm: "orderCancel", variables: { orderId: "gid://shopify/Order/5", restock: false, reason: "OTHER" } });
   assert.equal(result.isError, true);
@@ -361,4 +363,131 @@ test("a throttled mutation is not resent and is reported as not applied, safe to
   const again = await callTool("shopify_run_action", { stores: ["main"], mutation: "tagsAdd", dryRun: false, variables: { id: "gid://shopify/Product/1", tags: ["x"] } });
   assert.equal(again.structuredContent.results[0].outcome, "throttled");
   assert.equal(mutationCalls, 1);
+});
+
+// ---------- Per-root outcomes ----------
+
+const TAGS = (key, id) => `${key}: tagsAdd(id: "${id}", tags: ["x"]) { node { id } }`;
+const tagsPayload = (id, userErrors = []) => ({ node: userErrors.length ? null : { id }, smsUserErrors_userErrors: userErrors });
+const run = (callTool, document) => callTool("shopify_run_action", { stores: ["main"], document, dryRun: false });
+
+test("an aliased userErrors selection is still detected, through the injected reserved alias", async (t) => {
+  const { callTool, requests } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { t: { node: null, e: [{ message: "Tag is too long" }], smsUserErrors_userErrors: [{ field: ["tags"], message: "Tag is too long" }] } } }
+    : undefined);
+  const result = await run(callTool, "mutation { t: tagsAdd(id: \"gid://shopify/Product/1\", tags: [\"x\"]) { node { id } e: userErrors { message } } }");
+  assert.equal(result.isError, true);
+  const sent = mutationRequests(requests)[0].query;
+  assert.match(sent, /smsUserErrors_userErrors: userErrors \{\s*field\s+message\s*\}/);
+  const outcome = result.structuredContent.results[0];
+  assert.equal(outcome.outcome, "rejected");
+  assert.deepEqual(outcome.userErrors, [{ path: ["t", "userErrors"], error: { field: ["tags"], message: "Tag is too long" } }]);
+  assert.equal(outcome.result.data.t.smsUserErrors_userErrors, undefined, "injected keys are removed from the data");
+  assert.deepEqual(outcome.result.data.t.e, [{ message: "Tag is too long" }]);
+});
+
+test("userErrors are injected when the document does not select them, and the reserved alias is refused", async (t) => {
+  const { callTool, requests } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { tagsAdd: tagsPayload("gid://shopify/Product/1", [{ field: ["id"], message: "Product does not exist" }]) } }
+    : undefined);
+  const result = await run(callTool, "mutation { tagsAdd(id: \"gid://shopify/Product/1\", tags: [\"x\"]) { node { id } } }");
+  assert.match(mutationRequests(requests)[0].query, /smsUserErrors_userErrors: userErrors/);
+  assert.equal(result.structuredContent.results[0].outcome, "rejected");
+  assert.equal(result.structuredContent.results[0].roots[0].userErrors[0].message, "Product does not exist");
+
+  const before = requests.length;
+  const reserved = await run(callTool, "mutation { tagsAdd(id: \"gid://shopify/Product/1\", tags: [\"x\"]) { smsUserErrors_x: userErrors { message } } }");
+  assert.equal(reserved.isError, true);
+  assert.match(reserved.content[0].text, /reserved/);
+  assert.equal(requests.length, before, "nothing sent");
+});
+
+test("two roots that both succeed are applied", async (t) => {
+  const { callTool } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { a: tagsPayload("gid://shopify/Product/1"), b: tagsPayload("gid://shopify/Product/2") } }
+    : undefined);
+  const result = await run(callTool, `mutation { ${TAGS("a", "gid://shopify/Product/1")} ${TAGS("b", "gid://shopify/Product/2")} }`);
+  assert.notEqual(result.isError, true, result.content[0].text);
+  const outcome = result.structuredContent.results[0];
+  assert.equal(outcome.outcome, "applied");
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(outcome.roots.map((root) => [root.key, root.outcome]), [["a", "applied"], ["b", "applied"]]);
+  assert.equal(outcome.advice, undefined);
+});
+
+test("two roots that are both rejected are rejected, and nothing applied", async (t) => {
+  const bad = [{ field: ["id"], message: "Not found" }];
+  const { callTool } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { a: tagsPayload("x", bad), b: tagsPayload("y", bad) } }
+    : undefined);
+  const result = await run(callTool, `mutation { ${TAGS("a", "gid://shopify/Product/1")} ${TAGS("b", "gid://shopify/Product/2")} }`);
+  const outcome = result.structuredContent.results[0];
+  assert.equal(outcome.outcome, "rejected");
+  assert.equal(outcome.userErrors.length, 2);
+  assert.match(outcome.advice, /nothing was applied/);
+});
+
+test("one root applied and one rejected is partial, with no blanket retry advice", async (t) => {
+  const { callTool } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { a: tagsPayload("gid://shopify/Product/1"), b: tagsPayload("y", [{ field: ["tags"], message: "Too many tags" }]) } }
+    : undefined);
+  const result = await run(callTool, `mutation { ${TAGS("a", "gid://shopify/Product/1")} ${TAGS("b", "gid://shopify/Product/2")} }`);
+  assert.equal(result.isError, true);
+  const outcome = result.structuredContent.results[0];
+  assert.equal(outcome.outcome, "partial");
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(outcome.applied, ["a"]);
+  assert.deepEqual(outcome.rejected, ["b"]);
+  assert.match(outcome.advice, /Do not run this document again: a already applied/);
+  assert.match(outcome.advice, /Retry only b, in a new document/);
+  assert.doesNotMatch(outcome.advice, /run it again/);
+  assert.equal(outcome.notice, undefined);
+});
+
+test("a top-level error on one root's path makes that root unknown and the store partial", async (t) => {
+  const { callTool } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { a: tagsPayload("gid://shopify/Product/1"), b: null }, errors: [{ message: "Internal error", path: ["b"] }] }
+    : undefined);
+  const result = await run(callTool, `mutation { ${TAGS("a", "gid://shopify/Product/1")} ${TAGS("b", "gid://shopify/Product/2")} }`);
+  const outcome = result.structuredContent.results[0];
+  assert.equal(outcome.outcome, "partial");
+  assert.deepEqual(outcome.unknown, ["b"]);
+  assert.equal(outcome.roots[1].errors[0].message, "Internal error");
+  assert.match(outcome.advice, /Read the affected records for b first/);
+
+  // Only the failing root: unknown, never "rejected", never a suggestion to rerun.
+  const single = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { b: null }, errors: [{ message: "Internal error", path: ["b"] }] }
+    : undefined);
+  const alone = (await run(single.callTool, `mutation { ${TAGS("b", "gid://shopify/Product/2")} }`)).structuredContent.results[0];
+  assert.equal(alone.outcome, "unknown");
+  assert.match(alone.advice, /Do not run this document again/);
+});
+
+test("root fields in fragments are judged, and a clean response is applied", async (t) => {
+  const { callTool, requests } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { a: tagsPayload("gid://shopify/Product/1") } }
+    : undefined);
+  const result = await run(callTool, "mutation { ...F } fragment F on Mutation { a: tagsAdd(id: \"gid://shopify/Product/1\", tags: [\"x\"]) { node { id } } }");
+  assert.notEqual(result.isError, true, result.content[0].text);
+  assert.match(mutationRequests(requests)[0].query, /fragment F on Mutation \{\s*a: tagsAdd[^}]*\{\s*node \{\s*id\s*\}\s*smsUserErrors_userErrors/);
+  assert.equal(result.structuredContent.results[0].outcome, "applied");
+});
+
+test("shopify_graphql_mutation judges each root the same way", async (t) => {
+  const { requests } = await fixture(t, (request) => /^\s*mutation/.test(request.query)
+    ? { data: { a: tagsPayload("gid://shopify/Product/1"), b: tagsPayload("y", [{ field: ["tags"], message: "Too many tags" }]) } }
+    : undefined);
+  const store = await findStore("main");
+  const result = await sendMutationWithOutcome(store, `mutation { ${TAGS("a", "gid://shopify/Product/1")} ${TAGS("b", "gid://shopify/Product/2")} }`, {});
+  assert.match(requests.at(-1).query, /smsUserErrors_userErrors/);
+  assert.equal(result.outcome, "partial");
+  assert.deepEqual(result.applied, ["a"]);
+  assert.deepEqual(result.rejected, ["b"]);
+  assert.equal(result.userErrors.length, 1);
+  assert.equal(result.data.b.smsUserErrors_userErrors, undefined);
+  // A document that does not validate is sent unchanged, as before, and says it was not analyzed.
+  const invalid = await sendMutationWithOutcome(store, "mutation { tagsAdd(id: 1) { node { id } } }", {});
+  assert.equal(invalid.outcome, undefined);
+  assert.match(invalid.outcomeNotice, /not analyzed/);
 });

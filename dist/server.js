@@ -5,7 +5,7 @@ import { registerParityTools } from "./parity-tools.js";
 import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
-import { actionPolicyError, registerActionTools, parseActionDocument } from "./actions/tools.js";
+import { actionPolicyError, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
 import { denylist, isDenied } from "./actions/catalog.js";
 import { currentUserAccess, isHostedMode } from "./runtime.js";
 import { DOCS } from "./admin-documents.js";
@@ -150,7 +150,7 @@ export function createServer(options = {}) {
     });
     server.registerTool("shopify_graphql_mutation", {
         title: "Change a Shopify Store",
-        description: "Run one GraphQL Admin API mutation against one named store. Set confirm to true only after the user authorizes the exact store and change. On a hosted server in per-user mode, destructive mutations (see shopify_describe_action) need confirm set to the mutation name instead, and denylisted mutations are refused, exactly as in shopify_run_action.",
+        description: "Run one GraphQL Admin API mutation against one named store. Set confirm to true only after the user authorizes the exact store and change. The result reports each top-level mutation field as applied, rejected, or unknown, and the store as applied, rejected, partial, or unknown; after partial or unknown, retry only the rejected fields in a new document. On a hosted server in per-user mode, destructive mutations (see shopify_describe_action) need confirm set to the mutation name instead, and denylisted mutations are refused, exactly as in shopify_run_action.",
         inputSchema: z.object({
             store: StoreAliasSchema,
             mutation: z.string().min(1).max(50_000).describe("A GraphQL mutation document."),
@@ -177,8 +177,10 @@ export function createServer(options = {}) {
                 throw new Error("confirm must be true.");
             }
             const selected = await findStore(store);
-            const result = await adminGraphql(selected, mutation, variables);
-            return { ...success(result), ...(hasGraphqlErrors(result) ? { isError: true } : {}) };
+            // Each root field is judged on its own (applied, rejected, unknown); see docs/ACTIONS.md.
+            const result = await sendMutationWithOutcome(selected, mutation, variables);
+            const failed = result.outcome ? result.outcome !== "applied" : hasGraphqlErrors(result);
+            return { ...success(result), ...(failed ? { isError: true } : {}) };
         }
         catch (error) {
             return failure(error);
