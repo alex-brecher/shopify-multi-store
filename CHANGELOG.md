@@ -4,6 +4,9 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Hosted: fix the OAuth store failing on Windows with EPERM. The temporary file is
+  synced through the handle it was written with, then renamed; the directory is
+  synced after the rename except on Windows. Write errors are no longer hidden.
 - Hosted: work with any MCP client on any plan, not only Claude. Built-in
   redirect URIs for Claude, ChatGPT, VS Code, VS Code Insiders, and Cursor
   live in `src/hosted/known-clients.ts`, plus loopback on any port for Claude

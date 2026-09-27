@@ -13,7 +13,7 @@ import { checkGoogleIdentity, verifyGoogleIdToken } from "../dist/hosted/google.
 import { toNodeListener } from "../dist/hosted/node-adapter.js";
 import { fetchMetadataDocument, isForbiddenAddress } from "../dist/hosted/oauth.js";
 import { staticPolicy } from "../dist/hosted/policy.js";
-import { FileStore, MemoryStore } from "../dist/hosted/store.js";
+import { FileStore, MemoryStore, nodeDurableFs, writeFileDurable } from "../dist/hosted/store.js";
 import { enableHostedMode } from "../dist/runtime.js";
 import { KNOWN_CLIENT_REDIRECTS, RedirectPolicy, isSafePrivateUseRedirect, redirectListFromEnv } from "../dist/hosted/known-clients.js";
 import { buildHostedAppFromEnv } from "../dist/serve.js";
@@ -652,6 +652,93 @@ test("file store persists atomically and serves over node:http", async (t) => {
   assert.equal((await health.json()).ok, true);
   const tooLarge = await fetch(`${base}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: "x".repeat(4096) });
   assert.equal(tooLarge.status, 413);
+});
+
+/** A filesystem that records every call and forwards to the real one, with optional injected failures. */
+function recordingFs({ platform = process.platform, fail = {} } = {}) {
+  const calls = [];
+  const fs = {
+    platform,
+    async open(path, flags, mode) {
+      calls.push({ op: "open", path, flags, mode });
+      if (fail.open?.(path, flags)) throw Object.assign(new Error("open failed"), { code: fail.openCode ?? "EACCES" });
+      const handle = await nodeDurableFs.open(path, flags, mode);
+      return {
+        async writeFile(data, options) { calls.push({ op: "write", path, flags }); return handle.writeFile(data, options); },
+        async sync() {
+          calls.push({ op: "sync", path, flags });
+          if (fail.sync?.(path, flags)) throw Object.assign(new Error("sync failed"), { code: fail.syncCode });
+          return handle.sync();
+        },
+        async close() { calls.push({ op: "close", path }); return handle.close(); }
+      };
+    },
+    async rename(from, to) {
+      calls.push({ op: "rename", from, to });
+      if (fail.rename) throw Object.assign(new Error("rename failed"), { code: "EPERM" });
+      return nodeDurableFs.rename(from, to);
+    },
+    async unlink(path) { calls.push({ op: "unlink", path }); return nodeDurableFs.unlink(path); }
+  };
+  return { fs, calls };
+}
+
+test("durable writes sync a writable handle, then rename, then sync the directory except on Windows", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sms-durable-"));
+  const path = join(dir, "state.json");
+
+  const posix = recordingFs({ platform: "linux" });
+  await writeFileDurable(path, "{\"a\":1}", posix.fs);
+  assert.equal(await readFile(path, "utf8"), "{\"a\":1}");
+  const ops = posix.calls.map((c) => c.op);
+  assert.deepEqual(ops, ["open", "write", "sync", "close", "rename", "open", "sync", "close"]);
+  const [openTemp, , syncTemp] = posix.calls;
+  assert.equal(openTemp.flags, "wx", "the temp file is opened for writing, never read-only");
+  assert.equal(openTemp.mode, 0o600);
+  assert.equal(syncTemp.path, openTemp.path, "the synced handle is the one that was written");
+  assert.equal(syncTemp.flags, "wx");
+  assert.equal(posix.calls[4].from, openTemp.path);
+  assert.equal(posix.calls[5].path, dir, "directory fsync after rename");
+  assert.ok(!posix.calls.some((c) => c.op === "open" && c.flags === "r" && c.path !== dir), "no read-only reopen of the temp file");
+
+  const windows = recordingFs({ platform: "win32" });
+  await writeFileDurable(path, "{\"b\":2}", windows.fs);
+  assert.deepEqual(windows.calls.map((c) => c.op), ["open", "write", "sync", "close", "rename"]);
+  assert.equal(await readFile(path, "utf8"), "{\"b\":2}");
+
+  // A filesystem without directory fsync is tolerated.
+  const unsupported = recordingFs({ platform: "linux", fail: { sync: (p) => p === dir, syncCode: "EINVAL" } });
+  await writeFileDurable(path, "{\"c\":3}", unsupported.fs);
+  assert.equal(await readFile(path, "utf8"), "{\"c\":3}");
+});
+
+test("durable writes propagate every error other than unsupported directory fsync and leave no temp file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sms-durable-"));
+  const path = join(dir, "state.json");
+  const { readdir } = await import("node:fs/promises");
+
+  const dirIo = recordingFs({ platform: "linux", fail: { sync: (p) => p === dir, syncCode: "EIO" } });
+  await assert.rejects(writeFileDurable(path, "{}", dirIo.fs), /sync failed/);
+
+  const fileSync = recordingFs({ platform: "win32", fail: { sync: (p) => p !== dir, syncCode: "EPERM" } });
+  await assert.rejects(writeFileDurable(path, "{\"x\":1}", fileSync.fs), /sync failed/);
+  assert.ok(fileSync.calls.some((c) => c.op === "unlink"), "temp file removed after a failed sync");
+
+  const renameFails = recordingFs({ platform: "linux", fail: { rename: true } });
+  await assert.rejects(writeFileDurable(path, "{\"y\":1}", renameFails.fs), /rename failed/);
+  assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith(".tmp")), []);
+  assert.equal(await readFile(path, "utf8"), "{}", "the target keeps its last good content");
+
+  // FileStore surfaces the failure to the caller and retries the change on the next write.
+  const flaky = recordingFs({ platform: "linux", fail: { rename: true } });
+  const store = await FileStore.open(join(dir, "oauth.json"), Date.now, flaky.fs);
+  await assert.rejects(store.put("client", "c1", { client_id: "c1" }), /rename failed/);
+  delete flaky.fs.rename;
+  flaky.fs.rename = (from, to) => nodeDurableFs.rename(from, to);
+  await store.put("client", "c2", { client_id: "c2" });
+  const reopened = await FileStore.open(join(dir, "oauth.json"));
+  assert.deepEqual(await reopened.get("client", "c1"), { client_id: "c1" });
+  assert.deepEqual(await reopened.get("client", "c2"), { client_id: "c2" });
 });
 
 test("redirect policy accepts known MCP clients and loopback by default", async (t) => {
