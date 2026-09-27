@@ -453,3 +453,57 @@ test("create_fulfillment: fulfills open fulfillment orders and defaults notifyCu
   const applied = await call("create_fulfillment", { orderId: gid("Order", 1), dryRun: false });
   assert.equal(applied.structuredContent.fulfillment.status, "SUCCESS");
 });
+
+const sentVariables = (state, operation) =>
+  state.requests
+    .filter((r) => parse(r.query).definitions.find((d) => d.kind === "OperationDefinition").name?.value === operation)
+    .map((r) => r.variables);
+
+test("create_draft_order: dryRun:false sends only DraftOrderInput fields", async (t) => {
+  const { call, state } = await fixture(t);
+  const result = await call("create_draft_order", {
+    email: "d@example.com",
+    note: "n",
+    tags: ["t"],
+    lineItems: [{ variantId: gid("ProductVariant", 1), quantity: 2 }],
+    dryRun: false,
+  });
+  assert.equal(result.isError, undefined, result.content[0].text);
+  assert.deepEqual(sentVariables(state, "CreateDraftOrder"), [
+    { input: { email: "d@example.com", note: "n", tags: ["t"], lineItems: [{ variantId: gid("ProductVariant", 1), quantity: 2 }] } },
+  ]);
+});
+
+test("update_order: dryRun:false sends only OrderInput fields", async (t) => {
+  const { call, state } = await fixture(t);
+  const result = await call("update_order", {
+    id: gid("Order", 1),
+    tags: ["x"],
+    note: null,
+    shippingAddress: { city: "Albany" },
+    dryRun: false,
+  });
+  assert.equal(result.isError, undefined, result.content[0].text);
+  assert.deepEqual(sentVariables(state, "UpdateOrder"), [
+    { input: { id: gid("Order", 1), tags: ["x"], note: null, shippingAddress: { city: "Albany" } } },
+  ]);
+});
+
+test("update_customer: dryRun:false sends only CustomerInput fields", async (t) => {
+  const { call, state } = await fixture(t);
+  const result = await call("update_customer", { id: gid("Customer", 1), note: "n", dryRun: false });
+  assert.equal(result.isError, undefined, result.content[0].text);
+  assert.deepEqual(sentVariables(state, "UpdateCustomer"), [
+    { input: { id: gid("Customer", 1), note: "n" } },
+  ]);
+});
+
+test("upsert_page: dryRun:false create and update send only page input fields", async (t) => {
+  const { call, state } = await fixture(t);
+  const created = await call("upsert_page", { title: "T", body: "<p>b</p>", dryRun: false });
+  assert.equal(created.isError, undefined, created.content[0].text);
+  assert.deepEqual(sentVariables(state, "CreatePage"), [{ page: { title: "T", body: "<p>b</p>" } }]);
+  const updated = await call("upsert_page", { id: gid("Page", 1), isPublished: false, dryRun: false });
+  assert.equal(updated.isError, undefined, updated.content[0].text);
+  assert.deepEqual(sentVariables(state, "UpdatePage"), [{ id: gid("Page", 1), page: { isPublished: false } }]);
+});

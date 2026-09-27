@@ -32,6 +32,19 @@ const skuEntry = z
 })
     .strict();
 const skusField = z.array(skuEntry).min(1).max(250);
+// Builds a Shopify mutation input from an explicit allowlist of tool arguments so
+// tool-only fields (dryRun, allowLiveTheme, ...) never leak into GraphQL inputs.
+function pick(a, keys) {
+    const out = {};
+    for (const key of keys)
+        if (a[key] !== undefined)
+            out[key] = a[key];
+    return out;
+}
+const DRAFT_ORDER_INPUT_FIELDS = ["email", "note", "tags"];
+const ORDER_INPUT_FIELDS = ["tags", "note", "email", "shippingAddress"];
+const CUSTOMER_INPUT_FIELDS = ["tags", "note", "email"];
+const PAGE_INPUT_FIELDS = ["title", "handle", "body", "isPublished"];
 async function updatePricesCore(w, a) {
     await w.requireScopes(["write_products", "write_inventory"]);
     const seen = new Set();
@@ -581,10 +594,9 @@ export function registerParityTools(server) {
             .max(250),
     }, true, async (w, a) => {
         await w.requireScopes(["write_draft_orders"]);
-        const { lineItems, ...rest } = a;
         const input = {
-            ...rest,
-            lineItems: lineItems.map((l) => ({
+            ...pick(a, DRAFT_ORDER_INPUT_FIELDS),
+            lineItems: a.lineItems.map((l) => ({
                 variantId: l.variantId,
                 quantity: l.quantity,
             })),
@@ -623,7 +635,8 @@ export function registerParityTools(server) {
         const before = await w.run(PDOCS.getOrderTagsNote, { id: a.id });
         if (!before.order)
             throw Error("Order not found in this store.");
-        const { id, ...fields } = a;
+        const id = a.id;
+        const fields = pick(a, ORDER_INPUT_FIELDS);
         if (a.dryRun)
             return {
                 dryRun: true,
@@ -675,7 +688,8 @@ export function registerParityTools(server) {
         const before = await w.run(PDOCS.getCustomer, { id: a.id });
         if (!before.customer)
             throw Error("Customer not found in this store.");
-        const { id, ...fields } = a;
+        const id = a.id;
+        const fields = pick(a, CUSTOMER_INPUT_FIELDS);
         if (a.dryRun)
             return {
                 dryRun: true,
@@ -749,20 +763,20 @@ export function registerParityTools(server) {
         const before = a.id ? await w.run(PDOCS.getPage, { id: a.id }) : undefined;
         if (a.id && !before?.page)
             throw Error("Page not found in this store.");
+        const page = pick(a, PAGE_INPUT_FIELDS);
         if (a.dryRun)
             return {
                 dryRun: true,
                 before: before?.page,
-                wouldApply: a,
+                wouldApply: a.id ? { id: a.id, ...page } : page,
                 notice: "Pass dryRun:false to apply.",
             };
         if (a.id) {
-            const { id, ...page } = a;
+            const id = a.id;
             await w.run(PDOCS.updatePage, { id, page });
             const after = await w.run(PDOCS.getPage, { id });
             return { dryRun: false, before: before?.page, after: after.page };
         }
-        const { id: _id, ...page } = a;
         const d = await w.run(PDOCS.createPage, { page });
         return { dryRun: false, page: d.pageCreate?.page };
     });
