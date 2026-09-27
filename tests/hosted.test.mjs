@@ -854,6 +854,23 @@ test("durable writes propagate every error other than unsupported directory fsyn
   assert.deepEqual(await reopened.get("client", "c2"), { client_id: "c2" });
 });
 
+test("hosted mode refuses a store configuration with two aliases for one shop", async (t) => {
+  const { loadStores } = await import("../dist/config.js");
+  const previous = process.env.STORES_JSON;
+  t.after(() => { if (previous === undefined) delete process.env.STORES_JSON; else process.env.STORES_JSON = previous; });
+  process.env.STORES_JSON = JSON.stringify({ stores: [
+    { alias: "retail", shop: "example-one.myshopify.com" },
+    { alias: "outlet", shop: "example-two.myshopify.com" },
+    { alias: "retail-alt", shop: "Example-One.myshopify.com" }
+  ] });
+  await assert.rejects(loadStores(), /"retail" and "retail-alt" both point to/);
+  process.env.STORES_JSON = JSON.stringify({ stores: [
+    { alias: "retail", shop: "example-one.myshopify.com" },
+    { alias: "outlet", shop: "example-two.myshopify.com" }
+  ] });
+  assert.deepEqual((await loadStores()).map((store) => store.alias), ["retail", "outlet"]);
+});
+
 test("redirect policy accepts known MCP clients and loopback by default", async (t) => {
   const policy = new RedirectPolicy();
   for (const uri of [

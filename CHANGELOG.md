@@ -4,6 +4,10 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Multi-store tools refuse two requested aliases that point to the same shop,
+  naming both, so an action never runs twice on one shop; with no stores named,
+  each shop is used once. Hosted mode refuses a store configuration that lists
+  one shop under two aliases.
 - Hosted: fix login CSRF in Google sign-in. Each sign-in sets a binding cookie
   (HttpOnly, Secure, SameSite=Lax, callback path only, 10 minutes) and stores
   only its hash. The callback checks it before using the login state or the

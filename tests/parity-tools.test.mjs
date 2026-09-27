@@ -12,7 +12,7 @@ const connection = (nodes) => ({
   pageInfo: { hasNextPage: false, endCursor: null },
 });
 
-async function fixture(t) {
+async function fixture(t, { extraStores = [] } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "shopify-parity-tools-"));
   const originalFetch = globalThis.fetch,
     config = process.env.SHOPIFY_MULTI_STORE_CONFIG,
@@ -25,6 +25,7 @@ async function fixture(t) {
       stores: [
         { alias: "fixture", shop: "fixture.myshopify.com", apiVersion: "2026-07" },
         { alias: "second", shop: "second.myshopify.com", apiVersion: "2026-07" },
+        ...extraStores,
       ],
     }),
   );
@@ -336,6 +337,29 @@ test("update_prices_many: applies the same SKU list across stores independently"
   assert.equal(result.structuredContent.stores.length, 2);
   assert.ok(result.structuredContent.stores.every((s) => s.ok));
   assert.equal(result.structuredContent.succeeded, 2);
+});
+
+test("multi-store tools refuse two aliases for one shop and never run an action twice", async (t) => {
+  const { callMulti, state } = await fixture(t, {
+    extraStores: [{ alias: "fixture-copy", shop: "FIXTURE.myshopify.com", apiVersion: "2026-07" }],
+  });
+  const result = await callMulti("update_prices_many", {
+    stores: ["fixture", "fixture-copy"],
+    skus: [{ sku: "SKU-FOUND", price: "12.00" }],
+    dryRun: false,
+  });
+  assert.equal(result.isError, true, JSON.stringify(result));
+  const text = JSON.parse(result.content[0].text).error;
+  assert.match(text, /"fixture" and "fixture-copy" both point to/);
+  assert.equal(state.requests.length, 0, "nothing was sent to Shopify");
+
+  // With no stores named, each shop is checked once.
+  const all = await callMulti("check_access", {});
+  assert.deepEqual(all.structuredContent.stores.map((s) => s.store).sort(), ["fixture", "second"]);
+
+  const { resolveStoreTargets } = await import("../dist/config.js");
+  await assert.rejects(resolveStoreTargets(["FIXTURE-COPY", "second", "fixture"]), /"fixture-copy" and "fixture" both point to/i);
+  assert.deepEqual((await resolveStoreTargets(["fixture", "FIXTURE", "second"])).map((target) => target.store.alias), ["fixture", "second"]);
 });
 
 test("update_delivery_rate: detects Shopify's silent-discard (no userErrors, value not persisted)", async (t) => {

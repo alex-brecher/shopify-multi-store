@@ -86,7 +86,60 @@ async function loadAllStores(): Promise<StoreConfig[]> {
     aliases.add(store.alias);
     validateStoreEndpoint(store);
   }
+  // Hosted: two aliases for one shop would make multi-store tools act on it twice and split
+  // its access control across two names. Refuse the configuration.
+  const duplicate = hosted ? duplicateShopError(config.stores) : undefined;
+  if (duplicate) throw new Error(`${duplicate} Each shop may be configured once in ${source}.`);
   return config.stores;
+}
+
+function shopIdentity(store: StoreConfig): string {
+  return store.shop.trim().toLowerCase();
+}
+
+/** Names the first two aliases that point to the same shop, or undefined when every shop is distinct. */
+export function duplicateShopError(stores: readonly StoreConfig[]): string | undefined {
+  const seen = new Map<string, string>();
+  for (const store of stores) {
+    const key = shopIdentity(store);
+    const first = seen.get(key);
+    if (first !== undefined) return `Store aliases "${first}" and "${store.alias}" both point to ${store.shop}.`;
+    seen.set(key, store.alias);
+  }
+  return undefined;
+}
+
+export interface StoreTarget {
+  requestedAlias: string;
+  store?: StoreConfig;
+  error?: string;
+}
+
+/**
+ * Resolve the stores a multi-store tool should act on. Requested aliases are matched without
+ * case and deduplicated; unknown aliases come back with an error for that entry. Two requested
+ * aliases that point to the same shop are refused, naming both, so no action runs twice on one
+ * shop. With no aliases, every configured store is used once per shop.
+ */
+export async function resolveStoreTargets(aliases?: readonly string[]): Promise<StoreTarget[]> {
+  const configured = await loadStores();
+  if (!aliases?.length) {
+    const seen = new Set<string>();
+    return configured
+      .filter((store) => !seen.has(shopIdentity(store)) && Boolean(seen.add(shopIdentity(store))))
+      .map((store) => ({ requestedAlias: store.alias, store }));
+  }
+  const byAlias = new Map(configured.map((store) => [store.alias.toLowerCase(), store]));
+  const requested = aliases.filter((alias, index) => aliases.findIndex((candidate) => candidate.toLowerCase() === alias.toLowerCase()) === index);
+  const targets: StoreTarget[] = requested.map((alias) => {
+    const store = byAlias.get(alias.toLowerCase());
+    return store
+      ? { requestedAlias: alias, store }
+      : { requestedAlias: alias, error: `Unknown store "${alias}". Available stores: ${configured.map((item) => item.alias).join(", ")}` };
+  });
+  const duplicate = duplicateShopError(targets.flatMap((target) => (target.store ? [target.store] : [])));
+  if (duplicate) throw new Error(`${duplicate} Request each shop once.`);
+  return targets;
 }
 
 function validateStoreEndpoint(store: StoreConfig): void {

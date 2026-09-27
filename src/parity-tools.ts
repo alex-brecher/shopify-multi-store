@@ -10,7 +10,7 @@ import {
 } from "./admin-workflows.js";
 import { PDOCS } from "./parity-documents.js";
 import { mapConcurrent } from "./concurrency.js";
-import { loadStores } from "./config.js";
+import { resolveStoreTargets } from "./config.js";
 import { REQUIRED_SCOPES, VARIABLE_SCOPE_TOOLS } from "./scope-requirements.js";
 
 // These tools pin their Admin GraphQL operations to 2026-04 (the newest quarterly
@@ -354,11 +354,9 @@ export function registerParityTools(server: McpServer) {
     async (args) => {
       const a = args as Data;
       try {
-        const requested = a.stores.filter(
-          (s: string, i: number) =>
-            a.stores.findIndex(
-              (c: string) => c.toLowerCase() === s.toLowerCase(),
-            ) === i,
+        // Refuses two aliases for one shop, so no price change runs twice.
+        const requested = (await resolveStoreTargets(a.stores)).map(
+          (target) => target.store?.alias ?? target.requestedAlias,
         );
         const results = await mapConcurrent(
           requested,
@@ -1127,10 +1125,9 @@ export function registerParityTools(server: McpServer) {
     async (args) => {
       const a = args as Data;
       try {
-        const configured = await loadStores();
-        const aliases: string[] = a.stores?.length
-          ? a.stores
-          : configured.map((s) => s.alias);
+        const aliases: string[] = (await resolveStoreTargets(a.stores)).map(
+          (target) => target.store?.alias ?? target.requestedAlias,
+        );
         const results = await mapConcurrent(
           aliases,
           async (alias: string) => {
