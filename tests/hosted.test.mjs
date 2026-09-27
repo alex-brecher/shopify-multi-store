@@ -7,7 +7,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { AUDIT_MAX_LINE_BYTES, auditLine } from "../dist/hosted/audit.js";
 import { toNodeListener } from "../dist/hosted/node-adapter.js";
-import { fetchMetadataDocument, isForbiddenAddress } from "../dist/hosted/oauth.js";
+import { fetchMetadataDocument } from "../dist/platform/cimd-node.js";
+import { isForbiddenAddress } from "../dist/platform/ip.js";
 import { FileStore, MemoryStore, nodeDurableFs, writeFileDurable } from "../dist/hosted/store.js";
 import { enableHostedMode } from "../dist/runtime.js";
 import { KNOWN_CLIENT_REDIRECTS, RedirectPolicy, isSafePrivateUseRedirect, redirectListFromEnv } from "../dist/hosted/known-clients.js";
@@ -782,7 +783,7 @@ test("serve needs an encryption key, has no Google, policy, role or personal-tok
   await assert.rejects(buildHostedAppFromEnv({ ...base, SHOPIFY_IDENTITY_STORE: "nope" }), /SHOPIFY_IDENTITY_STORE/);
   const identity = (await buildHostedAppFromEnv({ ...base, SHOPIFY_IDENTITY_STORE: "wholesale" })).app;
   t.after(() => identity.close());
-  const source = await readFile(new URL("../src/serve.ts", import.meta.url), "utf8");
+  const source = (await readFile(new URL("../src/serve.ts", import.meta.url), "utf8")) + (await readFile(new URL("../src/hosted/config.ts", import.meta.url), "utf8"));
   for (const removed of ["GOOGLE_CLIENT_ID", "ALLOWED_EMAIL_DOMAINS", "SHOPIFY_MULTI_STORE_POLICY", "SHOPIFY_ACCESS_MODE", "PERSONAL_TOKEN"]) assert.ok(!source.includes(removed), removed);
 });
 
@@ -1044,7 +1045,7 @@ test("SERVER_DISPLAY_NAME names the MCP server, resource metadata, sign-in, cons
 test("hosted docs cover every client and every serve setting", async () => {
   const hosted = await readFile(new URL("../docs/HOSTED.md", import.meta.url), "utf8");
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
-  const serveSource = await readFile(new URL("../src/serve.ts", import.meta.url), "utf8");
+  const serveSource = (await readFile(new URL("../src/serve.ts", import.meta.url), "utf8")) + (await readFile(new URL("../src/hosted/config.ts", import.meta.url), "utf8"));
   assert.match(hosted, /^## Connect from your AI app$/m);
   for (const client of ["Claude", "ChatGPT", "Codex", "Claude Code", "Cursor", "VS Code", "Gemini CLI", "Windsurf"]) {
     assert.match(hosted, new RegExp(`^### ${client}\\b`, "m"), client);

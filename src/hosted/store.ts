@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "revoked_family";
 
 export interface OAuthStore {
   get<T>(kind: RecordKind, key: string): Promise<T | undefined>;
@@ -12,13 +12,19 @@ export interface OAuthStore {
   take<T>(kind: RecordKind, key: string): Promise<T | undefined>;
   delete(kind: RecordKind, key: string): Promise<void>;
   /**
-   * Conditional update in one step: read the live record and, only if it still exists, replace
-   * it with what `change` returns (keeping its expiry). Returns the new value, or undefined when
-   * there was no record or `change` returned undefined. `change` must be synchronous.
+   * Atomically claim a live record: if its boolean `flag` field is not set, set it (keeping the
+   * record's expiry) and return { claimed: true }; if it is already set, return
+   * { claimed: false } and change nothing. Undefined when there is no live record. Of several
+   * concurrent claims of one record exactly one gets claimed: true. Used for refresh token
+   * rotation, where a second use of a token is a reuse.
    */
-  update<T>(kind: RecordKind, key: string, change: (current: T) => T | undefined): Promise<T | undefined>;
-  /** Delete every record of a kind that matches. Returns the number removed. */
-  deleteWhere<T>(kind: RecordKind, predicate: (value: T) => boolean): Promise<number>;
+  claim<T>(kind: RecordKind, key: string, flag: string): Promise<{ value: T; claimed: boolean } | undefined>;
+  /**
+   * Delete every record of a kind whose top-level fields equal all of `match`. Returns the
+   * number removed. Declarative (not a callback), so a remote store such as a Durable Object
+   * can run it in one step.
+   */
+  deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number>;
   count(kind: RecordKind): Promise<number>;
   /** Every live record of a kind, as [key, value] pairs. */
   entries<T>(kind: RecordKind): Promise<Array<[string, T]>>;
@@ -31,8 +37,14 @@ interface Entry {
 
 type Data = Record<RecordKind, Record<string, Entry>>;
 
+/** Every field in `match` equals the value's field of the same name. */
+export function matches(value: unknown, match: Record<string, string | number | boolean>): boolean {
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(match).every(([field, expected]) => (value as Record<string, unknown>)[field] === expected);
+}
+
 function emptyData(): Data {
-  return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, session: {}, shopify_state: {}, shopify_token: {} };
+  return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, session: {}, shopify_state: {}, shopify_token: {}, revoked_family: {} };
 }
 
 /**
@@ -71,15 +83,16 @@ export class MemoryStore implements OAuthStore {
     return entry.value as T;
   }
 
-  async update<T>(kind: RecordKind, key: string, change: (current: T) => T | undefined): Promise<T | undefined> {
+  async claim<T>(kind: RecordKind, key: string, flag: string): Promise<{ value: T; claimed: boolean } | undefined> {
     // Read and write with no await in between, so no other operation can run in the gap.
     const entry = this.live(kind, key);
     if (!entry) return undefined;
-    const next = change(entry.value as T);
-    if (next === undefined) return undefined;
+    const value = entry.value as Record<string, unknown>;
+    if (value[flag] === true) return { value: value as T, claimed: false };
+    const next = { ...value, [flag]: true };
     this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
     await this.changed();
-    return next;
+    return { value: next as T, claimed: true };
   }
 
   async delete(kind: RecordKind, key: string): Promise<void> {
@@ -88,10 +101,10 @@ export class MemoryStore implements OAuthStore {
     await this.changed();
   }
 
-  async deleteWhere<T>(kind: RecordKind, predicate: (value: T) => boolean): Promise<number> {
+  async deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number> {
     let removed = 0;
     for (const [key, entry] of Object.entries(this.data[kind])) {
-      if (predicate(entry.value as T)) {
+      if (matches(entry.value, match)) {
         delete this.data[kind][key];
         removed += 1;
       }

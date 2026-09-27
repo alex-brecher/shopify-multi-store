@@ -26,7 +26,10 @@ export interface AuthServerOptions {
     allowAnyRedirect?: boolean;
     /** Hosts allowed to serve Client ID Metadata Documents. "*" allows any HTTPS host. */
     cimdAllowedHosts?: string[];
-    /** Fetches a Client ID Metadata Document. Injected by tests; defaults to a bounded HTTPS fetch. */
+    /**
+     * Fetches a Client ID Metadata Document. Defaults to a bounded HTTPS fetch with the platform's
+     * fetch (Workers). Node's serve passes the DNS-pinned fetcher from platform/cimd-node.ts.
+     */
     fetchClientMetadata?: (url: string) => Promise<unknown>;
     accessTokenTtlSeconds?: number;
     refreshTokenTtlSeconds?: number;
@@ -113,8 +116,6 @@ export declare class AuthorizationServer {
     private readonly now;
     private readonly log;
     private readonly cimdCache;
-    /** Per refresh-token lock chain, so concurrent uses of one token are handled one at a time. */
-    private readonly refreshLocks;
     constructor(options: AuthServerOptions);
     /** Record a sign-in, token, or authorization event. Never throws. */
     auditAuth(entry: Omit<AuthAuditEntry, "timestamp">): Promise<void>;
@@ -191,18 +192,25 @@ export declare class AuthorizationServer {
     token(request: Request): Promise<Response>;
     private authenticateClient;
     private authorizationCodeGrant;
+    /**
+     * Refresh with rotation and reuse detection. Every check that can refuse the request runs
+     * before the token is spent; the token is then claimed with one atomic store operation
+     * (OAuthStore.claim), so of several concurrent uses of one token exactly one wins, in one
+     * Node process and on a Durable Object alike. A token that was already claimed is a reuse:
+     * the whole token family is revoked.
+     */
     private refreshTokenGrant;
-    private refreshTokenGrantLocked;
+    /** A rotated refresh token came back: assume it leaked and revoke the whole token family. */
+    private refreshReused;
+    /**
+     * Revoke a token family. A marker is written first and checked wherever a family's tokens
+     * are used, so tokens that a concurrent request issues for the family after the deletes
+     * below (the winner of a refresh race, say) are dead too. It lives as long as any token of
+     * the family could.
+     */
     private revokeFamily;
+    private familyRevoked;
     private issueTokens;
     /** Look up a bearer token. Returns the record only if it is live and bound to this resource. */
     verifyAccessToken(token: string): Promise<AccessRecord | undefined>;
 }
-/** True for an IP address a client metadata fetch must not connect to. Non-IP input is refused. */
-export declare function isForbiddenAddress(address: string): boolean;
-/**
- * Fetch a Client ID Metadata Document: HTTPS only, no redirects, 5-second limit, 16 KB body.
- * The host, named or wildcard-admitted, must resolve only to public addresses (checked at
- * connect time, so a DNS answer cannot change between the check and the connection).
- */
-export declare function fetchMetadataDocument(url: string): Promise<unknown>;

@@ -1,5 +1,4 @@
-import { readFile } from "node:fs/promises";
-import { gunzipSync } from "node:zlib";
+import { schemaSource } from "./platform/schema-source.js";
 import { buildClientSchema, getIntrospectionQuery, parse, validate, isObjectType, isInputObjectType, isEnumType, } from "graphql";
 const cache = new Map();
 export function adminSchema(version) {
@@ -8,16 +7,10 @@ export function adminSchema(version) {
     let pending = cache.get(version);
     if (!pending) {
         pending = (async () => {
-            try {
-                const compressed = await readFile(new URL(`../schemas/admin-${version}.json.gz`, import.meta.url));
-                return buildClientSchema(JSON.parse(gunzipSync(compressed).toString()));
-            }
-            catch (error) {
-                if (!(error instanceof Error &&
-                    "code" in error &&
-                    error.code === "ENOENT"))
-                    throw error;
-            }
+            // The bundled schema (files on Node, one bundled version on Workers), else Shopify's proxy.
+            const bundled = await schemaSource().load(version);
+            if (bundled !== undefined)
+                return buildClientSchema(JSON.parse(bundled));
             const response = await fetch(`https://shopify.dev/admin-graphql-direct-proxy/${version}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },

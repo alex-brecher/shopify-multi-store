@@ -3,15 +3,19 @@ import http from "node:http";
 import { resolve } from "node:path";
 import { createHostedApp } from "./hosted/app.js";
 import { FileAuditLog } from "./hosted/audit.js";
+import { hostedOptionsFromEnv, positiveInt } from "./hosted/config.js";
 import { toNodeListener } from "./hosted/node-adapter.js";
-import { redirectListFromEnv } from "./hosted/known-clients.js";
-import { DEFAULT_CIMD_HOSTS, DEFAULT_DISPLAY_NAME } from "./hosted/oauth.js";
-import { parseEncryptionKeys } from "./hosted/shopify-connect.js";
 import { FileStore } from "./hosted/store.js";
 import { loadStores } from "./config.js";
-import { fullScopes } from "./scope-requirements.js";
+import { fetchMetadataDocument } from "./platform/cimd-node.js";
 import { enableHostedMode } from "./runtime.js";
-const FILE_SUFFIX_TARGETS = /^(SHOPIFY_TOKEN_[A-Z0-9_]+|SHOPIFY_CLIENT_SECRET_[A-Z0-9_]+|SHOPIFY_APP_CLIENT_SECRET|SHOPIFY_TOKEN_ENCRYPTION_KEYS?|STORES_JSON)_FILE$/;
+/**
+ * `shopify-multi-store serve`: the hosted connector on any server (Node or Docker). The
+ * settings are shared with the Cloudflare Worker (src/hosted/config.ts); this file adds the
+ * Node parts: secret files, the JSON file store, the file audit log, the DNS-pinned client
+ * metadata fetcher, and node:http.
+ */
+const FILE_SUFFIX_TARGETS = /^(SHOPIFY_CLIENT_SECRET_[A-Z0-9_]+|SHOPIFY_APP_CLIENT_SECRET|SHOPIFY_TOKEN_ENCRYPTION_KEYS?|STORES_JSON)_FILE$/;
 /**
  * Support secret mounts: for NAME_FILE=/run/secrets/x, set NAME from the file contents
  * unless NAME is already set. Limited to credential and store-config variables.
@@ -27,92 +31,20 @@ export function loadFileSecrets(env = process.env) {
         env[target] = readFileSync(path, "utf8").trim();
     }
 }
-function required(env, name) {
-    const value = env[name]?.trim();
-    if (!value)
-        throw new Error(`${name} is required for serve mode. See docs/HOSTED.md.`);
-    return value;
-}
-function list(value) {
-    if (value === undefined)
-        return undefined;
-    return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
-function flag(value) {
-    return value !== undefined && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
-function positiveInt(env, name, fallback) {
-    const raw = env[name];
-    if (raw === undefined || raw === "")
-        return fallback;
-    const value = Number(raw);
-    if (!Number.isInteger(value) || value <= 0)
-        throw new Error(`${name} must be a positive integer.`);
-    return value;
-}
-function displayName(env) {
-    const value = env.SERVER_DISPLAY_NAME?.trim();
-    if (!value)
-        return DEFAULT_DISPLAY_NAME;
-    if (value.length > 100 || /[\u0000-\u001f\u007f]/.test(value))
-        throw new Error("SERVER_DISPLAY_NAME must be 1 to 100 characters with no control characters.");
-    return value;
-}
-function secretEnvName(alias) {
-    return `SHOPIFY_CLIENT_SECRET_${alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
-}
 export async function buildHostedAppFromEnv(env = process.env) {
     loadFileSecrets(env);
-    const publicUrl = new URL(required(env, "MCP_PUBLIC_URL"));
-    if (publicUrl.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(publicUrl.hostname)) {
-        throw new Error("MCP_PUBLIC_URL must use https (http is allowed only for localhost testing).");
-    }
-    if (publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) {
-        throw new Error("MCP_PUBLIC_URL must be an origin such as https://shopify-mcp.example.com, with no path.");
-    }
-    const origin = publicUrl.origin;
+    const options = await hostedOptionsFromEnv(env, { loadStores });
     const dataDir = resolve(env.SHOPIFY_MULTI_STORE_DATA_DIR ?? "data");
     const store = await FileStore.open(resolve(env.SHOPIFY_MULTI_STORE_OAUTH_STORE ?? `${dataDir}/oauth-store.json`));
-    // Refuse to start without an encryption key for the stored Shopify tokens.
-    const encryptionKeys = parseEncryptionKeys({ SHOPIFY_TOKEN_ENCRYPTION_KEYS: env.SHOPIFY_TOKEN_ENCRYPTION_KEYS, SHOPIFY_TOKEN_ENCRYPTION_KEY: env.SHOPIFY_TOKEN_ENCRYPTION_KEY });
-    const appClientId = env.SHOPIFY_APP_CLIENT_ID?.trim() || undefined;
-    const appClientSecret = env.SHOPIFY_APP_CLIENT_SECRET?.trim() || undefined;
-    const scopes = list(env.SHOPIFY_APP_SCOPES) ?? fullScopes();
     const audit = new FileAuditLog(resolve(env.SHOPIFY_MULTI_STORE_AUDIT_LOG ?? `${dataDir}/audit.jsonl`));
-    const identityStore = env.SHOPIFY_IDENTITY_STORE?.trim() || undefined;
-    if (identityStore && !(await loadStores()).some((store) => store.alias.toLowerCase() === identityStore.toLowerCase())) {
-        throw new Error(`SHOPIFY_IDENTITY_STORE names ${identityStore}, which is not a configured store alias.`);
-    }
-    const app = createHostedApp({
-        displayName: displayName(env),
-        issuer: origin,
-        resource: `${origin}/mcp`,
-        store,
-        audit,
-        // OAUTH_REDIRECT_URIS adds to the built-in known clients; OAUTH_REDIRECT_URIS_REPLACE=1 replaces them.
-        redirectAllowlist: redirectListFromEnv(list(env.OAUTH_REDIRECT_URIS), flag(env.OAUTH_REDIRECT_URIS_REPLACE)),
-        allowLoopbackRedirects: env.OAUTH_ALLOW_LOOPBACK_REDIRECTS !== "0",
-        allowAnyRedirect: flag(env.OAUTH_ALLOW_ANY_REDIRECT),
-        cimdAllowedHosts: list(env.OAUTH_CIMD_ALLOWED_HOSTS) ?? DEFAULT_CIMD_HOSTS,
-        accessTokenTtlSeconds: positiveInt(env, "OAUTH_ACCESS_TOKEN_TTL_SECONDS", 3600),
-        refreshTokenTtlSeconds: positiveInt(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS", 30 * 24 * 3600),
-        sessionMaxAgeSeconds: positiveInt(env, "OAUTH_SESSION_MAX_AGE_SECONDS", 7 * 24 * 3600),
-        shopifyConnect: {
-            encryptionKeys,
-            loadStores,
-            clientId: (store) => (store.auth.type === "client_credentials" ? store.auth.clientId : undefined) ?? appClientId,
-            clientSecret: (store) => env[secretEnvName(store.alias)]?.trim() || appClientSecret,
-            scopes,
-            ...(identityStore ? { identityStore } : {})
-        }
-    });
+    const app = createHostedApp({ ...options, store, audit, fetchClientMetadata: fetchMetadataDocument });
     return {
         app,
-        config: { publicUrl: origin, host: env.HOST ?? "0.0.0.0", port: positiveInt(env, "PORT", 8080) }
+        config: { publicUrl: options.issuer, host: env.HOST ?? "0.0.0.0", port: positiveInt(env, "PORT", 8080) }
     };
 }
 export async function serve(env = process.env) {
-    enableHostedMode();
+    enableHostedMode(env);
     const { app, config } = await buildHostedAppFromEnv(env);
     const server = http.createServer(toNodeListener(app.fetch, { origin: config.publicUrl, maxBodyBytes: 4 * 1024 * 1024 }));
     server.headersTimeout = 30_000;

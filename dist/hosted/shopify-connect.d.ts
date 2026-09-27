@@ -46,7 +46,8 @@ export interface ShopifyConnectOptions {
 /** One AES-256-GCM key with the id stored next to each ciphertext it produced. */
 export interface EncryptionKey {
     id: string;
-    key: Buffer;
+    /** 32 raw key bytes. */
+    key: Uint8Array;
 }
 /** Parse one 32-byte key, base64 or base64url. */
 export declare function parseEncryptionKey(value: string | undefined, name?: string): Buffer;
@@ -66,13 +67,17 @@ type Binding = {
     alias: string;
     shop: string;
 };
-/** Encrypt with the given key: v2.<keyId>.<iv>.<tag>.<ciphertext>. */
-export declare function encryptToken(key: EncryptionKey, token: string, binding: Binding): string;
+/**
+ * Encrypt with the given key: v2.<keyId>.<iv>.<tag>.<ciphertext>, each part base64url. AES-256-GCM
+ * through Web Crypto. The format is the one written by earlier versions (Node's cipher API), so
+ * existing records stay readable and no migration is needed.
+ */
+export declare function encryptToken(key: EncryptionKey, token: string, binding: Binding): Promise<string>;
 /** Decrypt with whichever configured key produced the value. keyId says which one. */
-export declare function decryptToken(keys: EncryptionKey[], value: string, binding: Binding): {
+export declare function decryptToken(keys: EncryptionKey[], value: string, binding: Binding): Promise<{
     token: string;
     keyId: string;
-};
+}>;
 /**
  * The message Shopify signs for an OAuth redirect: every parameter except hmac and signature,
  * with "%", "&" and "=" escaped in names and "%" and "&" escaped in values, array parameters
@@ -84,7 +89,7 @@ export declare function shopifyHmacMessage(params: URLSearchParams): string | un
  * with the app's client secret). With nowMs, also require a timestamp no older than
  * CALLBACK_MAX_AGE_SECONDS (and no more than that in the future).
  */
-export declare function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): boolean;
+export declare function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): Promise<boolean>;
 export declare class ShopifyConnections {
     private readonly options;
     private readonly now;

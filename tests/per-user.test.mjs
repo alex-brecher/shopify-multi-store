@@ -42,34 +42,34 @@ async function connectStore(app, cookie, { alias = "wholesale", shopifyEmail = "
   return shopifyBack(app, authorize, { email: shopifyEmail, token, cookie });
 }
 
-test("Shopify HMAC verification accepts a correct signature and rejects any change", () => {
+test("Shopify HMAC verification accepts a correct signature and rejects any change", async () => {
   const good = signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts() });
-  assert.equal(verifyShopifyHmac(good, SECRET), true);
-  assert.equal(verifyShopifyHmac(good, "other-secret"), false);
+  assert.equal(await verifyShopifyHmac(good, SECRET), true);
+  assert.equal(await verifyShopifyHmac(good, "other-secret"), false);
   const tampered = new URLSearchParams(good);
   tampered.set("shop", "evil.myshopify.com");
-  assert.equal(verifyShopifyHmac(tampered, SECRET), false);
+  assert.equal(await verifyShopifyHmac(tampered, SECRET), false);
   const missing = new URLSearchParams(good);
   missing.delete("hmac");
-  assert.equal(verifyShopifyHmac(missing, SECRET), false);
+  assert.equal(await verifyShopifyHmac(missing, SECRET), false);
   const junk = new URLSearchParams(good);
   junk.set("hmac", "zz");
-  assert.equal(verifyShopifyHmac(junk, SECRET), false);
+  assert.equal(await verifyShopifyHmac(junk, SECRET), false);
 });
 
-test("online tokens round-trip through AES-256-GCM and are bound to their user and store", () => {
+test("online tokens round-trip through AES-256-GCM and are bound to their user and store", async () => {
   const binding = { email: "pat@bariatricpal.com", alias: "main", shop: "main.myshopify.com" };
-  const sealed = encryptToken(KEYS[0], "shpua_secret", binding);
+  const sealed = await encryptToken(KEYS[0], "shpua_secret", binding);
   assert.match(sealed, /^v2\.k1\./);
   assert.ok(!sealed.includes("shpua_secret"));
-  assert.notEqual(sealed, encryptToken(KEYS[0], "shpua_secret", binding), "random IV");
-  assert.deepEqual(decryptToken(KEYS, sealed, binding), { token: "shpua_secret", keyId: "k1" });
-  assert.throws(() => decryptToken(KEYS, sealed, { ...binding, email: "other@bariatricpal.com" }));
-  assert.throws(() => decryptToken(KEYS, sealed, { ...binding, alias: "wholesale" }));
-  assert.throws(() => decryptToken([{ id: "k1", key: randomBytes(32) }], sealed, binding));
-  assert.throws(() => decryptToken([{ id: "k2", key: KEY }], sealed, binding), /k1 is not configured/);
+  assert.notEqual(sealed, await encryptToken(KEYS[0], "shpua_secret", binding), "random IV");
+  assert.deepEqual(await decryptToken(KEYS, sealed, binding), { token: "shpua_secret", keyId: "k1" });
+  await assert.rejects(decryptToken(KEYS, sealed, { ...binding, email: "other@bariatricpal.com" }));
+  await assert.rejects(decryptToken(KEYS, sealed, { ...binding, alias: "wholesale" }));
+  await assert.rejects(decryptToken([{ id: "k1", key: randomBytes(32) }], sealed, binding));
+  await assert.rejects(decryptToken([{ id: "k2", key: KEY }], sealed, binding), /k1 is not configured/);
   // A different key id cannot be swapped in for the same key.
-  assert.throws(() => decryptToken([{ id: "k2", key: KEY }], sealed.replace("v2.k1.", "v2.k2."), binding));
+  await assert.rejects(decryptToken([{ id: "k2", key: KEY }], sealed.replace("v2.k1.", "v2.k2."), binding));
   assert.equal(parseEncryptionKey(KEY.toString("base64")).length, 32);
   assert.throws(() => parseEncryptionKey(undefined), /SHOPIFY_TOKEN_ENCRYPTION_KEY/);
   assert.throws(() => parseEncryptionKey(randomBytes(16).toString("base64")), /32 random bytes/);
@@ -128,7 +128,7 @@ test("callback state is single use, short lived, and bound to the browser sessio
   let authorize = await startConnect(app, cookie, "wholesale");
   assert.equal((await back(authorize)).status, 303);
   assert.equal((await back(authorize)).status, 400);
-  await store.deleteWhere("shopify_token", (record) => record.alias === "wholesale");
+  await store.deleteMatching("shopify_token", { alias: "wholesale" });
 
   // State finished in another user's browser.
   authorize = await startConnect(app, cookie, "wholesale");
@@ -367,7 +367,7 @@ test("the raw mutation tool applies run_action's destructive confirm check on a 
   assert.notEqual(update.isError, true, JSON.stringify(update));
 });
 
-test("Shopify HMAC escapes names and values, formats array parameters, and rejects stale timestamps", () => {
+test("Shopify HMAC escapes names and values, formats array parameters, and rejects stale timestamps", async () => {
   const params = new URLSearchParams();
   params.append("shop", "main.myshopify.com");
   params.append("note", "a&b%c=d");
@@ -378,16 +378,16 @@ test("Shopify HMAC escapes names and values, formats array parameters, and rejec
   const message = shopifyHmacMessage(params);
   assert.equal(message, `ids=["1", "2"]&note=a%26b%25c=d&shop=main.myshopify.com&timestamp=${params.get("timestamp")}&we%3Dird=x`);
   params.set("hmac", createHmac("sha256", SECRET).update(message).digest("hex"));
-  assert.equal(verifyShopifyHmac(params, SECRET, Date.now()), true);
+  assert.equal(await verifyShopifyHmac(params, SECRET, Date.now()), true);
   const repeated = new URLSearchParams(params);
   repeated.append("shop", "evil.myshopify.com");
-  assert.equal(verifyShopifyHmac(repeated, SECRET), false);
+  assert.equal(await verifyShopifyHmac(repeated, SECRET), false);
 
   const stale = signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts(-301) });
-  assert.equal(verifyShopifyHmac(stale, SECRET), true, "signature itself is fine");
-  assert.equal(verifyShopifyHmac(stale, SECRET, Date.now()), false);
-  assert.equal(verifyShopifyHmac(signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts(-200) }), SECRET, Date.now()), true);
-  assert.equal(verifyShopifyHmac(signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts(400) }), SECRET, Date.now()), false);
+  assert.equal(await verifyShopifyHmac(stale, SECRET), true, "signature itself is fine");
+  assert.equal(await verifyShopifyHmac(stale, SECRET, Date.now()), false);
+  assert.equal(await verifyShopifyHmac(signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts(-200) }), SECRET, Date.now()), true);
+  assert.equal(await verifyShopifyHmac(signedCallback({ code: "c", shop: "main.myshopify.com", state: "s", timestamp: ts(400) }), SECRET, Date.now()), false);
 });
 
 test("a stale Shopify callback is refused even with a valid state", async (t) => {

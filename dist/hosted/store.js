@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
+/** Every field in `match` equals the value's field of the same name. */
+export function matches(value, match) {
+    if (!value || typeof value !== "object")
+        return false;
+    return Object.entries(match).every(([field, expected]) => value[field] === expected);
+}
 function emptyData() {
-    return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, session: {}, shopify_state: {}, shopify_token: {} };
+    return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, session: {}, shopify_state: {}, shopify_token: {}, revoked_family: {} };
 }
 /**
  * In-memory store. All operations are synchronous against the map, so take() is atomic
@@ -39,17 +45,18 @@ export class MemoryStore {
         await this.changed();
         return entry.value;
     }
-    async update(kind, key, change) {
+    async claim(kind, key, flag) {
         // Read and write with no await in between, so no other operation can run in the gap.
         const entry = this.live(kind, key);
         if (!entry)
             return undefined;
-        const next = change(entry.value);
-        if (next === undefined)
-            return undefined;
+        const value = entry.value;
+        if (value[flag] === true)
+            return { value: value, claimed: false };
+        const next = { ...value, [flag]: true };
         this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
         await this.changed();
-        return next;
+        return { value: next, claimed: true };
     }
     async delete(kind, key) {
         if (!Object.hasOwn(this.data[kind], key))
@@ -57,10 +64,10 @@ export class MemoryStore {
         delete this.data[kind][key];
         await this.changed();
     }
-    async deleteWhere(kind, predicate) {
+    async deleteMatching(kind, match) {
         let removed = 0;
         for (const [key, entry] of Object.entries(this.data[kind])) {
-            if (predicate(entry.value)) {
+            if (matches(entry.value, match)) {
                 delete this.data[kind][key];
                 removed += 1;
             }

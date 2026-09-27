@@ -1,7 +1,6 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { lookup as dnsLookup } from "node:dns";
-import { request as httpsRequest } from "node:https";
-import { BlockList, isIP } from "node:net";
+import { createHash } from "node:crypto";
+import { fetchMetadataDocumentWithFetch } from "../platform/cimd-fetch.js";
+import { constantTimeEqual, randomToken, randomUuid } from "../platform/crypto.js";
 import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDisplayHost } from "./known-clients.js";
 import { cookie, escapeHtml, formActionSource, htmlPage, readCookie, sameOrigin } from "./html.js";
 export { isLoopbackRedirect };
@@ -23,7 +22,6 @@ const CONSENT_COOKIE = "__Host-sms_consent";
  */
 const LOGIN_COOKIE_PREFIX = "__Host-sms_login_";
 const CIMD_CACHE_MS = 5 * 60_000;
-const CIMD_MAX_BYTES = 16 * 1024;
 const AUTH_METHODS = ["none", "client_secret_post", "client_secret_basic"];
 /** Audit label for sign-ins to server pages. */
 export const PAGE_SIGN_IN_CLIENT = "stores-page";
@@ -31,13 +29,9 @@ export function sha256(value) {
     return createHash("sha256").update(value).digest("hex");
 }
 function secret(prefix) {
-    return `${prefix}${randomBytes(32).toString("base64url")}`;
+    return `${prefix}${randomToken(32)}`;
 }
-function safeEqual(a, b) {
-    const left = Buffer.from(a);
-    const right = Buffer.from(b);
-    return left.length === right.length && timingSafeEqual(left, right);
-}
+const safeEqual = constantTimeEqual;
 function trimSlash(value) {
     return value.endsWith("/") ? value.slice(0, -1) : value;
 }
@@ -84,8 +78,6 @@ export class AuthorizationServer {
     now;
     log;
     cimdCache = new Map();
-    /** Per refresh-token lock chain, so concurrent uses of one token are handled one at a time. */
-    refreshLocks = new Map();
     constructor(options) {
         this.options = options;
         this.issuer = trimSlash(options.issuer);
@@ -102,7 +94,7 @@ export class AuthorizationServer {
         this.sessionMaxAgeMs = (options.sessionMaxAgeSeconds ?? 7 * 24 * 3600) * 1000;
         this.maxClients = options.maxRegisteredClients ?? 10_000;
         this.now = options.now ?? Date.now;
-        this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
+        this.log = options.log ?? ((message) => console.error(message));
     }
     /** Record a sign-in, token, or authorization event. Never throws. */
     async auditAuth(entry) {
@@ -189,7 +181,7 @@ export class AuthorizationServer {
         if (await this.options.store.count("client") >= this.maxClients) {
             return oauthError("temporarily_unavailable", "Client registration limit reached.", 503);
         }
-        const clientId = `sms_client_${randomUUID()}`;
+        const clientId = `sms_client_${randomUuid()}`;
         const clientSecret = method === "none" ? undefined : secret("sms_cs_");
         const issuedAt = Math.floor(this.now() / 1000);
         const record = {
@@ -242,7 +234,7 @@ export class AuthorizationServer {
         try {
             document = this.options.fetchClientMetadata
                 ? await this.options.fetchClientMetadata(clientId)
-                : await fetchMetadataDocument(clientId);
+                : await fetchMetadataDocumentWithFetch(clientId);
         }
         catch (error) {
             this.log(`Client metadata fetch failed for ${clientId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -329,8 +321,8 @@ export class AuthorizationServer {
     async beginLogin(build) {
         if (!this.startLogin)
             return errorPage(503, "Sign-in is not available on this server.");
-        const loginState = randomBytes(32).toString("base64url");
-        const binding = randomBytes(32).toString("base64url");
+        const loginState = randomToken(32);
+        const binding = randomToken(32);
         const expiresAt = this.now() + PENDING_TTL_MS;
         const record = build({ bindingSha256: sha256(binding), expiresAt });
         await this.options.store.put("pending", sha256(loginState), record, expiresAt);
@@ -470,9 +462,9 @@ export class AuthorizationServer {
     }
     // ---------- Consent ----------
     async consentPage(pending, email, principal, redirectClass) {
-        const consentId = randomBytes(32).toString("base64url");
-        const csrf = randomBytes(32).toString("base64url");
-        const binding = randomBytes(32).toString("base64url");
+        const consentId = randomToken(32);
+        const csrf = randomToken(32);
+        const binding = randomToken(32);
         const record = { pending, email, csrfSha256: sha256(csrf), bindingSha256: sha256(binding), redirectClass };
         await this.options.store.put("consent", sha256(consentId), record, this.now() + CONSENT_TTL_MS);
         const server = escapeHtml(this.displayName);
@@ -631,67 +623,71 @@ ${open ? `<div class="warn"><p>This app's return address is not on this server's
         const resource = body.get("resource");
         if (resource !== null && !this.resourceMatches(resource))
             return oauthError("invalid_target", `This server only issues tokens for ${this.resource}.`);
-        const issued = await this.issueTokens(client, record.email, record.scope, randomUUID(), this.now());
+        const issued = await this.issueTokens(client, record.email, record.scope, randomUuid(), this.now());
         await this.auditAuth({ event: "token_issued", user: record.email, clientId: client.client_id });
         return issued;
     }
+    /**
+     * Refresh with rotation and reuse detection. Every check that can refuse the request runs
+     * before the token is spent; the token is then claimed with one atomic store operation
+     * (OAuthStore.claim), so of several concurrent uses of one token exactly one wins, in one
+     * Node process and on a Durable Object alike. A token that was already claimed is a reuse:
+     * the whole token family is revoked.
+     */
     async refreshTokenGrant(client, body) {
         const token = body.get("refresh_token");
         if (!token)
             return oauthError("invalid_request", "refresh_token is required.");
         const key = sha256(token);
-        // Serialize every use of the same refresh token. Without this, concurrent requests could all
-        // read the record before any of them marked it rotated, and each would get new tokens.
-        // With it, exactly one succeeds and the others see a rotated token and revoke the family.
-        const previous = this.refreshLocks.get(key) ?? Promise.resolve();
-        let release;
-        const held = new Promise((resolve) => { release = resolve; });
-        const chain = previous.then(() => held);
-        this.refreshLocks.set(key, chain);
-        await previous;
-        try {
-            return await this.refreshTokenGrantLocked(client, body, key);
-        }
-        finally {
-            release();
-            if (this.refreshLocks.get(key) === chain)
-                this.refreshLocks.delete(key);
-        }
-    }
-    async refreshTokenGrantLocked(client, body, key) {
         const record = await this.options.store.get("refresh", key);
-        if (!record)
+        if (!record || await this.familyRevoked(record.familyId))
             return oauthError("invalid_grant", "The refresh token is invalid or expired.");
         if (record.clientId !== client.client_id)
             return oauthError("invalid_grant", "The refresh token was issued to another client.");
-        if (record.rotated) {
-            // A rotated token came back: assume it leaked and revoke the whole token family.
-            await this.revokeFamily(record.familyId);
-            this.log(`Refresh token reuse detected for ${record.email}; revoked token family.`);
-            await this.auditAuth({ event: "refresh_denied", user: record.email, clientId: client.client_id, reason: "refresh token reuse; token family revoked" });
-            return oauthError("invalid_grant", "The refresh token was already used.");
-        }
+        if (record.rotated)
+            return this.refreshReused(record, client);
         const resource = body.get("resource");
         if (resource !== null && !this.resourceMatches(resource))
             return oauthError("invalid_target", `This server only issues tokens for ${this.resource}.`);
         // Sessions do not slide forever: after the family's maximum age the user must sign in with
         // Shopify again, which proves again that they are staff on a configured store.
         if (typeof record.familyStartedAt !== "number" || this.now() - record.familyStartedAt >= this.sessionMaxAgeMs) {
-            await this.revokeFamily(record.familyId);
+            await this.revokeFamily(record.familyId, record.familyStartedAt);
             this.log(`Session for ${record.email} reached its maximum age; sign-in required.`);
             await this.auditAuth({ event: "refresh_denied", user: record.email, clientId: client.client_id, reason: "session maximum age reached" });
             return oauthError("invalid_grant", "The sign-in session has expired. Sign in again.");
         }
-        // Rotation: keep the old token only as a reuse tripwire until it would have expired.
-        // Written before new tokens are issued, while this token's lock is held.
-        await this.options.store.put("refresh", key, { ...record, rotated: true }, record.expiresAt);
+        // Rotation: mark the token used, atomically. The old token stays only as a reuse tripwire
+        // until it would have expired.
+        const claimed = await this.options.store.claim("refresh", key, "rotated");
+        if (!claimed)
+            return oauthError("invalid_grant", "The refresh token is invalid or expired.");
+        if (!claimed.claimed)
+            return this.refreshReused(claimed.value, client);
         const refreshed = await this.issueTokens(client, record.email, record.scope, record.familyId, record.familyStartedAt);
         await this.auditAuth({ event: "token_refreshed", user: record.email, clientId: client.client_id });
         return refreshed;
     }
-    async revokeFamily(familyId) {
-        await this.options.store.deleteWhere("access", (value) => value.familyId === familyId);
-        await this.options.store.deleteWhere("refresh", (value) => value.familyId === familyId);
+    /** A rotated refresh token came back: assume it leaked and revoke the whole token family. */
+    async refreshReused(record, client) {
+        await this.revokeFamily(record.familyId, record.familyStartedAt);
+        this.log(`Refresh token reuse detected for ${record.email}; revoked token family.`);
+        await this.auditAuth({ event: "refresh_denied", user: record.email, clientId: client.client_id, reason: "refresh token reuse; token family revoked" });
+        return oauthError("invalid_grant", "The refresh token was already used.");
+    }
+    /**
+     * Revoke a token family. A marker is written first and checked wherever a family's tokens
+     * are used, so tokens that a concurrent request issues for the family after the deletes
+     * below (the winner of a refresh race, say) are dead too. It lives as long as any token of
+     * the family could.
+     */
+    async revokeFamily(familyId, familyStartedAt) {
+        await this.options.store.put("revoked_family", familyId, { revokedAt: this.now() }, Math.max(familyStartedAt + this.sessionMaxAgeMs, this.now() + 60_000));
+        await this.options.store.deleteMatching("access", { familyId });
+        await this.options.store.deleteMatching("refresh", { familyId });
+    }
+    async familyRevoked(familyId) {
+        return (await this.options.store.get("revoked_family", familyId)) !== undefined;
     }
     async issueTokens(client, email, scope, familyId, familyStartedAt) {
         const now = this.now();
@@ -722,128 +718,9 @@ ${open ? `<div class="warn"><p>This app's return address is not on this server's
         const record = await this.options.store.get("access", sha256(token));
         if (!record || record.expiresAt <= this.now() || !this.resourceMatches(record.resource))
             return undefined;
+        if (await this.familyRevoked(record.familyId))
+            return undefined;
         return record;
     }
-}
-// Addresses a client metadata URL must never reach: unspecified, loopback, private,
-// carrier-grade NAT, link-local (including cloud metadata at 169.254.169.254), benchmark,
-// documentation, multicast, and reserved ranges, for IPv4 and IPv6.
-const FORBIDDEN = new BlockList();
-for (const [network, prefix] of [
-    ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
-    ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.88.99.0", 24], ["192.168.0.0", 16],
-    ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4]
-])
-    FORBIDDEN.addSubnet(network, prefix, "ipv4");
-for (const [network, prefix] of [
-    ["::", 96], ["64:ff9b:1::", 48], ["100::", 64], ["2001::", 23], ["2001:db8::", 32],
-    ["2002::", 16], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]
-])
-    FORBIDDEN.addSubnet(network, prefix, "ipv6");
-/** True for an IP address a client metadata fetch must not connect to. Non-IP input is refused. */
-export function isForbiddenAddress(address) {
-    const ip = address.replace(/^\[|\]$/g, "").toLowerCase();
-    const family = isIP(ip);
-    if (family === 4)
-        return FORBIDDEN.check(ip, "ipv4");
-    if (family !== 6)
-        return true;
-    // IPv4-mapped, IPv4-compatible and NAT64 (64:ff9b::/96) addresses carry an IPv4 address.
-    const embedded = /^(?:::ffff:|::|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/.exec(ip)?.[1];
-    if (embedded)
-        return FORBIDDEN.check(embedded, "ipv4");
-    const hex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
-    if (hex) {
-        const value = (parseInt(hex[1], 16) << 16) | parseInt(hex[2], 16);
-        return FORBIDDEN.check([24, 16, 8, 0].map((shift) => (value >>> shift) & 255).join("."), "ipv4");
-    }
-    return FORBIDDEN.check(ip, "ipv6");
-}
-/** dns.lookup that fails when any resolved address is forbidden. Used as the socket's lookup, so the checked address is the one connected to. */
-const publicOnlyLookup = (hostname, options, callback) => {
-    dnsLookup(hostname, { ...options, all: true }, (error, addresses) => {
-        if (error)
-            return callback(error);
-        const list = addresses;
-        const blocked = list.find((entry) => isForbiddenAddress(entry.address));
-        if (!list.length || blocked) {
-            return callback(new Error(`Client metadata host ${hostname} resolves to a non-public address${blocked ? ` (${blocked.address})` : ""}.`));
-        }
-        if (options.all)
-            return callback(null, list);
-        callback(null, list[0].address, list[0].family);
-    });
-};
-/**
- * Fetch a Client ID Metadata Document: HTTPS only, no redirects, 5-second limit, 16 KB body.
- * The host, named or wildcard-admitted, must resolve only to public addresses (checked at
- * connect time, so a DNS answer cannot change between the check and the connection).
- */
-export function fetchMetadataDocument(url) {
-    return new Promise((resolve, reject) => {
-        let target;
-        try {
-            target = new URL(url);
-        }
-        catch {
-            reject(new Error("Invalid URL."));
-            return;
-        }
-        if (target.protocol !== "https:") {
-            reject(new Error("Only HTTPS is allowed."));
-            return;
-        }
-        const literal = target.hostname.replace(/^\[|\]$/g, "");
-        if (isIP(literal) && isForbiddenAddress(literal)) {
-            reject(new Error(`Client metadata host ${literal} is a non-public address.`));
-            return;
-        }
-        const request = httpsRequest(target, {
-            method: "GET",
-            headers: { accept: "application/json" },
-            lookup: publicOnlyLookup
-        }, (response) => {
-            const status = response.statusCode ?? 0;
-            if (status >= 300 && status < 400) {
-                response.resume();
-                reject(new Error(`Redirects are not followed (HTTP ${status}).`));
-                return;
-            }
-            if (status < 200 || status >= 300) {
-                response.resume();
-                reject(new Error(`HTTP ${status}`));
-                return;
-            }
-            if (Number(response.headers["content-length"] ?? "0") > CIMD_MAX_BYTES) {
-                response.destroy();
-                reject(new Error("Document too large."));
-                return;
-            }
-            const chunks = [];
-            let size = 0;
-            response.on("data", (chunk) => {
-                size += chunk.byteLength;
-                if (size > CIMD_MAX_BYTES) {
-                    response.destroy();
-                    reject(new Error("Document too large."));
-                    return;
-                }
-                chunks.push(chunk);
-            });
-            response.on("end", () => {
-                try {
-                    resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-                }
-                catch {
-                    reject(new Error("Document is not valid JSON."));
-                }
-            });
-            response.on("error", reject);
-        });
-        const timer = setTimeout(() => request.destroy(new Error("Timed out.")), 5_000);
-        request.on("close", () => clearTimeout(timer));
-        request.on("error", reject);
-        request.end();
-    });
 }
 //# sourceMappingURL=oauth.js.map

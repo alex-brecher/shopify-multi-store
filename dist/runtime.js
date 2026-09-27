@@ -4,9 +4,20 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * behavior (keychain credentials, preview stores, unfiltered store list) stays the same.
  */
 let hosted = false;
-/** Called once by `shopify-multi-store serve`. Turns off keychain and local-machine features. */
-export function enableHostedMode() {
+let hostedEnv;
+/**
+ * Called once by `shopify-multi-store serve` and by the Cloudflare Worker. Turns off keychain
+ * and local-machine features. `env` holds the settings store configuration is read from
+ * (STORES_JSON and friends): process.env on Node, the Worker's env on Cloudflare.
+ */
+export function enableHostedMode(env) {
     hosted = true;
+    if (env)
+        hostedEnv = env;
+}
+/** Where configuration is read from: the hosted env when one was given, else process.env. */
+export function runtimeEnv() {
+    return hostedEnv ?? process.env;
 }
 export function isHostedMode() {
     return hosted;

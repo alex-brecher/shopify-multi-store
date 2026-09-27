@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { aesGcmOpen, aesGcmSeal, base64UrlToBytes, bytesToBase64Url, constantTimeEqual, hmacSha256Hex, randomToken } from "../platform/crypto.js";
 import type { StoreConfig } from "../config.js";
 import type { ShopifyUserToken, UserShopifyAccess } from "../runtime.js";
 import { auditError } from "./audit.js";
@@ -15,7 +15,7 @@ import type { OAuthStore } from "./store.js";
  * kept as that person's connection to the store. Each further store is connected the same way
  * (one click reconnects every store). An online token carries only that person's Shopify
  * permissions, so Shopify decides what every tool call may do. Tokens are encrypted at rest
- * with AES-256-GCM and never leave the server. Shopify ends online tokens after 24 hours, or
+ * with AES-256-GCM (Web Crypto, the same on Node and Workers) and never leave the server. Shopify ends online tokens after 24 hours, or
  * when the person logs out of the Shopify admin.
  */
 
@@ -107,7 +107,8 @@ export interface ShopifyConnectOptions {
 /** One AES-256-GCM key with the id stored next to each ciphertext it produced. */
 export interface EncryptionKey {
   id: string;
-  key: Buffer;
+  /** 32 raw key bytes. */
+  key: Uint8Array;
 }
 
 const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/;
@@ -151,42 +152,40 @@ export function parseEncryptionKeys(env: { SHOPIFY_TOKEN_ENCRYPTION_KEYS?: strin
 
 type Binding = { email: string; alias: string; shop: string };
 
-function tokenAad(format: string, keyId: string, { email, alias, shop }: Binding): Buffer {
+function tokenAad(format: string, keyId: string, { email, alias, shop }: Binding): Uint8Array {
   // Binds the ciphertext to its record and key id, so a token cannot be moved to another user or store.
-  return Buffer.from(format === "v1" ? `v1\0${email}\0${alias.toLowerCase()}\0${shop}` : `${format}\0${keyId}\0${email}\0${alias.toLowerCase()}\0${shop}`);
+  return new TextEncoder().encode(format === "v1" ? `v1\0${email}\0${alias.toLowerCase()}\0${shop}` : `${format}\0${keyId}\0${email}\0${alias.toLowerCase()}\0${shop}`);
 }
 
-/** Encrypt with the given key: v2.<keyId>.<iv>.<tag>.<ciphertext>. */
-export function encryptToken(key: EncryptionKey, token: string, binding: Binding): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key.key, iv);
-  cipher.setAAD(tokenAad(TOKEN_FORMAT, key.id, binding));
-  const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
-  return [TOKEN_FORMAT, key.id, iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), ciphertext.toString("base64url")].join(".");
+/**
+ * Encrypt with the given key: v2.<keyId>.<iv>.<tag>.<ciphertext>, each part base64url. AES-256-GCM
+ * through Web Crypto. The format is the one written by earlier versions (Node's cipher API), so
+ * existing records stay readable and no migration is needed.
+ */
+export async function encryptToken(key: EncryptionKey, token: string, binding: Binding): Promise<string> {
+  const { iv, tag, ciphertext } = await aesGcmSeal(key.key, token, tokenAad(TOKEN_FORMAT, key.id, binding));
+  return [TOKEN_FORMAT, key.id, bytesToBase64Url(iv), bytesToBase64Url(tag), bytesToBase64Url(ciphertext)].join(".");
 }
 
-function open(key: Buffer, aad: Buffer, iv: string, tag: string, ciphertext: string): string {
-  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
-  decipher.setAAD(aad);
-  decipher.setAuthTag(Buffer.from(tag, "base64url"));
-  return Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8");
+function open(key: Uint8Array, aad: Uint8Array, iv: string, tag: string, ciphertext: string): Promise<string> {
+  return aesGcmOpen(key, aad, base64UrlToBytes(iv), base64UrlToBytes(tag), base64UrlToBytes(ciphertext));
 }
 
 /** Decrypt with whichever configured key produced the value. keyId says which one. */
-export function decryptToken(keys: EncryptionKey[], value: string, binding: Binding): { token: string; keyId: string } {
+export async function decryptToken(keys: EncryptionKey[], value: string, binding: Binding): Promise<{ token: string; keyId: string }> {
   const parts = value.split(".");
   if (parts[0] === TOKEN_FORMAT && parts.length === 5) {
     const [, keyId, iv, tag, ciphertext] = parts as [string, string, string, string, string];
     const key = keys.find((candidate) => candidate.id === keyId);
     if (!key) throw new Error(`Encryption key ${keyId} is not configured.`);
-    return { token: open(key.key, tokenAad(TOKEN_FORMAT, keyId, binding), iv, tag, ciphertext), keyId };
+    return { token: await open(key.key, tokenAad(TOKEN_FORMAT, keyId, binding), iv, tag, ciphertext), keyId };
   }
   if (parts[0] === "v1" && parts.length === 4) {
     // Written before key ids existed: try each key.
     const [, iv, tag, ciphertext] = parts as [string, string, string, string];
     for (const key of keys) {
       try {
-        return { token: open(key.key, tokenAad("v1", "", binding), iv, tag, ciphertext), keyId: `v1:${key.id}` };
+        return { token: await open(key.key, tokenAad("v1", "", binding), iv, tag, ciphertext), keyId: `v1:${key.id}` };
       } catch {
         // Try the next key.
       }
@@ -229,13 +228,13 @@ export function shopifyHmacMessage(params: URLSearchParams): string | undefined 
  * with the app's client secret). With nowMs, also require a timestamp no older than
  * CALLBACK_MAX_AGE_SECONDS (and no more than that in the future).
  */
-export function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): boolean {
+export async function verifyShopifyHmac(params: URLSearchParams, secret: string, nowMs?: number): Promise<boolean> {
   const received = params.get("hmac") ?? "";
   if (!/^[0-9a-f]{64}$/i.test(received) || !secret) return false;
   const message = shopifyHmacMessage(params);
   if (message === undefined) return false;
-  const expected = createHmac("sha256", secret).update(message).digest("hex");
-  if (!timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(received.toLowerCase(), "hex"))) return false;
+  const expected = await hmacSha256Hex(secret, message);
+  if (!constantTimeEqual(expected, received.toLowerCase())) return false;
   if (nowMs !== undefined) {
     const timestamp = Number(params.get("timestamp"));
     if (!Number.isInteger(timestamp) || Math.abs(nowMs / 1000 - timestamp) > CALLBACK_MAX_AGE_SECONDS) return false;
@@ -247,11 +246,7 @@ function tokenKey(email: string, alias: string): string {
   return sha256(`shopify\0${email}\0${alias.toLowerCase()}`);
 }
 
-function safeEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
+const safeEqual = constantTimeEqual;
 
 function formatTime(ms: number): string {
   return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
@@ -322,11 +317,11 @@ export class ShopifyConnections {
       if (!record || record.shop !== store.shop) continue;
       try {
         const binding = { email, alias: store.alias, shop: store.shop };
-        const { token, keyId } = decryptToken(this.options.encryptionKeys, record.encryptedToken, binding);
+        const { token, keyId } = await decryptToken(this.options.encryptionKeys, record.encryptedToken, binding);
         const primary = this.options.encryptionKeys[0]!;
         if (keyId !== primary.id) {
           // Rotation: re-encrypt with the newest key so the old key can be retired.
-          await this.options.store.put<ShopifyTokenRecord>("shopify_token", tokenKey(email, store.alias), { ...record, encryptedToken: encryptToken(primary, token, binding) }, record.expiresAt + EXPIRED_RECORD_GRACE_MS);
+          await this.options.store.put<ShopifyTokenRecord>("shopify_token", tokenKey(email, store.alias), { ...record, encryptedToken: await encryptToken(primary, token, binding) }, record.expiresAt + EXPIRED_RECORD_GRACE_MS);
         }
         tokens.set(store.alias.toLowerCase(), { token, expiresAt: record.expiresAt, ...(record.associatedUser.email ? { shopifyEmail: record.associatedUser.email } : {}) });
       } catch {
@@ -407,7 +402,7 @@ export class ShopifyConnections {
 
   /** A page sign-in finished: open a /stores session, then show the page or reconnect every store. */
   async signedIn(email: string, purpose: PageSignInPurpose = "stores"): Promise<Response> {
-    const value = randomBytes(32).toString("base64url");
+    const value = randomToken(32);
     const key = sha256(value);
     await this.options.store.put<SessionRecord>("session", key, { email, purpose: "stores" }, this.now() + SESSION_TTL_MS);
     await this.options.auth.auditAuth({ event: "sign_in", user: email, clientId: PAGE_SIGN_IN_CLIENT, reason: purpose === "reconnect" ? "reconnect all stores" : "stores page" });
@@ -585,7 +580,7 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
 
   /** Create a single-use connection state bound to the /stores session and send the browser to Shopify. */
   private async startConnection(session: { key: string; email: string }, store: StoreConfig, chain: boolean): Promise<Response> {
-    const state = randomBytes(32).toString("base64url");
+    const state = randomToken(32);
     const record: StateRecord = { email: session.email, alias: store.alias, shop: store.shop, sessionSha256: session.key, chain };
     await this.options.store.put("shopify_state", sha256(state), record, this.now() + STATE_TTL_MS);
     return new Response(null, { status: 302, headers: { location: this.authorizeUrl(store, state), "cache-control": "no-store" } });
@@ -620,7 +615,7 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
     // The shop must be a configured store. Its secret verifies the signature.
     const store = SHOP_HOST.test(shop) ? stores.find((candidate) => candidate.shop.toLowerCase() === shop) : undefined;
     const secret = store ? this.options.clientSecret(store) : undefined;
-    if (!store || !secret || !verifyShopifyHmac(params, secret, this.now())) {
+    if (!store || !secret || !(await verifyShopifyHmac(params, secret, this.now()))) {
       await this.options.auth.auditAuth({ event: "shopify_connect_denied", reason: "invalid Shopify signature, stale timestamp, or unknown shop", ...(store ? { store: store.alias } : {}) });
       return page(400, "Connection failed", "Shopify's response could not be verified. Start again from the stores page.");
     }
@@ -656,7 +651,7 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
       email,
       alias: store.alias,
       shop: store.shop,
-      encryptedToken: encryptToken(this.options.encryptionKeys[0]!, token.accessToken, { email, alias: store.alias, shop: store.shop }),
+      encryptedToken: await encryptToken(this.options.encryptionKeys[0]!, token.accessToken, { email, alias: store.alias, shop: store.shop }),
       scope: token.scope,
       associatedUserScope: token.associatedUserScope,
       associatedUser: token.associatedUser,

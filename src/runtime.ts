@@ -6,10 +6,21 @@ import type { AuditErrorInfo } from "./hosted/audit.js";
  * behavior (keychain credentials, preview stores, unfiltered store list) stays the same.
  */
 let hosted = false;
+let hostedEnv: Readonly<Record<string, string | undefined>> | undefined;
 
-/** Called once by `shopify-multi-store serve`. Turns off keychain and local-machine features. */
-export function enableHostedMode(): void {
+/**
+ * Called once by `shopify-multi-store serve` and by the Cloudflare Worker. Turns off keychain
+ * and local-machine features. `env` holds the settings store configuration is read from
+ * (STORES_JSON and friends): process.env on Node, the Worker's env on Cloudflare.
+ */
+export function enableHostedMode(env?: Readonly<Record<string, string | undefined>>): void {
   hosted = true;
+  if (env) hostedEnv = env;
+}
+
+/** Where configuration is read from: the hosted env when one was given, else process.env. */
+export function runtimeEnv(): Readonly<Record<string, string | undefined>> {
+  return hostedEnv ?? process.env;
 }
 
 export function isHostedMode(): boolean {

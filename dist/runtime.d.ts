@@ -1,7 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { AuditErrorInfo } from "./hosted/audit.js";
-/** Called once by `shopify-multi-store serve`. Turns off keychain and local-machine features. */
-export declare function enableHostedMode(): void;
+/**
+ * Called once by `shopify-multi-store serve` and by the Cloudflare Worker. Turns off keychain
+ * and local-machine features. `env` holds the settings store configuration is read from
+ * (STORES_JSON and friends): process.env on Node, the Worker's env on Cloudflare.
+ */
+export declare function enableHostedMode(env?: Readonly<Record<string, string | undefined>>): void;
+/** Where configuration is read from: the hosted env when one was given, else process.env. */
+export declare function runtimeEnv(): Readonly<Record<string, string | undefined>>;
 export declare function isHostedMode(): boolean;
 /** One Shopify online (per-user) access token, already decrypted, for one store. */
 export interface ShopifyUserToken {

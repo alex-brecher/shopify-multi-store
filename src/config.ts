@@ -5,8 +5,15 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { z } from "zod/v4";
 import { DEFAULT_API_VERSION } from "./constants.js";
-import { accessTokenAccount, clientSecretAccount, readCredential } from "./credentials.js";
-import { connectionStatus, currentUserAccess, isHostedMode, notConnectedMessage, storeAllowed } from "./runtime.js";
+import { connectionStatus, currentUserAccess, isHostedMode, notConnectedMessage, runtimeEnv, storeAllowed } from "./runtime.js";
+
+/**
+ * The OS keychain (cross-keychain) is loaded only on the local stdio path, when a credential
+ * is actually read, so a hosted server or a Worker never loads it.
+ */
+async function keychain(): Promise<typeof import("./credentials.js")> {
+  return import("./credentials.js");
+}
 
 const AccessTokenAuthSchema = z.object({
   type: z.literal("access_token")
@@ -38,7 +45,7 @@ const oauthTokenCache = new Map<string, { token: string; expiresAt: number }>();
 const oauthTokenRequests = new Map<string, Promise<string>>();
 
 export function configPath(): string {
-  const configured = process.env.SHOPIFY_MULTI_STORE_CONFIG;
+  const configured = runtimeEnv().SHOPIFY_MULTI_STORE_CONFIG;
   return configured ? resolve(configured) : resolve(homedir(), ".config", "codex-shopify-multi-store", "stores.json");
 }
 
@@ -76,8 +83,9 @@ async function loadAllStores(): Promise<StoreConfig[]> {
   const hosted = isHostedMode();
   let raw: string;
   let source: string;
-  if (process.env.STORES_JSON) {
-    raw = process.env.STORES_JSON;
+  const storesJson = runtimeEnv().STORES_JSON;
+  if (storesJson) {
+    raw = storesJson;
     source = "STORES_JSON";
   } else {
     source = configPath();
@@ -169,7 +177,7 @@ export async function resolveStoreTargets(aliases?: readonly string[]): Promise<
 function validateStoreEndpoint(store: StoreConfig): void {
   if (store.baseUrl) {
     const url = new URL(store.baseUrl);
-    if (url.protocol === "http:" && process.env.SHOPIFY_MULTI_STORE_ALLOW_INSECURE_HTTP === "1") return;
+    if (url.protocol === "http:" && runtimeEnv().SHOPIFY_MULTI_STORE_ALLOW_INSECURE_HTTP === "1") return;
     if (url.protocol !== "https:") throw new Error(`Store ${store.alias} must use HTTPS.`);
     return;
   }
@@ -214,8 +222,7 @@ export async function getAccessToken(store: StoreConfig): Promise<string> {
     return getClientCredentialsToken(store);
   }
 
-  // Hosted mode reads credentials only from the environment (or files mounted into it).
-  if (isHostedMode()) throw new Error(`No credential is available for ${store.alias}. Set ${envName} on the server.`);
+  const { accessTokenAccount, readCredential } = await keychain();
   const token = await readCredential(accessTokenAccount(store.alias));
   if (token) return token;
   throw new Error(`No operating-system credential is available for ${store.alias}. Set ${envName} or run \"shopify-multi-store setup\".`);
@@ -224,7 +231,11 @@ export async function getAccessToken(store: StoreConfig): Promise<string> {
 async function getClientCredentialsToken(store: StoreConfig): Promise<string> {
   if (store.auth.type !== "client_credentials") throw new Error("Client credentials are not configured.");
   const secretEnv = `SHOPIFY_CLIENT_SECRET_${store.alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
-  const clientSecret = process.env[secretEnv] ?? (isHostedMode() ? null : await readCredential(clientSecretAccount(store.alias)));
+  let clientSecret: string | null | undefined = process.env[secretEnv];
+  if (!clientSecret) {
+    const { clientSecretAccount, readCredential } = await keychain();
+    clientSecret = await readCredential(clientSecretAccount(store.alias));
+  }
   if (!clientSecret) {
     throw new Error(`No OAuth client secret is available for ${store.alias}. Set ${secretEnv} or reconnect the store.`);
   }
