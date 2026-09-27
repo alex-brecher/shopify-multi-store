@@ -86,6 +86,8 @@ async function fixture(t, { extraStores = [] } = {}) {
     const root = op.selectionSet.selections[0].name.value;
     const v = b.variables;
     if (state.networkFailOn === name) throw new Error("simulated network reset");
+    if (state.readbackFailsAfterWrite && name === "VariantsForPricing" && state.requests.some((r) => r.url === String(url) && /UpdatePricesBulk/.test(r.query)))
+      throw new Error("simulated readback failure");
     if (state.reject === name)
       return Response.json({
         data: { [root]: { userErrors: [{ message: "Rejected fixture", field: ["input"] }] } },
@@ -393,6 +395,41 @@ test("update_prices: a network error after the write was sent is reported as unk
   assert.equal(item.outcome, "unknown");
   assert.ok(item.doNotBlindlyRetry);
   assert.equal(result.structuredContent.status, "unknown");
+});
+
+test("update_prices: a failed verification read is applied_unverified and the store is not ok", async (t) => {
+  const { call, callMulti, state } = await fixture(t);
+  state.readbackFailsAfterWrite = true;
+  const result = await call("update_prices", {
+    skus: [{ sku: "SKU-FOUND", price: "12.00" }],
+    dryRun: false,
+  });
+  const item = result.structuredContent.results[0];
+  assert.equal(item.outcome, "applied_unverified");
+  assert.equal(item.verification, "verification_failed");
+  assert.equal(result.structuredContent.status, "unverified");
+  assert.equal(result.structuredContent.succeeded, 0);
+  assert.equal(result.structuredContent.unverified, 1);
+  assert.ok(result.structuredContent.verificationNotice);
+
+  state.requests.length = 0;
+  const many = await callMulti("update_prices_many", {
+    stores: ["fixture", "second"],
+    skus: [{ sku: "SKU-FOUND", price: "12.00" }],
+    dryRun: false,
+  });
+  for (const store of many.structuredContent.stores) {
+    assert.equal(store.status, "unverified");
+    assert.equal(store.ok, false, "an unverified write is never ok");
+  }
+  assert.equal(many.structuredContent.succeeded, 0);
+  assert.equal(many.structuredContent.unverified, 2);
+  assert.equal(many.structuredContent.failed, 2);
+
+  const { deriveStatus } = await import("../dist/parity-tools.js");
+  assert.equal(deriveStatus(["applied", "applied_unverified"]), "unverified");
+  assert.equal(deriveStatus(["applied_unverified", "not_found"]), "partial");
+  assert.equal(deriveStatus(["applied", "skipped"]), "ok");
 });
 
 test("update_prices: a partial failure (userErrors on some variants) yields a partial store status", async (t) => {

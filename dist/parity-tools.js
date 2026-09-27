@@ -149,12 +149,25 @@ function dedupeSkuEntries(skus) {
     return { entries, collapsedSkus };
 }
 /** Derives a store-level status from every item's outcome. See src/parity-tools.ts task 8b. */
-function deriveStatus(outcomes) {
+/**
+ * Store-level status from item outcomes.
+ * - ok: every item applied and verified by a fresh read (or was an explicit no-op).
+ * - unverified: every item was accepted by Shopify, but the read-back that verifies the new
+ *   state failed for at least one ("applied_unverified"). Not ok: read the variants back.
+ * - partial: some items applied, others were rejected, mismatched, unknown or not found.
+ * - unknown: nothing confirmed applied and at least one write's outcome is unknown.
+ * - failed: nothing applied.
+ * Only "ok" counts as success; the _many tools treat every other status as not ok.
+ */
+export function deriveStatus(outcomes) {
     const total = outcomes.length;
     const applied = outcomes.filter((o) => o === "applied" || o === "skipped").length;
+    const unverified = outcomes.filter((o) => o === "applied_unverified").length;
     if (total === 0 || applied === total)
         return "ok";
-    if (applied === 0) {
+    if (unverified > 0 && applied + unverified === total)
+        return "unverified";
+    if (applied + unverified === 0) {
         return outcomes.includes("unknown") ? "unknown" : "failed";
     }
     return "partial";
@@ -317,7 +330,7 @@ async function updatePricesCore(w, a) {
                 sku: entry.sku,
                 productId,
                 variantId: variant.id,
-                outcome: "applied",
+                outcome: "applied_unverified",
                 verification: "verification_failed",
                 mutationResponse,
             });
@@ -357,7 +370,13 @@ async function updatePricesCore(w, a) {
         duplicateSkus: collapsedSkus,
         ambiguousSkus: ambiguous,
         succeeded: results.filter((r) => r.outcome === "applied").length,
-        failed: results.filter((r) => r.outcome !== "applied").length,
+        unverified: results.filter((r) => r.outcome === "applied_unverified").length,
+        failed: results.filter((r) => r.outcome !== "applied" && r.outcome !== "applied_unverified").length,
+        ...(results.some((r) => r.outcome === "applied_unverified")
+            ? {
+                verificationNotice: "Shopify accepted at least one write, but the read-back that verifies the new prices failed. Those items are applied_unverified: read the variants back before treating them as done or retrying.",
+            }
+            : {}),
         ...(status === "unknown"
             ? {
                 notice: "At least one write's outcome is unknown (network error, timeout, or throttled response after the request was sent) and none could be confirmed applied. Read the affected variants back before retrying; do not blindly resend the same write.",
@@ -445,6 +464,7 @@ export function registerParityTools(server) {
                     });
                     // Derive ok from the store's own status (task 8d): the batch wrapper never
                     // reports ok:true just because updatePricesCore returned without throwing.
+                    // "unverified" (read-back failed) and "partial" are not ok.
                     const ok = a.dryRun ? true : result.status === "ok";
                     return { store: w.store.alias, ok, ...result };
                 }
@@ -462,6 +482,7 @@ export function registerParityTools(server) {
                 dryRun: a.dryRun,
                 stores: results,
                 succeeded: results.filter((r) => r.ok).length,
+                unverified: results.filter((r) => !r.ok && r.status === "unverified").length,
                 failed: results.filter((r) => !r.ok).length,
             });
         }

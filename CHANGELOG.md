@@ -4,6 +4,10 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Fix: `shopify_update_prices` no longer reports a write as `applied` when the
+  read-back that verifies it fails. Such items are `applied_unverified` and the
+  store status is `unverified` (not `ok`); `shopify_update_prices_many` counts
+  those stores as not ok and reports an `unverified` total.
 - Hosted audit log: failed tool calls no longer store the error message, which
   could quote customer data back from Shopify. `error` is now structured:
   class, exception name, HTTP status, Shopify error codes (ACCESS_DENIED,
