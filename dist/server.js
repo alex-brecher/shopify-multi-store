@@ -5,6 +5,7 @@ import { registerParityTools } from "./parity-tools.js";
 import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
+import { registerActionTools } from "./actions/tools.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
@@ -47,6 +48,7 @@ export function createServer(options = {}) {
     registerPreviewTools(server);
     registerPreviewDesignTools(server);
     registerDiscoveryTools(server);
+    registerActionTools(server);
     server.registerTool("shopify_list_stores", {
         title: "List Shopify Stores",
         description: "List every Shopify Admin store that remains connected to this plugin. On a hosted server in per-user mode, lists only the stores you have connected with your own Shopify account and names the others with a link to connect them. This tool does not expose access tokens.",

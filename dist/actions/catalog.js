@@ -1,0 +1,479 @@
+import { getNamedType, getNullableType, isEnumType, isInputObjectType, isInterfaceType, isListType, isNonNullType, isObjectType, isScalarType, isUnionType, } from "graphql";
+import { adminSchema } from "../schema.js";
+/**
+ * A catalog of every Admin API mutation in a bundled schema, for the generic action tools.
+ * Everything here is derived from the schema at runtime, except three small hand-kept tables:
+ * category overrides, the dedicated-tool map, and scope hints.
+ */
+export const CATEGORIES = [
+    "orders",
+    "fulfillment",
+    "inventory",
+    "products",
+    "customers",
+    "discounts",
+    "content",
+    "markets",
+    "marketing",
+    "checkout",
+    "subscriptions",
+    "pos",
+    "platform",
+];
+/** Exceptions to the prefix rules below. */
+const CATEGORY_OVERRIDES = {
+    removeFromReturn: "orders",
+    productJoinSellingPlanGroups: "subscriptions",
+    productLeaveSellingPlanGroups: "subscriptions",
+    productVariantJoinSellingPlanGroups: "subscriptions",
+    productVariantLeaveSellingPlanGroups: "subscriptions",
+    productFeedCreate: "platform",
+    productFeedDelete: "platform",
+    productFullSync: "platform",
+    customerPaymentMethodCreateFromDuplicationData: "subscriptions",
+    customerPaymentMethodCreditCardCreate: "subscriptions",
+    customerPaymentMethodCreditCardUpdate: "subscriptions",
+    customerPaymentMethodGetDuplicationData: "subscriptions",
+    customerPaymentMethodGetUpdateUrl: "subscriptions",
+    customerPaymentMethodPaypalBillingAgreementCreate: "subscriptions",
+    customerPaymentMethodPaypalBillingAgreementUpdate: "subscriptions",
+    customerPaymentMethodRemoteCreate: "subscriptions",
+    customerPaymentMethodRevoke: "subscriptions",
+    customerPaymentMethodSendUpdateEmail: "subscriptions",
+    deliveryCustomizationActivation: "checkout",
+    deliveryCustomizationCreate: "checkout",
+    deliveryCustomizationDelete: "checkout",
+    deliveryCustomizationUpdate: "checkout",
+    fulfillmentConstraintRuleCreate: "checkout",
+    fulfillmentConstraintRuleDelete: "checkout",
+    fulfillmentConstraintRuleUpdate: "checkout",
+    eventBridgeServerPixelUpdate: "marketing",
+    pubSubServerPixelUpdate: "marketing",
+    locationLocalPickupDisable: "fulfillment",
+    locationLocalPickupEnable: "fulfillment",
+    giftCardProductSet: "products",
+};
+/** Ordered prefix rules; the first match wins. Every mutation must match one (tested). */
+const CATEGORY_RULES = [
+    [/^(order|draftOrder|refund|return|reverse|transactionVoid|dispute|abandonment|paymentReminder|paymentSchedule|paymentTerms|shopifyPayments)/, "orders"],
+    [/^(fulfillment|shipping|carrierService|delivery)/, "fulfillment"],
+    [/^(inventory|location)/, "inventory"],
+    [/^(product|collection|combinedListing|quantity|publication|publishable|bulkProductResourceFeedback|channel)/, "products"],
+    [/^(customer|compan|segment|giftCard|storeCredit)/, "customers"],
+    [/^discount/, "discounts"],
+    [/^(article|blog|page|comment|menu|urlRedirect|theme|file|staged|metafield|metaobject|standardMeta|translations|shopLocale|shopPolicy|scriptTag)/, "content"],
+    [/^(market(?!ing)|catalog|priceList|webPresence|backupRegion)/, "markets"],
+    [/^(marketing|webPixel|serverPixel)/, "marketing"],
+    [/^(checkout|cartTransform|validation|paymentCustomization|taxApp)/, "checkout"],
+    [/^(subscription|sellingPlanGroup)/, "subscriptions"],
+    [/^(pointOfSale|cashDrawer|cashManagement)/, "pos"],
+    [/^(app|bulkOperation|delegateAccessToken|storefrontAccessToken|mobilePlatformApplication|webhookSubscription|eventBridgeWebhook|pubSubWebhook|flow|shopResourceFeedback|savedSearch|privacyFeatures|dataSaleOptOut|consentPolicy|taxSummary|previewInstall|tags)/, "platform"],
+];
+/** The category for a mutation, or undefined when no rule matches (a test keeps that at zero). */
+export function classifyMutation(name) {
+    const override = CATEGORY_OVERRIDES[name];
+    if (override)
+        return override;
+    for (const [pattern, category] of CATEGORY_RULES)
+        if (pattern.test(name))
+            return category;
+    return undefined;
+}
+/**
+ * Name fragments that make a mutation destructive: shopify_run_action then requires confirm
+ * equal to the mutation name. Keep this the only list.
+ */
+export const DESTRUCTIVE_WORDS = [
+    "delete", "remove", "cancel", "refund", "void", "debit", "deactivate", "revoke", "close",
+    "archive", "disable", "erasure", "uninstall", "destroy", "merge", "expire", "dispose", "unpublish",
+];
+const DESTRUCTIVE_PATTERN = new RegExp(DESTRUCTIVE_WORDS.join("|"), "i");
+export function isDestructive(name) {
+    return DESTRUCTIVE_PATTERN.test(name);
+}
+/**
+ * Mutations that mint credentials or change this app's own installation or billing.
+ * Overridable with ACTIONS_DENYLIST (comma list; a trailing * matches a prefix).
+ */
+export const DEFAULT_DENYLIST = [
+    "delegateAccessTokenCreate",
+    "delegateAccessTokenDestroy",
+    "storefrontAccessTokenCreate",
+    "storefrontAccessTokenDelete",
+    "appUninstall",
+    "appRevokeAccessScopes",
+    "appSubscription*",
+    "appPurchaseOneTimeCreate",
+    "appUsageRecordCreate",
+    "mobilePlatformApplication*",
+];
+export function denylist(env = process.env) {
+    const raw = env.ACTIONS_DENYLIST;
+    if (raw === undefined || raw.trim() === "")
+        return [...DEFAULT_DENYLIST];
+    return raw.split(",").map((item) => item.trim()).filter(Boolean);
+}
+export function isDenied(name, list = denylist()) {
+    return list.some((entry) => entry.endsWith("*") ? name.startsWith(entry.slice(0, -1)) : entry === name);
+}
+/** Mutations that already have a dedicated, guided tool. */
+export const DEDICATED_TOOLS = {
+    productCreate: ["shopify_create_product"],
+    productUpdate: ["shopify_update_product", "shopify_bulk_update_product_status"],
+    productVariantsBulkCreate: ["shopify_create_product"],
+    productVariantsBulkUpdate: ["shopify_update_product", "shopify_update_prices", "shopify_update_prices_many"],
+    productDeleteMedia: ["shopify_update_product"],
+    collectionCreate: ["shopify_create_collection"],
+    collectionUpdate: ["shopify_update_collection"],
+    collectionAddProducts: ["shopify_add_to_collection"],
+    publishablePublish: ["shopify_publish_resource", "shopify_create_collection"],
+    inventorySetQuantities: ["shopify_set_inventory"],
+    discountCodeBasicCreate: ["shopify_create_discount"],
+    stagedUploadsCreate: ["shopify_upload_image"],
+    fileCreate: ["shopify_upload_image"],
+    fileDelete: ["shopify_delete_files"],
+    bulkOperationRunQuery: ["shopify_bulk_export_start"],
+    metafieldsSet: ["shopify_set_metafields"],
+    metafieldsDelete: ["shopify_delete_metafields"],
+    metaobjectUpsert: ["shopify_upsert_metaobject"],
+    urlRedirectCreate: ["shopify_create_redirects"],
+    urlRedirectDelete: ["shopify_delete_redirects"],
+    deliveryProfileUpdate: ["shopify_update_delivery_rate"],
+    themeFilesUpsert: ["shopify_upsert_theme_files"],
+    draftOrderCreate: ["shopify_create_draft_order"],
+    orderUpdate: ["shopify_update_order"],
+    fulfillmentCreate: ["shopify_create_fulfillment"],
+    fulfillmentCreateV2: ["shopify_create_fulfillment"],
+    tagsAdd: ["shopify_tags"],
+    tagsRemove: ["shopify_tags"],
+    customerUpdate: ["shopify_update_customer"],
+    pageCreate: ["shopify_upsert_page"],
+    pageUpdate: ["shopify_upsert_page"],
+};
+/** Best-effort scope hints by name prefix; the first match wins. Scopes named in the description win over these. */
+const SCOPE_RULES = [
+    [/^orderEdit/, "write_order_edits"],
+    [/^draftOrder/, "write_draft_orders"],
+    [/^(return|removeFromReturn|reverse)/, "write_returns"],
+    [/^(order|refund|transactionVoid|abandonment)/, "write_orders"],
+    [/^paymentTerms|^paymentReminder|^paymentSchedule/, "write_payment_terms"],
+    [/^dispute/, "write_shopify_payments_dispute_evidences"],
+    [/^fulfillmentConstraintRule/, "write_fulfillment_constraint_rules"],
+    [/^fulfillmentOrder/, "write_merchant_managed_fulfillment_orders"],
+    [/^fulfillment/, "write_fulfillments"],
+    [/^deliveryCustomization/, "write_delivery_customizations"],
+    [/^(carrierService|delivery|shipping|locationLocalPickup)/, "write_shipping"],
+    [/^inventoryTransfer/, "write_inventory_transfers"],
+    [/^inventoryShipment/, "write_inventory_shipments"],
+    [/^inventory/, "write_inventory"],
+    [/^location/, "write_locations"],
+    [/^(product|sellingPlanGroup)(Join|Leave)SellingPlanGroups|^productVariant(Join|Leave)SellingPlanGroups|^sellingPlanGroup/, "write_purchase_options"],
+    [/^productFeed|^productFullSync/, "write_product_feeds"],
+    [/^(publication|publishable|productPublish|productUnpublish|collectionPublish|collectionUnpublish)/, "write_publications"],
+    [/^(product|collection|combinedListing|quantity|priceList|catalog|giftCardProductSet)/, "write_products"],
+    [/^(bulkProductResourceFeedback|shopResourceFeedback)/, "write_resource_feedbacks"],
+    [/^customerMerge/, "write_customer_merge"],
+    [/^customerPaymentMethod/, "write_customer_payment_methods"],
+    [/^compan/, "write_customers"],
+    [/^(customer|segment)/, "write_customers"],
+    [/^giftCard/, "write_gift_cards"],
+    [/^storeCredit/, "write_store_credit_account_transactions"],
+    [/^discount/, "write_discounts"],
+    [/^(article|blog|page|comment)/, "write_content"],
+    [/^(menu|urlRedirect)/, "write_online_store_navigation"],
+    [/^theme/, "write_themes"],
+    [/^(file|staged)/, "write_files"],
+    [/^(metaobjectDefinition|standardMetaobject)/, "write_metaobject_definitions"],
+    [/^metaobject/, "write_metaobjects"],
+    [/^translations/, "write_translations"],
+    [/^shopLocale/, "write_locales"],
+    [/^shopPolicy/, "write_legal_policies"],
+    [/^scriptTag/, "write_script_tags"],
+    [/^(market(?!ing)|webPresence|backupRegion)/, "write_markets"],
+    [/^marketing/, "write_marketing_events"],
+    [/^(webPixel|serverPixel|eventBridgeServerPixel|pubSubServerPixel)/, "write_pixels"],
+    [/^checkoutBranding/, "write_checkout_branding_settings"],
+    [/^checkout/, "write_checkouts"],
+    [/^cartTransform/, "write_cart_transforms"],
+    [/^validation/, "write_validations"],
+    [/^paymentCustomization/, "write_payment_customizations"],
+    [/^subscription/, "write_own_subscription_contracts"],
+    [/^(privacyFeatures|dataSaleOptOut|consentPolicy)/, "write_privacy_settings"],
+];
+export function scopeHint(name, description = "") {
+    const named = [...new Set([...description.matchAll(/\b(write_[a-z_]+[a-z])\b/g)].map((match) => match[1]))];
+    if (named.length)
+        return named;
+    for (const [pattern, scope] of SCOPE_RULES)
+        if (pattern.test(name))
+            return [scope];
+    return [];
+}
+/** First sentence of a GraphQL description, without markdown links, capped. */
+export function summarize(description, max = 200) {
+    if (!description)
+        return "";
+    const plain = description.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[`*]/g, "").replace(/\s+/g, " ").trim();
+    const sentence = /^(.+?[.!?])(\s|$)/.exec(plain)?.[1] ?? plain;
+    return sentence.length > max ? `${sentence.slice(0, max - 3)}...` : sentence;
+}
+function splitWords(name) {
+    return name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+}
+const catalogs = new Map();
+export function mutationFields(schema) {
+    const root = schema.getMutationType();
+    return root ? Object.values(root.getFields()) : [];
+}
+/** The catalog for one API version, built once and cached. */
+export function actionCatalog(version) {
+    let pending = catalogs.get(version);
+    if (!pending) {
+        pending = adminSchema(version).then((schema) => {
+            const list = denylist();
+            return mutationFields(schema).map((field) => {
+                const inputTypes = [...new Set(field.args.map((arg) => getNamedType(arg.type).name))];
+                const description = field.description ?? "";
+                return {
+                    name: field.name,
+                    summary: summarize(description),
+                    category: classifyMutation(field.name) ?? "platform",
+                    destructive: isDestructive(field.name),
+                    denied: isDenied(field.name, list),
+                    deprecated: field.deprecationReason != null,
+                    dedicatedTools: [...(DEDICATED_TOOLS[field.name] ?? [])],
+                    inputTypes,
+                    scopeHint: scopeHint(field.name, description),
+                    searchText: `${field.name.toLowerCase()} ${splitWords(field.name)} ${inputTypes.join(" ").toLowerCase()} ${splitWords(inputTypes.join(" "))} ${description.toLowerCase()}`,
+                };
+            });
+        });
+        catalogs.set(version, pending);
+        pending.catch(() => catalogs.delete(version));
+    }
+    return pending;
+}
+/** Keyword search ranked by where the words match: name first, then input types, then description. */
+export function searchCatalog(entries, options) {
+    const words = (options.query ?? "").toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean);
+    const scored = [];
+    for (const entry of entries) {
+        if (options.category && entry.category !== options.category)
+            continue;
+        if (!options.includeDeprecated && entry.deprecated)
+            continue;
+        let score = 0;
+        let matchedAll = true;
+        const nameWords = `${entry.name.toLowerCase()} ${splitWords(entry.name)}`;
+        const typeWords = `${entry.inputTypes.join(" ").toLowerCase()} ${splitWords(entry.inputTypes.join(" "))}`;
+        for (const word of words) {
+            const stem = word.length > 3 ? word.replace(/(es|s)$/, "") : word;
+            if (nameWords.includes(stem))
+                score += 10;
+            else if (typeWords.includes(stem))
+                score += 4;
+            else if (entry.searchText.includes(stem))
+                score += 1;
+            else
+                matchedAll = false;
+        }
+        if (words.length && (!matchedAll || score === 0))
+            continue;
+        if (words.length) {
+            // Prefer names made of exactly the query words (in any order), then shorter names.
+            const parts = splitWords(entry.name).split(" ");
+            const stems = words.map((word) => (word.length > 3 ? word.replace(/(es|s)$/, "") : word));
+            const covered = parts.filter((part) => stems.some((stem) => part.startsWith(stem))).length;
+            if (covered === parts.length)
+                score += 50;
+            score -= (parts.length - covered) * 0.5;
+        }
+        scored.push({ entry, score });
+    }
+    scored.sort((a, b) => b.score - a.score || a.entry.name.localeCompare(b.entry.name));
+    const page = scored.slice(options.offset, options.offset + options.limit);
+    return {
+        total: scored.length,
+        offset: options.offset,
+        ...(options.offset + page.length < scored.length ? { nextOffset: options.offset + page.length } : {}),
+        actions: page.map(({ entry }) => ({
+            name: entry.name,
+            description: entry.summary,
+            category: entry.category,
+            destructive: entry.destructive,
+            ...(entry.deprecated ? { deprecated: true } : {}),
+            ...(entry.denied ? { denied: true } : {}),
+            dedicatedTools: entry.dedicatedTools,
+            scopeHint: entry.scopeHint,
+        })),
+    };
+}
+const ENUM_LIMIT = 60;
+function describeInput(type, depth, seen) {
+    const named = getNamedType(type);
+    if (isEnumType(named)) {
+        const values = named.getValues().filter((value) => value.deprecationReason == null).map((value) => value.name);
+        return { enumValues: values.length > ENUM_LIMIT ? [...values.slice(0, ENUM_LIMIT), `...${values.length - ENUM_LIMIT} more`] : values };
+    }
+    if (!isInputObjectType(named))
+        return {};
+    if (depth <= 0 || seen.has(named.name))
+        return { seeType: named.name };
+    const next = new Set(seen).add(named.name);
+    return {
+        fields: Object.values(named.getFields())
+            .filter((field) => field.deprecationReason == null)
+            .map((field) => ({
+            name: field.name,
+            type: String(field.type),
+            required: isNonNullType(field.type) && field.defaultValue === undefined,
+            ...(field.description ? { description: summarize(field.description, 160) } : {}),
+            ...(field.defaultValue !== undefined ? { defaultValue: field.defaultValue } : {}),
+            ...describeInput(field.type, depth - 1, next),
+        })),
+    };
+}
+const LABEL_FIELDS = ["title", "name", "displayName", "handle", "sku", "email", "status", "code"];
+function simpleField(type, name) {
+    if (!isObjectType(type) && !isInterfaceType(type))
+        return false;
+    const field = type.getFields()[name];
+    if (!field || field.args.some((arg) => isNonNullType(arg.type)))
+        return false;
+    const named = getNamedType(field.type);
+    return isScalarType(named) || isEnumType(named);
+}
+function isErrorListField(name) {
+    return /userErrors$/i.test(name);
+}
+/** A small selection for a returned record: id plus a few label fields, or __typename. */
+function recordSelection(type) {
+    if (isUnionType(type)) {
+        const members = type.getTypes().filter((member) => simpleField(member, "id"));
+        return `{ __typename${members.length ? ` ${members.slice(0, 20).map((member) => `... on ${member.name} { id }`).join(" ")}` : ""} }`;
+    }
+    if (!isObjectType(type) && !isInterfaceType(type))
+        return undefined;
+    if (type.name.endsWith("Connection"))
+        return undefined;
+    const picked = ["id", ...LABEL_FIELDS].filter((name) => simpleField(type, name));
+    if (!picked.length)
+        return undefined;
+    return `{ ${picked.join(" ")} }`;
+}
+/** Default selection for a mutation payload: scalars, record ids and labels, and every *userErrors list. */
+export function defaultSelection(payload) {
+    const type = getNamedType(payload);
+    if (isScalarType(type) || isEnumType(type))
+        return "";
+    if (!isObjectType(type))
+        return recordSelection(type) ?? "{ __typename }";
+    const fields = Object.values(type.getFields()).filter((field) => !field.args.some((arg) => isNonNullType(arg.type)));
+    const errorFields = fields.filter((field) => isErrorListField(field.name));
+    const liveErrors = errorFields.filter((field) => field.deprecationReason == null);
+    const parts = [];
+    for (const field of fields) {
+        if (isErrorListField(field.name))
+            continue;
+        if (field.deprecationReason != null)
+            continue;
+        const named = getNamedType(field.type);
+        if (isScalarType(named) || isEnumType(named))
+            parts.push(field.name);
+        else {
+            const selection = recordSelection(named);
+            if (selection)
+                parts.push(`${field.name} ${selection}`);
+        }
+    }
+    for (const field of liveErrors.length ? liveErrors : errorFields) {
+        const errorType = getNamedType(field.type);
+        const picked = ["field", "message", "code"].filter((name) => simpleField(errorType, name));
+        parts.push(`${field.name} { ${picked.length ? picked.join(" ") : "__typename"} }`);
+    }
+    return `{ ${parts.length ? parts.join(" ") : "__typename"} }`;
+}
+export function findMutation(schema, name) {
+    return schema.getMutationType()?.getFields()[name];
+}
+/** A ready-to-edit document that declares every argument as a variable. */
+export function buildDocument(field, selection = defaultSelection(field.type)) {
+    const operationName = field.name.charAt(0).toUpperCase() + field.name.slice(1);
+    const declarations = field.args.map((arg) => `$${arg.name}: ${String(arg.type)}`).join(", ");
+    const call = field.args.map((arg) => `${arg.name}: $${arg.name}`).join(", ");
+    return `mutation ${operationName}${declarations ? `(${declarations})` : ""} { ${field.name}${call ? `(${call})` : ""}${selection ? ` ${selection}` : ""} }`;
+}
+/** A variables skeleton with only the required arguments and required input fields. */
+function requiredSkeleton(type, depth, fieldName = "") {
+    const nullable = getNullableType(type);
+    if (isListType(nullable))
+        return [requiredSkeleton(nullable.ofType, depth, fieldName.replace(/s$/, ""))];
+    const named = getNamedType(type);
+    if (isEnumType(named))
+        return named.getValues()[0]?.name ?? null;
+    if (isInputObjectType(named)) {
+        if (depth <= 0)
+            return {};
+        const out = {};
+        for (const field of Object.values(named.getFields())) {
+            if (isNonNullType(field.type) && field.defaultValue === undefined)
+                out[field.name] = requiredSkeleton(field.type, depth - 1, field.name);
+        }
+        return out;
+    }
+    if (named.name === "ID") {
+        const owner = /^(.+?)Id$/.exec(fieldName)?.[1];
+        return `gid://shopify/${owner ? owner.charAt(0).toUpperCase() + owner.slice(1) : "<Type>"}/<id>`;
+    }
+    if (named.name === "Boolean")
+        return false;
+    if (named.name === "Int" || named.name === "Float")
+        return 0;
+    return `<${named.name}>`;
+}
+export async function describeAction(name, version, depth = 3) {
+    const schema = await adminSchema(version);
+    const field = findMutation(schema, name);
+    if (!field)
+        throw new Error(`Unknown mutation ${name} in Admin API ${version}. Use shopify_find_actions to search.`);
+    const payload = getNamedType(field.type);
+    const variablesTemplate = {};
+    for (const arg of field.args) {
+        if (isNonNullType(arg.type) && arg.defaultValue === undefined)
+            variablesTemplate[arg.name] = requiredSkeleton(arg.type, depth, arg.name);
+    }
+    return {
+        name: field.name,
+        apiVersion: version,
+        description: field.description ?? "",
+        category: classifyMutation(field.name) ?? "platform",
+        destructive: isDestructive(field.name),
+        ...(isDestructive(field.name) ? { confirmRequired: field.name } : {}),
+        denied: isDenied(field.name),
+        ...(field.deprecationReason != null ? { deprecated: field.deprecationReason } : {}),
+        dedicatedTools: [...(DEDICATED_TOOLS[field.name] ?? [])],
+        scopeHint: scopeHint(field.name, field.description ?? ""),
+        arguments: field.args.map((arg) => ({
+            name: arg.name,
+            type: String(arg.type),
+            required: isNonNullType(arg.type) && arg.defaultValue === undefined,
+            ...(arg.description ? { description: summarize(arg.description, 300) } : {}),
+            ...(arg.defaultValue !== undefined ? { defaultValue: arg.defaultValue } : {}),
+            ...describeInput(arg.type, depth, new Set()),
+        })),
+        returns: {
+            type: String(field.type),
+            fields: isObjectType(payload)
+                ? Object.values(payload.getFields()).map((child) => ({
+                    name: child.name,
+                    type: String(child.type),
+                    ...(child.deprecationReason != null ? { deprecated: true } : {}),
+                    ...(child.description ? { description: summarize(child.description, 160) } : {}),
+                }))
+                : [],
+        },
+        document: buildDocument(field),
+        variablesTemplate,
+    };
+}
+//# sourceMappingURL=catalog.js.map

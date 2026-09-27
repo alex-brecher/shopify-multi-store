@@ -401,3 +401,34 @@ test("serve mode defaults to per_user, needs an encryption key there, and needs 
   assert.equal((await appMode.fetch(new Request(`${ORIGIN}/stores`))).status, 404);
   await assert.rejects(buildHostedAppFromEnv({ ...base, SHOPIFY_ACCESS_MODE: "bogus" }), /per_user or app/);
 });
+
+test("shopify_run_action is open to editors in per-user mode, runs with the user's token, and is audited", async (t) => {
+  const requests = await shopifyMock(t);
+  const { app, auditPath } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  await connectStore(app, cookie, { token: "pat-online-main" });
+  const client = await mcpClient(t, app, await login(app, "pat|bariatricpal.com"));
+  const { tools } = await client.listTools();
+  for (const name of ["shopify_find_actions", "shopify_describe_action", "shopify_run_action"]) assert.ok(tools.some((tool) => tool.name === name), name);
+
+  const variables = { id: "gid://shopify/Product/1", tags: ["sale"] };
+  const applied = await client.callTool({ name: "shopify_run_action", arguments: { stores: ["main"], mutation: "tagsAdd", variables, dryRun: false } });
+  assert.notEqual(applied.isError, true, JSON.stringify(applied));
+  assert.ok(requests.length > 0 && requests.every((request) => request.token === "pat-online-main"));
+
+  const unconnected = await client.callTool({ name: "shopify_run_action", arguments: { stores: ["main", "wholesale"], mutation: "tagsAdd", variables, dryRun: false } });
+  assert.equal(unconnected.isError, true);
+  assert.ok(unconnected.content[0].text.includes(`${ORIGIN}/shopify/connect?store=wholesale`));
+  assert.ok(!requests.some((request) => /app-token/.test(request.token)));
+
+  const lines = (await readFile(auditPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const runs = lines.filter((line) => line.event === "action_run");
+  assert.equal(runs.length, 2);
+  assert.equal(runs[0].user, "pat@bariatricpal.com");
+  assert.deepEqual(runs[0].mutations, ["tagsAdd"]);
+  assert.deepEqual(runs[0].stores, ["main"]);
+  assert.equal(runs[0].dryRun, false);
+  assert.match(runs[0].variablesSha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual(runs[0].outcome, [{ store: "main", ok: true }]);
+  assert.equal(runs[1].outcome.find((entry) => entry.store === "wholesale").ok, false);
+});

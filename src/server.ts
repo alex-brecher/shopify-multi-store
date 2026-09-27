@@ -5,6 +5,7 @@ import { registerParityTools } from "./parity-tools.js";
 import { registerUI } from "./ui.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
+import { registerActionTools } from "./actions/tools.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
@@ -80,6 +81,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   registerPreviewTools(server);
   registerPreviewDesignTools(server);
   registerDiscoveryTools(server);
+  registerActionTools(server);
 
   server.registerTool(
     "shopify_list_stores",
