@@ -1,5 +1,5 @@
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "pat" | "session";
 export interface OAuthStore {
     get<T>(kind: RecordKind, key: string): Promise<T | undefined>;
     put<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<void>;
@@ -9,6 +9,8 @@ export interface OAuthStore {
     /** Delete every record of a kind that matches. Returns the number removed. */
     deleteWhere<T>(kind: RecordKind, predicate: (value: T) => boolean): Promise<number>;
     count(kind: RecordKind): Promise<number>;
+    /** Every live record of a kind, as [key, value] pairs. */
+    entries<T>(kind: RecordKind): Promise<Array<[string, T]>>;
 }
 interface Entry {
     value: unknown;
@@ -30,6 +32,7 @@ export declare class MemoryStore implements OAuthStore {
     delete(kind: RecordKind, key: string): Promise<void>;
     deleteWhere<T>(kind: RecordKind, predicate: (value: T) => boolean): Promise<number>;
     count(kind: RecordKind): Promise<number>;
+    entries<T>(kind: RecordKind): Promise<Array<[string, T]>>;
     protected purgeExpired(): void;
     protected changed(): Promise<void>;
 }

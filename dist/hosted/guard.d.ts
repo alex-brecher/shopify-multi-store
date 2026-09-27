@@ -15,6 +15,8 @@ export declare function requestedStores(args: unknown): string[];
 export interface GuardOptions {
     principal: Principal;
     audit: AuditLog;
+    /** Personal access token id when the request used one. Recorded in the audit log; never the value. */
+    tokenId?: string;
 }
 /**
  * Wrap McpServer.registerTool so every tool, including ones added later, gets:
@@ -23,4 +25,4 @@ export interface GuardOptions {
  * refusal of local-file arguments, and one audit line per call.
  * Must run before any tool is registered.
  */
-export declare function guardServer(server: McpServer, { principal, audit }: GuardOptions): void;
+export declare function guardServer(server: McpServer, { principal, audit, tokenId }: GuardOptions): void;

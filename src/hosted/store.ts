@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile, open } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "pat" | "session";
 
 export interface OAuthStore {
   get<T>(kind: RecordKind, key: string): Promise<T | undefined>;
@@ -14,6 +14,8 @@ export interface OAuthStore {
   /** Delete every record of a kind that matches. Returns the number removed. */
   deleteWhere<T>(kind: RecordKind, predicate: (value: T) => boolean): Promise<number>;
   count(kind: RecordKind): Promise<number>;
+  /** Every live record of a kind, as [key, value] pairs. */
+  entries<T>(kind: RecordKind): Promise<Array<[string, T]>>;
 }
 
 interface Entry {
@@ -24,7 +26,7 @@ interface Entry {
 type Data = Record<RecordKind, Record<string, Entry>>;
 
 function emptyData(): Data {
-  return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {} };
+  return { client: {}, pending: {}, code: {}, access: {}, refresh: {}, consent: {}, approval: {}, pat: {}, session: {} };
 }
 
 /**
@@ -84,6 +86,11 @@ export class MemoryStore implements OAuthStore {
   async count(kind: RecordKind): Promise<number> {
     this.purgeExpired();
     return Object.keys(this.data[kind]).length;
+  }
+
+  async entries<T>(kind: RecordKind): Promise<Array<[string, T]>> {
+    this.purgeExpired();
+    return Object.entries(this.data[kind]).map(([key, entry]) => [key, entry.value as T]);
   }
 
   protected purgeExpired(): void {

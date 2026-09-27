@@ -56,6 +56,8 @@ type ToolConfig = { inputSchema?: unknown; annotations?: { readOnlyHint?: boolea
 export interface GuardOptions {
   principal: Principal;
   audit: AuditLog;
+  /** Personal access token id when the request used one. Recorded in the audit log; never the value. */
+  tokenId?: string;
 }
 
 /**
@@ -65,7 +67,7 @@ export interface GuardOptions {
  * refusal of local-file arguments, and one audit line per call.
  * Must run before any tool is registered.
  */
-export function guardServer(server: McpServer, { principal, audit }: GuardOptions): void {
+export function guardServer(server: McpServer, { principal, audit, tokenId }: GuardOptions): void {
   const register = server.registerTool.bind(server) as unknown as (name: string, config: ToolConfig, cb: AnyCallback) => unknown;
 
   const guarded = (name: string, config: ToolConfig, callback: AnyCallback): unknown => {
@@ -114,6 +116,7 @@ export function guardServer(server: McpServer, { principal, audit }: GuardOption
             timestamp: new Date(started).toISOString(),
             user: principal.email,
             role: principal.role,
+            ...(tokenId ? { tokenId } : {}),
             tool: name,
             stores,
             readOnly,

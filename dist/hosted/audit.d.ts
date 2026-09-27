@@ -15,13 +15,17 @@ export interface AuditEntry {
     /** Read-only calls: the first 2,000 characters of a `query` argument. */
     query?: string;
     truncated?: boolean;
+    /** Set when the call was authenticated with a personal access token. The id, never the value. */
+    tokenId?: string;
 }
 /** Sign-in, token, and request-authorization events. Tokens are never included. */
 export interface AuthAuditEntry {
-    event: "sign_in" | "sign_in_denied" | "consent_approved" | "consent_denied" | "token_issued" | "token_refreshed" | "refresh_denied" | "request_unauthorized" | "request_forbidden";
+    event: "sign_in" | "sign_in_denied" | "consent_approved" | "consent_denied" | "personal_token_created" | "personal_token_revoked" | "token_issued" | "token_refreshed" | "refresh_denied" | "request_unauthorized" | "request_forbidden";
     timestamp: string;
     user?: string;
     clientId?: string;
+    /** Personal access token id (never the token value). */
+    tokenId?: string;
     status?: number;
     reason?: string;
 }

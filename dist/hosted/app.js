@@ -3,6 +3,7 @@ import { createServer } from "../server.js";
 import { PACKAGE_VERSION } from "../shopify.js";
 import { guardServer } from "./guard.js";
 import { AuthorizationServer, SCOPE } from "./oauth.js";
+import { PERSONAL_TOKEN_PREFIX, PersonalTokens } from "./tokens.js";
 const CORS_HEADERS = {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
@@ -11,7 +12,7 @@ const CORS_HEADERS = {
     "access-control-max-age": "600"
 };
 /** Browser-facing pages. They get no CORS headers. */
-const BROWSER_PAGES = new Set(["/authorize", "/oauth/google/callback", "/consent"]);
+const BROWSER_PAGES = new Set(["/authorize", "/oauth/google/callback", "/consent", "/tokens"]);
 function withCors(response) {
     const headers = new Headers(response.headers);
     for (const [key, value] of Object.entries(CORS_HEADERS))
@@ -28,6 +29,14 @@ function jsonResponse(body, status = 200, headers = {}) {
  */
 export function createHostedApp(options) {
     const auth = new AuthorizationServer(options);
+    const tokens = new PersonalTokens({
+        auth,
+        store: options.store,
+        policy: options.policy,
+        enabled: options.personalTokensEnabled ?? true,
+        maxDays: options.personalTokenMaxDays ?? 180,
+        ...(options.now ? { now: options.now } : {})
+    });
     const mcpPath = new URL(auth.resource).pathname;
     // Stateless: a fresh McpServer per request, built for the caller's role. No session state,
     // so the server can restart or scale without breaking clients, and auth is checked every request.
@@ -35,7 +44,8 @@ export function createHostedApp(options) {
         const principal = context.authInfo?.extra?.principal;
         if (!principal)
             throw new Error("Unauthenticated MCP request reached the server factory.");
-        return createServer({ beforeRegister: (server) => guardServer(server, { principal, audit: options.audit }) });
+        const tokenId = context.authInfo?.extra?.tokenId;
+        return createServer({ beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, ...(tokenId ? { tokenId } : {}) }) });
     }, {
         legacy: "stateless",
         onerror: (error) => process.stderr.write(`MCP error: ${error.message}\n`)
@@ -55,7 +65,10 @@ export function createHostedApp(options) {
             await auth.auditAuth({ event: "request_unauthorized", status: 401, reason: "missing bearer token" });
             return unauthorized();
         }
-        const record = await auth.verifyAccessToken(match[1]);
+        const token = match[1];
+        if (token.startsWith(PERSONAL_TOKEN_PREFIX))
+            return handlePersonalToken(request, token);
+        const record = await auth.verifyAccessToken(token);
         if (!record) {
             await auth.auditAuth({ event: "request_unauthorized", status: 401, reason: "invalid or expired access token" });
             return unauthorized("The access token is invalid or expired.");
@@ -67,12 +80,34 @@ export function createHostedApp(options) {
             return jsonResponse({ error: "access_denied", error_description: `${record.email} no longer has access.` }, 403);
         }
         const authInfo = {
-            token: match[1],
+            token,
             clientId: record.clientId,
             scopes: [record.scope],
             expiresAt: Math.floor(record.expiresAt / 1000),
             resource: new URL(auth.resource),
             extra: { principal }
+        };
+        return mcp.fetch(request, { authInfo });
+    }
+    async function handlePersonalToken(request, token) {
+        const record = await tokens.verify(token);
+        if (!record) {
+            await auth.auditAuth({ event: "request_unauthorized", status: 401, reason: "invalid, expired, or revoked personal access token" });
+            return unauthorized("The personal access token is invalid, expired, or revoked.");
+        }
+        // Same policy re-check as OAuth tokens, on every request.
+        const principal = auth.resolvePrincipal(record.email);
+        if (!principal) {
+            await auth.auditAuth({ event: "request_forbidden", status: 403, user: record.email, clientId: "personal-token", tokenId: record.id, reason: "not in the access policy" });
+            return jsonResponse({ error: "access_denied", error_description: `${record.email} no longer has access.` }, 403);
+        }
+        const authInfo = {
+            token,
+            clientId: "personal-token",
+            scopes: [SCOPE],
+            expiresAt: Math.floor(record.expiresAt / 1000),
+            resource: new URL(auth.resource),
+            extra: { principal, tokenId: record.id }
         };
         return mcp.fetch(request, { authInfo });
     }
@@ -95,6 +130,8 @@ export function createHostedApp(options) {
             return method === "GET" ? auth.authorize(url) : jsonResponse({ error: "method_not_allowed" }, 405);
         if (path === "/oauth/google/callback")
             return method === "GET" ? auth.googleCallback(url) : jsonResponse({ error: "method_not_allowed" }, 405);
+        if (path === "/tokens")
+            return tokens.handle(request);
         if (path === "/consent")
             return method === "POST" ? auth.consent(request) : jsonResponse({ error: "method_not_allowed" }, 405);
         if (path === "/token")
@@ -107,6 +144,7 @@ export function createHostedApp(options) {
     }
     return {
         auth,
+        tokens,
         async fetch(request) {
             let response;
             try {

@@ -49,6 +49,12 @@ function positiveInt(env, name, fallback) {
         throw new Error(`${name} must be a positive integer.`);
     return value;
 }
+function personalTokenMaxDays(env) {
+    const days = positiveInt(env, "PERSONAL_TOKEN_MAX_DAYS", 180);
+    if (days > 3650)
+        throw new Error("PERSONAL_TOKEN_MAX_DAYS must be at most 3650.");
+    return days;
+}
 export async function buildHostedAppFromEnv(env = process.env) {
     loadFileSecrets(env);
     const publicUrl = new URL(required(env, "MCP_PUBLIC_URL"));
@@ -84,7 +90,9 @@ export async function buildHostedAppFromEnv(env = process.env) {
         cimdAllowedHosts: list(env.OAUTH_CIMD_ALLOWED_HOSTS) ?? DEFAULT_CIMD_HOSTS,
         accessTokenTtlSeconds: positiveInt(env, "OAUTH_ACCESS_TOKEN_TTL_SECONDS", 3600),
         refreshTokenTtlSeconds: positiveInt(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS", 30 * 24 * 3600),
-        sessionMaxAgeSeconds: positiveInt(env, "OAUTH_SESSION_MAX_AGE_SECONDS", 7 * 24 * 3600)
+        sessionMaxAgeSeconds: positiveInt(env, "OAUTH_SESSION_MAX_AGE_SECONDS", 7 * 24 * 3600),
+        personalTokensEnabled: env.PERSONAL_TOKENS_ENABLED === undefined || env.PERSONAL_TOKENS_ENABLED === "" ? true : flag(env.PERSONAL_TOKENS_ENABLED),
+        personalTokenMaxDays: personalTokenMaxDays(env)
     });
     return {
         app,

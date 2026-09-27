@@ -54,7 +54,7 @@ function denied(message) {
  * refusal of local-file arguments, and one audit line per call.
  * Must run before any tool is registered.
  */
-export function guardServer(server, { principal, audit }) {
+export function guardServer(server, { principal, audit, tokenId }) {
     const register = server.registerTool.bind(server);
     const guarded = (name, config, callback) => {
         if (HOSTED_DISABLED_TOOLS.has(name))
@@ -108,6 +108,7 @@ export function guardServer(server, { principal, audit }) {
                         timestamp: new Date(started).toISOString(),
                         user: principal.email,
                         role: principal.role,
+                        ...(tokenId ? { tokenId } : {}),
                         tool: name,
                         stores,
                         readOnly,

@@ -87,6 +87,16 @@ interface PendingRecord {
   googleVerifier: string;
 }
 
+/** A Google sign-in started by a page on this server rather than an OAuth client. */
+interface PageSignInRecord {
+  purpose: "tokens";
+  nonce: string;
+  googleVerifier: string;
+}
+
+/** Audit label for sign-ins to server pages. */
+export const PAGE_SIGN_IN_CLIENT = "tokens-page";
+
 interface CodeRecord {
   clientId: string;
   redirectUri: string;
@@ -438,38 +448,72 @@ export class AuthorizationServer {
 
   // ---------- Google callback ----------
 
+  /**
+   * Start a Google sign-in for a page on this server (the personal access token page) rather
+   * than for an OAuth client. The same domain and policy checks apply.
+   */
+  async startPageSignIn(purpose: "tokens"): Promise<Response> {
+    const nonce = randomBytes(16).toString("base64url");
+    const googleVerifier = randomBytes(48).toString("base64url");
+    const loginState = randomBytes(32).toString("base64url");
+    const pending: PageSignInRecord = { purpose, nonce, googleVerifier };
+    await this.options.store.put("pending", loginState, pending, this.now() + PENDING_TTL_MS);
+    return redirect(this.options.google.authorizationUrl({
+      state: loginState,
+      nonce,
+      codeChallenge: createHash("sha256").update(googleVerifier).digest("base64url"),
+      redirectUri: this.googleRedirectUri
+    }));
+  }
+
+  /** Receives page sign-ins (see startPageSignIn) after the domain and policy checks pass. */
+  onPageSignIn?: (purpose: "tokens", email: string, principal: Principal) => Promise<Response>;
+
   async googleCallback(url: URL): Promise<Response> {
     const loginState = url.searchParams.get("state");
-    const pending = loginState ? await this.options.store.take<PendingRecord>("pending", loginState) : undefined;
-    if (!pending) return errorPage(400, "This sign-in link expired or was already used. Start again from your AI app.");
-    const back = (params: Record<string, string>) => redirect(this.clientRedirect(pending.redirectUri, { ...params, state: pending.clientState }));
+    const stored = loginState ? await this.options.store.take<PendingRecord | PageSignInRecord>("pending", loginState) : undefined;
+    if (!stored) return errorPage(400, "This sign-in link expired or was already used. Start again from your AI app.");
+    const page = "purpose" in stored ? stored : undefined;
+    const pending = page ? undefined : stored as PendingRecord;
+    const clientId = pending?.clientId ?? PAGE_SIGN_IN_CLIENT;
+    // OAuth sign-ins report failures to the client's redirect URI; page sign-ins show them here.
+    const deny = (description: string) => pending
+      ? redirect(this.clientRedirect(pending.redirectUri, { error: "access_denied", error_description: description, state: pending.clientState }))
+      : errorPage(403, description);
 
-    if (url.searchParams.get("error")) return back({ error: "access_denied", error_description: "Google sign-in was cancelled or failed." });
+    if (url.searchParams.get("error")) return deny("Google sign-in was cancelled or failed.");
     const code = url.searchParams.get("code");
-    if (!code) return back({ error: "access_denied", error_description: "Google did not return an authorization code." });
+    if (!code) return deny("Google did not return an authorization code.");
 
     let email: string;
     try {
-      const claims = await this.options.google.exchange({ code, codeVerifier: pending.googleVerifier, redirectUri: this.googleRedirectUri, nonce: pending.nonce });
+      const claims = await this.options.google.exchange({ code, codeVerifier: stored.googleVerifier, redirectUri: this.googleRedirectUri, nonce: stored.nonce });
       const identity = checkGoogleIdentity(claims, this.options.allowedDomains);
       if ("error" in identity) {
         this.log(`Sign-in refused: ${identity.error}`);
-        await this.auditAuth({ event: "sign_in_denied", clientId: pending.clientId, reason: identity.error, ...(typeof claims.email === "string" ? { user: claims.email.toLowerCase() } : {}) });
-        return back({ error: "access_denied", error_description: identity.error });
+        await this.auditAuth({ event: "sign_in_denied", clientId, reason: identity.error, ...(typeof claims.email === "string" ? { user: claims.email.toLowerCase() } : {}) });
+        return deny(identity.error);
       }
       email = identity.email;
     } catch (error) {
       this.log(`Google sign-in verification failed: ${error instanceof Error ? error.message : String(error)}`);
-      await this.auditAuth({ event: "sign_in_denied", clientId: pending.clientId, reason: "Google sign-in could not be verified." });
-      return back({ error: "access_denied", error_description: "Google sign-in could not be verified." });
+      await this.auditAuth({ event: "sign_in_denied", clientId, reason: "Google sign-in could not be verified." });
+      return deny("Google sign-in could not be verified.");
     }
 
     const principal = this.options.policy.current().resolve(email);
     if (!principal) {
       this.log(`Sign-in refused: ${email} is not in the access policy.`);
-      await this.auditAuth({ event: "sign_in_denied", user: email, clientId: pending.clientId, reason: "not in the access policy" });
-      return back({ error: "access_denied", error_description: `${email} has not been granted access. Ask an administrator.` });
+      await this.auditAuth({ event: "sign_in_denied", user: email, clientId, reason: "not in the access policy" });
+      return deny(`${email} has not been granted access. Ask an administrator.`);
     }
+
+    if (page) {
+      if (!this.onPageSignIn) return errorPage(404, "This page is not available.");
+      return this.onPageSignIn(page.purpose, email, principal);
+    }
+    if (!pending) return errorPage(400, "Unknown sign-in.");
+    const back = (params: Record<string, string>) => redirect(this.clientRedirect(pending.redirectUri, { ...params, state: pending.clientState }));
 
     const redirectClass = this.redirectUriClass(pending.redirectUri);
     if (!redirectClass) return back({ error: "access_denied", error_description: "The redirect URI is no longer allowed on this server." });

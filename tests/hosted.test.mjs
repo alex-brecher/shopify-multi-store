@@ -717,6 +717,26 @@ test("OAUTH_REDIRECT_URIS adds to the built-ins unless OAUTH_REDIRECT_URIS_REPLA
   assert.equal(open.auth.redirectUriClass("https://other.example.com/cb"), "open");
 });
 
+test("personal token settings come from PERSONAL_TOKENS_ENABLED and PERSONAL_TOKEN_MAX_DAYS", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "sms-env-"));
+  const policyPath = join(dir, "policy.json");
+  await writeFile(policyPath, JSON.stringify(POLICY));
+  const base = {
+    MCP_PUBLIC_URL: ORIGIN, ALLOWED_EMAIL_DOMAINS: "bariatricpal.com", SHOPIFY_MULTI_STORE_POLICY: policyPath,
+    GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret", SHOPIFY_MULTI_STORE_DATA_DIR: dir
+  };
+  const defaults = (await buildHostedAppFromEnv({ ...base })).app;
+  t.after(() => defaults.close());
+  assert.equal(defaults.tokens.enabled, true);
+  assert.equal(defaults.tokens.maxDays, 180);
+  assert.deepEqual(defaults.tokens.expiryChoices, [30, 90, 180]);
+  const off = (await buildHostedAppFromEnv({ ...base, PERSONAL_TOKENS_ENABLED: "0", PERSONAL_TOKEN_MAX_DAYS: "30" })).app;
+  t.after(() => off.close());
+  assert.equal(off.tokens.enabled, false);
+  assert.equal(off.tokens.maxDays, 30);
+  await assert.rejects(buildHostedAppFromEnv({ ...base, PERSONAL_TOKEN_MAX_DAYS: "0" }), /positive integer/);
+});
+
 test("consent screen shows the client, redirect host, user, role and stores, and escapes the client name", async (t) => {
   const { app } = await setup(t);
   const { body: client } = await registerClient(app, { client_name: "<script>alert(1)</script> Tool" });
@@ -833,4 +853,144 @@ test("named client metadata hosts get the same public-address checks as the wild
   const response = await call(app, `/authorize?${new URLSearchParams({ response_type: "code", client_id: "https://localhost/client.json", redirect_uri: CLAUDE_CALLBACK, code_challenge: challenge, code_challenge_method: "S256", state: "s" })}`);
   assert.equal(response.status, 400);
   assert.ok(logs.some((message) => /non-public/.test(message)), logs.join("\n"));
+});
+
+async function tokensSession(app, account) {
+  const start = await call(app, "/tokens");
+  assert.equal(start.status, 302);
+  const google = new URL(start.headers.get("location"));
+  assert.equal(google.host, "accounts.google.test");
+  const back = await call(app, `/oauth/google/callback?state=${encodeURIComponent(google.searchParams.get("state"))}&code=${encodeURIComponent(account)}`);
+  if (back.status !== 303) return { denied: back };
+  assert.equal(back.headers.get("location"), "/tokens");
+  const setCookie = back.headers.get("set-cookie");
+  assert.match(setCookie, /^__Host-sms_tokens=[^;]+; Path=\/; HttpOnly; Secure; SameSite=Lax; Max-Age=\d+$/);
+  const cookie = setCookie.split(";")[0];
+  const page = await call(app, "/tokens", { headers: { cookie } });
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
+  const post = (fields, headers = {}) => call(app, "/tokens", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie, ...headers },
+    body: new URLSearchParams({ csrf, ...fields })
+  });
+  const create = async (name = "Laptop", days = "90") => {
+    const response = await post({ action: "create", name, days });
+    const text = await response.text();
+    return { response, text, token: /(smsp_[A-Za-z0-9_-]{43})/.exec(text)?.[1], id: /(pat_[A-Za-z0-9_-]{12})/.exec(text)?.[1] };
+  };
+  return { cookie, csrf, html, page, post, create, get: () => call(app, "/tokens", { headers: { cookie } }) };
+}
+
+function mcpPost(app, token) {
+  return call(app, "/mcp", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
+  });
+}
+
+test("personal access tokens: create once, use as bearer, audited by id, stored hashed, revocable", async (t) => {
+  await shopifyMock(t);
+  const store = new MemoryStore();
+  const { app, auditPath } = await setup(t, { store });
+  const session = await tokensSession(app, "editor|bariatricpal.com");
+  assert.match(session.html, /Personal access tokens/);
+  const created = await session.create("CI runner", "90");
+  assert.equal(created.response.status, 200);
+  assert.match(created.response.headers.get("cache-control"), /no-store/);
+  assert.ok(created.token, "token shown once");
+  assert.match(created.text, /will not be shown again/);
+  // Not shown again on reload.
+  assert.ok(!(await (await session.get()).text()).includes(created.token));
+  // Stored only as a hash.
+  const stored = await store.entries("pat");
+  assert.equal(stored.length, 1);
+  assert.ok(!JSON.stringify(stored).includes(created.token));
+  assert.equal(stored[0][1].name, "CI runner");
+  assert.equal(stored[0][1].expiresAt - stored[0][1].createdAt, 90 * 24 * 3600_000);
+
+  const client = await mcpClient(t, app, created.token);
+  const { tools } = await client.listTools();
+  assert.ok(tools.some((tool) => tool.name === "shopify_get_shop_info"));
+  assert.ok(!tools.some((tool) => tool.name === "shopify_graphql_mutation"), "editor role still applies");
+  const result = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(result.isError, true);
+  const lines = await auditLines(auditPath);
+  const call1 = lines.find((line) => line.tool === "shopify_get_shop_info");
+  assert.equal(call1.tokenId, created.id);
+  assert.equal(call1.user, "editor@bariatricpal.com");
+  assert.ok(lines.some((line) => line.event === "personal_token_created" && line.tokenId === created.id));
+  assert.ok(!(await readFile(auditPath, "utf8")).includes(created.token));
+  assert.ok((await store.entries("pat"))[0][1].lastUsedAt, "last use recorded");
+
+  const revoked = await session.post({ action: "revoke", id: created.id });
+  assert.equal(revoked.status, 303);
+  assert.equal((await mcpPost(app, created.token)).status, 401);
+  assert.ok((await auditLines(auditPath)).some((line) => line.event === "personal_token_revoked" && line.tokenId === created.id));
+});
+
+test("personal access tokens expire, follow the policy on every request, and respect the maximum lifetime", async (t) => {
+  const policy = { users: { "admin@bariatricpal.com": { role: "admin", stores: "*" }, "editor@bariatricpal.com": { role: "editor", stores: ["main"] } } };
+  const { app, advance } = await setup(t, {
+    personalTokenMaxDays: 60,
+    policy: { current: () => new (class { resolve(email) { return policy.users[email] ? { email, ...policy.users[email] } : null; } })() }
+  });
+  const session = await tokensSession(app, "editor|bariatricpal.com");
+  assert.match(session.html, /<option value="30" selected>30 days<\/option>/);
+  assert.ok(!session.html.includes('value="90"'));
+  assert.equal((await session.create("Too long", "90")).response.status, 400);
+  const { token } = await session.create("Short", "30");
+  assert.ok(token);
+  assert.notEqual((await mcpPost(app, token)).status, 401);
+
+  delete policy.users["editor@bariatricpal.com"];
+  assert.equal((await mcpPost(app, token)).status, 403);
+  // The page session is dropped too.
+  assert.equal((await session.get()).status, 302);
+  policy.users["editor@bariatricpal.com"] = { role: "editor", stores: ["main"] };
+  assert.notEqual((await mcpPost(app, token)).status, 403);
+
+  advance(30 * 24 * 3600_000 + 1);
+  assert.equal((await mcpPost(app, token)).status, 401);
+  assert.equal((await mcpPost(app, `smsp_${"A".repeat(43)}`)).status, 401);
+});
+
+test("tokens page enforces CSRF, same origin, ownership, and gives admins every user's tokens", async (t) => {
+  const { app } = await setup(t);
+  const editor = await tokensSession(app, "editor|bariatricpal.com");
+  const mine = await editor.create("Editor token");
+  const viewer = await tokensSession(app, "viewer|bariatricpal.com");
+  const theirs = await viewer.create("Viewer token");
+
+  const noCsrf = await call(app, "/tokens", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: editor.cookie }, body: new URLSearchParams({ action: "create", name: "x", days: "90" }) });
+  assert.equal(noCsrf.status, 403);
+  assert.equal((await editor.post({ action: "create", name: "x", days: "90" }, { origin: "https://evil.example" })).status, 403);
+  assert.equal((await editor.post({ action: "create", name: "x", days: "90" }, { cookie: "__Host-sms_tokens=forged" })).status, 401);
+  // Someone else's token cannot be revoked by a non-admin, or seen.
+  assert.equal((await editor.post({ action: "revoke", id: theirs.id })).status, 404);
+  assert.ok(!(await (await editor.get()).text()).includes("Viewer token"));
+
+  const admin = await tokensSession(app, "admin|bariatricpal.com");
+  assert.ok(admin.html.includes("Editor token") && admin.html.includes("Viewer token"));
+  assert.ok(admin.html.includes("viewer@bariatricpal.com"));
+  assert.equal((await admin.post({ action: "revoke", id: theirs.id })).status, 303);
+  assert.equal((await mcpPost(app, theirs.token)).status, 401);
+  assert.notEqual((await mcpPost(app, mine.token)).status, 401);
+
+  const signout = await editor.post({ action: "signout" });
+  assert.match(signout.headers.get("set-cookie"), /Max-Age=0/);
+  assert.equal((await editor.get()).status, 302);
+
+  const stranger = await tokensSession(app, "stranger|bariatricpal.com");
+  assert.equal(stranger.denied.status, 403);
+  const consumer = await tokensSession(app, "someone|gmail.com|gmail.com");
+  assert.equal(consumer.denied.status, 403);
+});
+
+test("PERSONAL_TOKENS_ENABLED=0 turns off the page and bearer use", async (t) => {
+  const { app } = await setup(t, { personalTokensEnabled: false });
+  assert.equal((await call(app, "/tokens")).status, 404);
+  assert.equal((await mcpPost(app, `smsp_${"A".repeat(43)}`)).status, 401);
 });
