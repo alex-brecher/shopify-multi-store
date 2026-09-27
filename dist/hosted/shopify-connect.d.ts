@@ -1,7 +1,6 @@
 import type { StoreConfig } from "../config.js";
 import type { UserShopifyAccess } from "../runtime.js";
-import { type AuthorizationServer } from "./oauth.js";
-import type { PolicySource } from "./policy.js";
+import { type AuthorizationServer, type PageSignInPurpose } from "./oauth.js";
 import type { OAuthStore } from "./store.js";
 /** Shopify callbacks older than this (or this far in the future) are refused. */
 export declare const CALLBACK_MAX_AGE_SECONDS = 300;
@@ -14,7 +13,7 @@ export interface ShopifyAssociatedUser {
     collaborator?: boolean;
     emailVerified?: boolean;
 }
-/** Stored per (Google email, store alias). The token is stored only encrypted. */
+/** Stored per (signed-in email, store alias). The token is stored only encrypted. */
 export interface ShopifyTokenRecord {
     email: string;
     alias: string;
@@ -29,7 +28,6 @@ export interface ShopifyTokenRecord {
 export interface ShopifyConnectOptions {
     auth: AuthorizationServer;
     store: OAuthStore;
-    policy: PolicySource;
     /** AES-256-GCM keys, newest first. The first encrypts; all decrypt. */
     encryptionKeys: EncryptionKey[];
     /** Every configured store (unfiltered). */
@@ -40,8 +38,8 @@ export interface ShopifyConnectOptions {
     clientSecret: (store: StoreConfig) => string | undefined;
     /** Scopes to request, comma-separated handles. */
     scopes: string[];
-    /** Reject a connection whose Shopify staff email differs from the Google email. */
-    requireEmailMatch?: boolean;
+    /** Alias of the store listed first (preselected) on the sign-in chooser. Defaults to the first configured store. */
+    identityStore?: string;
     fetch?: typeof fetch;
     now?: () => number;
 }
@@ -93,15 +91,36 @@ export declare class ShopifyConnections {
     private readonly fetcher;
     constructor(options: ShopifyConnectOptions);
     get storesUrl(): string;
-    connectUrl(alias: string): string;
+    /** One link that signs in if needed and reconnects every expired or unconnected store. */
+    get reconnectUrl(): string;
     /** The caller's decrypted tokens for every store, for one MCP request. */
     accessFor(email: string): Promise<UserShopifyAccess>;
-    signedIn(email: string): Promise<Response>;
+    /** Stores a person can sign in through: *.myshopify.com, with app credentials on this server. */
+    private loginStores;
+    /**
+     * The login step of a sign-in: with one store, straight to its Shopify admin; with several,
+     * a chooser listing them, the identity store (or the first) preselected.
+     */
+    private startLogin;
+    /** POST /login/shopify: the store picked on the chooser. The browser must hold the sign-in's binding cookie. */
+    chooseLogin(request: Request): Promise<Response>;
+    private redirectLogin;
+    private authorizeUrl;
+    /** A page sign-in finished: open a /stores session, then show the page or reconnect every store. */
+    signedIn(email: string, purpose?: PageSignInPurpose): Promise<Response>;
     private session;
+    /** Every configured store. Whether the person may use one is up to Shopify. */
     private visibleStores;
     private record;
+    /** The next store that is not connected, or whose connection expired. */
     private nextUnconnected;
     handleStoresPage(request: Request): Promise<Response>;
+    /**
+     * GET /stores/reconnect: the one link tool errors return. Signed out, it signs in with Shopify
+     * and then reconnects every expired or unconnected store in a row. Signed in, it shows the
+     * stores page, where one "Reconnect all" click does the same.
+     */
+    handleReconnect(request: Request): Promise<Response>;
     private render;
     private action;
     /**
@@ -109,8 +128,22 @@ export declare class ShopifyConnections {
      * redirects to Shopify, so another site cannot start a Shopify authorization in the user's name.
      */
     connect(request: Request): Promise<Response>;
+    /** Create a single-use connection state bound to the /stores session and send the browser to Shopify. */
+    private startConnection;
     private connectForm;
     private connectableStore;
+    /**
+     * Shopify's redirect back, for a sign-in or a store connection. The signature (keyed with the
+     * store's app secret) and timestamp are checked first; the state then says which flow it is.
+     */
     callback(request: Request): Promise<Response>;
+    /** Exchange an authorization code for an online token. */
+    private exchange;
+    /** Keep an online token as the person's connection to a store. */
+    private saveToken;
+    /** Shopify callback for a sign-in: the verified staff email becomes the person's identity. */
+    private loginCallback;
+    /** Shopify callback for connecting one more store from the /stores session. */
+    private connectionCallback;
 }
 export {};

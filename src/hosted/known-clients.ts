@@ -30,8 +30,7 @@ export const KNOWN_CLIENT_REDIRECTS: readonly KnownClientRedirect[] = Object.fre
   // Cursor web and cloud agents (desktop Cursor uses a loopback redirect, covered below).
   { uri: "https://www.cursor.com/agents/mcp/oauth/callback", client: "Cursor (web)" }
   // TODO: Windsurf. Its native remote-MCP OAuth callback scheme is not published; when it is
-  // known, add it here. Until then Windsurf works through loopback (for example mcp-remote)
-  // or a personal access token.
+  // known, add it here. Until then Windsurf works through loopback (for example mcp-remote).
 ]);
 
 /** The exact URIs from KNOWN_CLIENT_REDIRECTS. */

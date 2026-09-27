@@ -26,19 +26,19 @@ export interface ShopifyUserToken {
 }
 
 /**
- * Per-user Shopify access for one hosted request (SHOPIFY_ACCESS_MODE=per_user).
- * When present, every Admin API call uses the caller's own online token for that store,
- * so Shopify enforces that person's staff permissions. There is no fallback to the app token.
+ * Per-user Shopify access for one hosted request. Every hosted Admin API call uses the
+ * caller's own online token for that store, so Shopify enforces that person's staff
+ * permissions. There is no fallback to an app token or a static token.
  */
 export interface UserShopifyAccess {
   /** Keyed by lower-case store alias. May include expired tokens so the error can say "expired". */
   tokens: Map<string, ShopifyUserToken>;
   /** The /stores page where the user connects stores. */
   storesUrl: string;
-  /** The URL that starts a Shopify connection for one store. */
+  /** The link that reconnects a store (on the hosted server, one link that reconnects every store). */
   connectUrl(alias: string): string;
   now(): number;
-  /** Set when this caller may not use Shopify at all (for example a personal access token); tools return it as the error. */
+  /** Set when this caller may not use Shopify at all; tools return it as the error. */
   blockedReason?: string;
 }
 
@@ -54,7 +54,7 @@ export interface ActionAuditDetails {
 /** Store aliases the current hosted caller may reach. "*" means every configured store. */
 export interface StoreScope {
   stores: "*" | string[];
-  /** Set in per-user mode: the caller's own Shopify tokens. */
+  /** Set on a hosted server: the caller's own Shopify tokens. */
   access?: UserShopifyAccess;
   /** Set in hosted mode: writes one audit line per action run. */
   auditAction?: (details: ActionAuditDetails) => Promise<void>;
@@ -73,7 +73,7 @@ export function storeAllowed(alias: string, scope: StoreScope | undefined = stor
   return scope.stores.some((allowed) => allowed.toLowerCase() === lower);
 }
 
-/** The caller's per-user Shopify access, when the current hosted call runs in per-user mode. */
+/** The caller's per-user Shopify access, inside a hosted tool call. */
 export function currentUserAccess(): UserShopifyAccess | undefined {
   return storeScope.getStore()?.access;
 }

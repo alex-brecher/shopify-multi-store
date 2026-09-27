@@ -4,26 +4,37 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
-Breaking change for `shopify-multi-store serve`: `SHOPIFY_ACCESS_MODE` now
-defaults to `per_user`. An existing deployment that relies on shared app tokens
-must set `SHOPIFY_ACCESS_MODE=app`, or it will refuse to start without
-`SHOPIFY_TOKEN_ENCRYPTION_KEY` and, once started, will require every person to
-connect their stores at `/stores`. In per-user mode without a policy file,
-every Google Workspace user in `ALLOWED_EMAIL_DOMAINS` signs in as an editor on
-every store (the server logs a warning at startup); Shopify then limits each
-person to their own staff permissions.
+Breaking changes for `shopify-multi-store serve` (local stdio mode is unchanged):
 
-- Hosted: per-user Shopify access (`SHOPIFY_ACCESS_MODE=per_user`, the new
-  serve default). Each person connects each store with their own Shopify staff
-  account at `/stores` (Shopify online tokens, `grant_options[]=per-user`), and
-  every tool call uses that person's token, so Shopify enforces their
-  permissions. Tokens are encrypted with AES-256-GCM
-  (`SHOPIFY_TOKEN_ENCRYPTION_KEY`). Missing or expired connections return the
-  exact connect URL; there is no fallback to the app token. The policy file is
-  optional in this mode. New settings: `SHOPIFY_APP_CLIENT_ID`,
-  `SHOPIFY_APP_CLIENT_SECRET`, `SHOPIFY_APP_SCOPES`,
-  `SHOPIFY_REQUIRE_EMAIL_MATCH`. `SHOPIFY_ACCESS_MODE=app` keeps the previous
-  behavior.
+- Sign-in is Shopify login only. Google sign-in (`GOOGLE_CLIENT_ID`,
+  `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL_DOMAINS`) is removed. People pick a
+  configured store on a small chooser page (`SHOPIFY_IDENTITY_STORE` is listed
+  first) and log in to its Shopify admin; the verified `associated_user` email
+  of the Shopify online token is their identity, and that token is also kept
+  as their connection to the store.
+- Shopify permissions are the only rule. The policy file
+  (`SHOPIFY_MULTI_STORE_POLICY`), roles (admin, editor, viewer), per-user store
+  allowlists, and admin-only tools are removed.
+- Hosted is always per-user. `SHOPIFY_ACCESS_MODE` and the `app` mode are
+  removed: a hosted server never uses a shared app token or a static Admin API
+  token (`SHOPIFY_TOKEN_<ALIAS>`), even when one is set.
+  `SHOPIFY_REQUIRE_EMAIL_MATCH` is removed because every store connection must
+  now match the signed-in Shopify email.
+- Personal access tokens are removed: the `/tokens` page, `smsp_` bearer
+  tokens, `PERSONAL_TOKENS_ENABLED`, `PERSONAL_TOKEN_MAX_DAYS`, and
+  `PERSONAL_TOKENS_SHOPIFY_ACCESS`. Every supported client signs in with OAuth.
+- Reconnect all: one click on `/stores` reconnects every expired or unconnected
+  store in a row, with no further clicks while the person is logged in to the
+  Shopify admin. Tool errors for an expired or unconnected store return one
+  link, `/stores/reconnect`, which also signs in first when needed.
+- Existing Google sign-in sessions, refresh tokens and personal access tokens
+  stop working. People sign in again with Shopify.
+
+- Hosted: per-user Shopify access. Each person's tool calls use their own
+  Shopify online token for each store (`grant_options[]=per-user`), so Shopify
+  enforces their permissions. Tokens are encrypted with AES-256-GCM
+  (`SHOPIFY_TOKEN_ENCRYPTION_KEY`). Settings: `SHOPIFY_APP_CLIENT_ID`,
+  `SHOPIFY_APP_CLIENT_SECRET`, `SHOPIFY_APP_SCOPES`.
 - `shopify_run_action` dry runs report whether the preview is complete. IDs
   written inline in the document are looked up too. Search, saved-search,
   filter, and "all" style mutations, more than 250 IDs, and IDs that do not

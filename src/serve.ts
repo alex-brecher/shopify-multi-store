@@ -3,19 +3,16 @@ import http from "node:http";
 import { resolve } from "node:path";
 import { createHostedApp, type HostedApp } from "./hosted/app.js";
 import { FileAuditLog } from "./hosted/audit.js";
-import { googleLogin } from "./hosted/google.js";
 import { toNodeListener } from "./hosted/node-adapter.js";
 import { redirectListFromEnv } from "./hosted/known-clients.js";
 import { DEFAULT_CIMD_HOSTS, DEFAULT_DISPLAY_NAME } from "./hosted/oauth.js";
-import type { ShopifyAccessMode } from "./hosted/guard.js";
-import { FilePolicySource, openDomainPolicy, type PolicySource } from "./hosted/policy.js";
 import { parseEncryptionKeys } from "./hosted/shopify-connect.js";
 import { FileStore } from "./hosted/store.js";
 import { loadStores, type StoreConfig } from "./config.js";
 import { fullScopes } from "./scope-requirements.js";
 import { enableHostedMode } from "./runtime.js";
 
-const FILE_SUFFIX_TARGETS = /^(SHOPIFY_TOKEN_[A-Z0-9_]+|SHOPIFY_CLIENT_SECRET_[A-Z0-9_]+|SHOPIFY_APP_CLIENT_SECRET|SHOPIFY_TOKEN_ENCRYPTION_KEYS?|GOOGLE_CLIENT_SECRET|STORES_JSON)_FILE$/;
+const FILE_SUFFIX_TARGETS = /^(SHOPIFY_TOKEN_[A-Z0-9_]+|SHOPIFY_CLIENT_SECRET_[A-Z0-9_]+|SHOPIFY_APP_CLIENT_SECRET|SHOPIFY_TOKEN_ENCRYPTION_KEYS?|STORES_JSON)_FILE$/;
 
 /**
  * Support secret mounts: for NAME_FILE=/run/secrets/x, set NAME from the file contents
@@ -61,19 +58,6 @@ function displayName(env: NodeJS.ProcessEnv): string {
   return value;
 }
 
-function personalTokenMaxDays(env: NodeJS.ProcessEnv): number {
-  const days = positiveInt(env, "PERSONAL_TOKEN_MAX_DAYS", 180);
-  if (days > 3650) throw new Error("PERSONAL_TOKEN_MAX_DAYS must be at most 3650.");
-  return days;
-}
-
-function accessMode(env: NodeJS.ProcessEnv): ShopifyAccessMode {
-  const value = (env.SHOPIFY_ACCESS_MODE ?? "").trim().toLowerCase();
-  if (value === "" || value === "per_user") return "per_user";
-  if (value === "app") return "app";
-  throw new Error("SHOPIFY_ACCESS_MODE must be per_user or app.");
-}
-
 function secretEnvName(alias: string): string {
   return `SHOPIFY_CLIENT_SECRET_${alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
 }
@@ -94,42 +78,22 @@ export async function buildHostedAppFromEnv(env: NodeJS.ProcessEnv = process.env
     throw new Error("MCP_PUBLIC_URL must be an origin such as https://shopify-mcp.example.com, with no path.");
   }
   const origin = publicUrl.origin;
-  const allowedDomains = list(required(env, "ALLOWED_EMAIL_DOMAINS"))!;
   const dataDir = resolve(env.SHOPIFY_MULTI_STORE_DATA_DIR ?? "data");
   const store = await FileStore.open(resolve(env.SHOPIFY_MULTI_STORE_OAUTH_STORE ?? `${dataDir}/oauth-store.json`));
-  const mode = accessMode(env);
-  // In per-user mode Shopify enforces each person's permissions, so the policy file is an optional
-  // extra restriction. With the shared app token it is the only access control, so it is required.
-  const policyPath = env.SHOPIFY_MULTI_STORE_POLICY?.trim();
-  const policy: PolicySource = policyPath
-    ? new FilePolicySource(resolve(policyPath))
-    : mode === "per_user"
-      ? openDomainPolicy(allowedDomains)
-      : new FilePolicySource(resolve(required(env, "SHOPIFY_MULTI_STORE_POLICY")));
-  if (mode === "per_user" && !policyPath) {
-    process.stderr.write(
-      `Warning: no SHOPIFY_MULTI_STORE_POLICY file. Every Google Workspace user in ${allowedDomains.join(", ")} can sign in as an editor on every store; ` +
-      "Shopify limits each person to their own staff permissions. Set SHOPIFY_MULTI_STORE_POLICY to restrict users, roles, or stores.\n"
-    );
-  }
-  // Refuse to start per-user mode without an encryption key for the stored Shopify tokens.
-  const encryptionKeys = mode === "per_user" ? parseEncryptionKeys({ SHOPIFY_TOKEN_ENCRYPTION_KEYS: env.SHOPIFY_TOKEN_ENCRYPTION_KEYS, SHOPIFY_TOKEN_ENCRYPTION_KEY: env.SHOPIFY_TOKEN_ENCRYPTION_KEY }) : undefined;
+  // Refuse to start without an encryption key for the stored Shopify tokens.
+  const encryptionKeys = parseEncryptionKeys({ SHOPIFY_TOKEN_ENCRYPTION_KEYS: env.SHOPIFY_TOKEN_ENCRYPTION_KEYS, SHOPIFY_TOKEN_ENCRYPTION_KEY: env.SHOPIFY_TOKEN_ENCRYPTION_KEY });
   const appClientId = env.SHOPIFY_APP_CLIENT_ID?.trim() || undefined;
   const appClientSecret = env.SHOPIFY_APP_CLIENT_SECRET?.trim() || undefined;
   const scopes = list(env.SHOPIFY_APP_SCOPES) ?? fullScopes();
   const audit = new FileAuditLog(resolve(env.SHOPIFY_MULTI_STORE_AUDIT_LOG ?? `${dataDir}/audit.jsonl`));
-  const google = googleLogin({
-    clientId: required(env, "GOOGLE_CLIENT_ID"),
-    clientSecret: required(env, "GOOGLE_CLIENT_SECRET"),
-    ...(allowedDomains.length === 1 ? { hostedDomainHint: allowedDomains[0] } : {})
-  });
+  const identityStore = env.SHOPIFY_IDENTITY_STORE?.trim() || undefined;
+  if (identityStore && !(await loadStores()).some((store) => store.alias.toLowerCase() === identityStore.toLowerCase())) {
+    throw new Error(`SHOPIFY_IDENTITY_STORE names ${identityStore}, which is not a configured store alias.`);
+  }
   const app = createHostedApp({
     displayName: displayName(env),
     issuer: origin,
     resource: `${origin}/mcp`,
-    google,
-    allowedDomains,
-    policy,
     store,
     audit,
     // OAUTH_REDIRECT_URIS adds to the built-in known clients; OAUTH_REDIRECT_URIS_REPLACE=1 replaces them.
@@ -140,20 +104,14 @@ export async function buildHostedAppFromEnv(env: NodeJS.ProcessEnv = process.env
     accessTokenTtlSeconds: positiveInt(env, "OAUTH_ACCESS_TOKEN_TTL_SECONDS", 3600),
     refreshTokenTtlSeconds: positiveInt(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS", 30 * 24 * 3600),
     sessionMaxAgeSeconds: positiveInt(env, "OAUTH_SESSION_MAX_AGE_SECONDS", 7 * 24 * 3600),
-    personalTokensEnabled: env.PERSONAL_TOKENS_ENABLED === undefined || env.PERSONAL_TOKENS_ENABLED === "" ? true : flag(env.PERSONAL_TOKENS_ENABLED),
-    personalTokenMaxDays: personalTokenMaxDays(env),
-    shopifyAccessMode: mode,
-    personalTokensShopifyAccess: flag(env.PERSONAL_TOKENS_SHOPIFY_ACCESS),
-    ...(encryptionKeys ? {
-      shopifyConnect: {
-        encryptionKeys,
-        loadStores,
-        clientId: (store: StoreConfig) => (store.auth.type === "client_credentials" ? store.auth.clientId : undefined) ?? appClientId,
-        clientSecret: (store: StoreConfig) => env[secretEnvName(store.alias)]?.trim() || appClientSecret,
-        scopes,
-        requireEmailMatch: flag(env.SHOPIFY_REQUIRE_EMAIL_MATCH)
-      }
-    } : {})
+    shopifyConnect: {
+      encryptionKeys,
+      loadStores,
+      clientId: (store: StoreConfig) => (store.auth.type === "client_credentials" ? store.auth.clientId : undefined) ?? appClientId,
+      clientSecret: (store: StoreConfig) => env[secretEnvName(store.alias)]?.trim() || appClientSecret,
+      scopes,
+      ...(identityStore ? { identityStore } : {})
+    }
   });
   return {
     app,

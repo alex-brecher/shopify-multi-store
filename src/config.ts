@@ -204,6 +204,8 @@ export async function getAccessToken(store: StoreConfig): Promise<string> {
     if (token && token.expiresAt > access.now()) return token.token;
     throw new Error(notConnectedMessage(access, store.alias));
   }
+  // Hosted: only the caller's own Shopify token, never a static or app-level credential.
+  if (isHostedMode()) throw new Error(`No Shopify connection for ${store.alias}. Sign in with Shopify on the hosted server first.`);
   const envName = store.tokenEnv ?? defaultTokenEnv(store.alias);
   const envToken = process.env[envName];
   if (envToken) return envToken;

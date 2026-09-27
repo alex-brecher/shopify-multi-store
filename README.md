@@ -185,7 +185,11 @@ Copy `skills/shopify-multi-store/SKILL.md` into the client's skills directory wh
 
 ## Host it for your team
 
-Run `shopify-multi-store serve` (or the included Dockerfile) once and share `https://<host>/mcp`. Each person connects from the AI app they already use, on any plan: Claude (personal custom connector), ChatGPT, Codex, Claude Code, Cursor, VS Code, Gemini CLI, Windsurf, or any MCP client that supports remote servers. They sign in with Google Workspace and approve the app on a consent screen; apps that only send a fixed header can use a personal access token from `/tokens`. By default each person also connects each store with their own Shopify staff account at `/stores`, so every call runs with their own Shopify permissions and Shopify decides what they can do. Shopify tokens stay on the server, encrypted. Optional roles, per-store access, and an audit log are built in.
+Local use on your own computer (above) is the default. Hosting is optional: whoever wants a shared server runs one, and their team connects from the AI app they already use, on any plan: Claude (personal custom connector), ChatGPT, Codex, Claude Code, Cursor, VS Code, Gemini CLI, Windsurf, or any MCP client that supports remote servers.
+
+People sign in with their own Shopify staff account, and every call runs with that person's own Shopify permissions: Shopify decides what they can do, with no roles or policy file on the server. Shopify tokens stay on the server, encrypted. Reconnecting is at most once a day and one click for all stores. Every tool call is audited.
+
+Run `shopify-multi-store serve` (or the included Dockerfile) on any server and share `https://<host>/mcp`.
 
 See [Connect from your AI app](docs/HOSTED.md#connect-from-your-ai-app) for per-client steps, [docs/HOSTED.md](docs/HOSTED.md) for setup, and [docs/ACTIONS.md](docs/ACTIONS.md) for per-user access and the generic action tools.
 

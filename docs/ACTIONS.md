@@ -2,32 +2,29 @@
 
 Two features work together so that every person on the team can make any Shopify Admin API change from any AI app, across all stores, limited only by what that person may already do in Shopify:
 
-1. Per-user access (hosted server). Each person connects each store with their own Shopify staff account. Every tool call then runs with that person's Shopify token, so Shopify enforces their staff permissions. There is no separate permission system to maintain.
+1. Per-user access (hosted server). Each person signs in with their own Shopify staff account and connects each store with it. Every tool call then runs with that person's Shopify token, so Shopify enforces their staff permissions. There is no separate permission system to maintain.
 2. Three generic action tools. `shopify_find_actions`, `shopify_describe_action`, and `shopify_run_action` reach every Admin API mutation (514 in API 2026-04, 523 in 2026-07), including the 483 that have no dedicated tool, without adding hundreds of tools.
 
 ## Per-user access
 
-`SHOPIFY_ACCESS_MODE=per_user` is the default for `shopify-multi-store serve`.
+A hosted server (`shopify-multi-store serve`, or the Cloudflare Worker) always works this way; see [HOSTED.md](HOSTED.md).
 
-1. A person signs in to the AI app with Google, as before.
-2. They open `https://<host>/stores`, sign in with Google, and click Connect (or "Connect all") for each store.
-3. Shopify asks them to log in with their Shopify staff account and approve the app. The server uses Shopify's authorization-code flow in online access mode (`grant_options[]=per-user`).
-4. The server stores the resulting online token, encrypted with AES-256-GCM, together with the Shopify staff account it belongs to (`associated_user`: id, email, store owner, collaborator) and the scopes that account holds (`associated_user_scope`).
-5. From then on, every tool call for that store uses that person's token. Shopify limits the token to the app scopes that match the person's staff permissions (`associated_user_scope`), and a person whose staff account cannot manage, for example, orders cannot change orders through any tool. How finely Shopify maps individual staff permissions to API access is up to Shopify; test with a restricted staff account before relying on a specific permission.
+1. A person connects the server in their AI app and signs in with Shopify: they pick a store and log in to its admin with their Shopify staff account. The server uses Shopify's authorization-code flow in online access mode (`grant_options[]=per-user`), and the verified staff email (`associated_user`, `email_verified: true`) becomes their identity.
+2. The online token from that login is kept as their connection to that store. Other stores are connected the same way at `https://<host>/stores`; **Reconnect all** goes through every expired or unconnected store in a row.
+3. The server stores each online token encrypted with AES-256-GCM, together with the Shopify staff account it belongs to (`associated_user`: id, email, store owner, collaborator) and the scopes that account holds (`associated_user_scope`).
+4. From then on, every tool call for that store uses that person's token. Shopify limits the token to the app scopes that match the person's staff permissions (`associated_user_scope`), and a person whose staff account cannot manage, for example, orders cannot change orders through any tool. How finely Shopify maps individual staff permissions to API access is up to Shopify; test with a restricted staff account before relying on a specific permission.
 
 What people see:
 
-- `/stores` lists every store they may use: "Connected as <Shopify email>" with the expiry, "Expired", or "Not connected", with Connect, Reconnect, and Disconnect.
-- A tool call for a store they have not connected, or whose token expired, fails with the exact URL to fix it, for example `https://<host>/shopify/connect?store=netrition`. It never falls back to the app token.
-- `shopify_list_stores` and every "all stores" report cover only connected stores and name the others with the `/stores` link.
+- `/stores` lists every configured store: "Connected as <Shopify email>" with the expiry, "Expired", or "Not connected", with Reconnect all, and Connect, Reconnect, and Disconnect per store.
+- A tool call for a store they have not connected, or whose token expired, fails with one link, `https://<host>/stores/reconnect`, which reconnects every store. It never falls back to an app token or a static token.
+- `shopify_list_stores` and every "all stores" report cover only connected stores and name the others with the reconnect link.
 
 Notes:
 
-- Shopify online tokens expire after about 24 hours and have no refresh token. Reconnecting is one click per store while the person is logged in to Shopify admin, and "Connect all" walks through every unconnected store in a row.
-- `SHOPIFY_REQUIRE_EMAIL_MATCH=1` refuses a connection when the Shopify staff email differs from the Google email. Both emails are always recorded in the audit log and shown on `/stores`.
-- The policy file is optional in per-user mode. Without it, anyone from `ALLOWED_EMAIL_DOMAINS` may sign in and Shopify decides the rest. With it, it still limits stores and roles (a `viewer` stays read-only).
-- Personal access tokens (`/tokens`) are long-lived, so in per-user mode they cannot use Shopify unless `PERSONAL_TOKENS_SHOPIFY_ACCESS=1`, which also caps new personal tokens at 30 days.
-- `SHOPIFY_ACCESS_MODE=app` keeps the previous behavior: one app token per store, and the policy file is required. Local stdio mode is unchanged and always uses the owner's app token.
+- Shopify online tokens expire after 24 hours, or when the person logs out of the Shopify admin, and have no refresh token. Reconnecting is at most once a day and one click for all stores; while the person is logged in to the Shopify admin, each store reconnects without further clicks.
+- Every store connection must carry the same verified Shopify email the person signed in with.
+- There are no roles and no policy file: Shopify permissions are the only rule. Local stdio mode is unchanged and uses the owner's own credentials.
 
 ## The action tools
 
@@ -52,7 +49,7 @@ Notes:
 - `ACCESS_DENIED` becomes "Your Shopify account or the app lacks write_x on <store>".
 - On the hosted server, every call writes an `action_run` audit line with the user, stores, mutations, a hash of the variables, and each store's outcome.
 
-In app mode, `shopify_run_action` and `shopify_graphql_mutation` are admin-only. In per-user mode they are available to every signed-in user who is not a `viewer`, because Shopify enforces permissions. In per-user mode `shopify_graphql_mutation` applies the same denylist and destructive confirm check as `shopify_run_action`: a destructive mutation needs `confirm` set to its name instead of `true`. `shopify_graphql_mutation` also injects the same error lists and reports the same per-root `outcome`, `roots`, and advice. If the schema for the store's API version cannot be loaded, or the document or variables do not validate against it, the document is sent unchanged and judged structurally, with an `outcomeNotice`: under each top-level response key, any list of objects with a `message` key counts as that root's user errors, whatever its alias. A root is `applied` only when its payload came back with an empty list under a key ending in `errors` and no errors on its path; a root with nothing to go on is `unknown`, never `applied`.
+On a hosted server `shopify_run_action` and `shopify_graphql_mutation` are available to every signed-in user, because Shopify enforces permissions, and `shopify_graphql_mutation` applies the same denylist and destructive confirm check as `shopify_run_action`: a destructive mutation needs `confirm` set to its name instead of `true`. `shopify_graphql_mutation` also injects the same error lists and reports the same per-root `outcome`, `roots`, and advice. If the schema for the store's API version cannot be loaded, or the document or variables do not validate against it, the document is sent unchanged and judged structurally, with an `outcomeNotice`: under each top-level response key, any list of objects with a `message` key counts as that root's user errors, whatever its alias. A root is `applied` only when its payload came back with an empty list under a key ending in `errors` and no errors on its path; a root with nothing to go on is `unknown`, never `applied`.
 
 ### Denylist
 
@@ -130,17 +127,17 @@ These fail for any app, whatever the scopes or the person's permissions. Expect 
 
 ## Shopify Admin setup
 
-For per-user mode, use one Shopify app (Dev Dashboard) that is installed on every store:
+For a hosted server, use one Shopify app (Dev Dashboard) that is installed on every store:
 
 1. In the app's configuration (or `shopify.app.toml`), add the allowed redirect URL `https://<host>/shopify/callback`.
-2. Request the full scope set. Print it with `node scripts/print-scopes.mjs --full` and paste it into the version's access scopes. Remove any scope your app is not approved for (see the comments in `src/scope-requirements.ts`: `read_all_orders`, protected customer data, and payment mandates need approval). `SHOPIFY_APP_SCOPES` changes what `/shopify/connect` requests.
+2. Request the full scope set. Print it with `node scripts/print-scopes.mjs --full` and paste it into the version's access scopes. Remove any scope your app is not approved for (see the comments in `src/scope-requirements.ts`: `read_all_orders`, protected customer data, and payment mandates need approval). `SHOPIFY_APP_SCOPES` changes what sign-in and `/shopify/connect` request.
 3. Release the version and install or update the app on each store, approving the new scopes as the store owner.
 4. Set `SHOPIFY_APP_CLIENT_ID` and `SHOPIFY_APP_CLIENT_SECRET` on the server (a `client_credentials` store's own `auth.clientId` and `SHOPIFY_CLIENT_SECRET_<ALIAS>` take precedence for that store), and `SHOPIFY_TOKEN_ENCRYPTION_KEY` (`openssl rand -base64 32`).
 5. Give each staff member the Shopify permissions they should have. That is the only permission setting.
 
 ## Limits
 
-- Online tokens last about a day. People reconnect on `/stores`; tool errors link there.
+- Online tokens last at most a day. People reconnect every store with one click; tool errors link to it.
 - The action catalog comes from the bundled schemas (2026-04 and 2026-07). Other versions are fetched from Shopify's public schema proxy on first use.
 - Scope hints come from the mutation's description or its name prefix. They are hints, not a guarantee; Shopify's `ACCESS_DENIED` message is authoritative.
 - Responses are capped at 100,000 characters across stores; oversized per-store data is omitted with a notice. Select fewer fields in `document` if that happens.

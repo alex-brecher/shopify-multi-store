@@ -1,5 +1,5 @@
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "pat" | "session" | "shopify_state" | "shopify_token";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token";
 export interface OAuthStore {
     get<T>(kind: RecordKind, key: string): Promise<T | undefined>;
     put<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<void>;

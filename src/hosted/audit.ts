@@ -8,7 +8,6 @@ export interface AuditEntry {
   event?: "tool_call";
   timestamp: string;
   user: string;
-  role: string;
   tool: string;
   stores: string[];
   readOnly: boolean;
@@ -20,9 +19,7 @@ export interface AuditEntry {
   /** The arguments as auditArguments() reduces them: no free text, documents summarized. */
   args?: unknown;
   truncated?: boolean;
-  /** Set when the call was authenticated with a personal access token. The id, never the value. */
-  tokenId?: string;
-  /** Per-user mode: store alias to the Shopify staff email the call ran as. */
+  /** Store alias to the Shopify staff email the call ran as. */
   shopifyAccounts?: Record<string, string>;
 }
 
@@ -33,8 +30,6 @@ export interface AuthAuditEntry {
     | "sign_in_denied"
     | "consent_approved"
     | "consent_denied"
-    | "personal_token_created"
-    | "personal_token_revoked"
     | "token_issued"
     | "token_refreshed"
     | "refresh_denied"
@@ -46,8 +41,6 @@ export interface AuthAuditEntry {
   timestamp: string;
   user?: string;
   clientId?: string;
-  /** Personal access token id (never the token value). */
-  tokenId?: string;
   status?: number;
   reason?: string;
   /** Structured failure detail (never the error text). */
@@ -64,13 +57,11 @@ export interface ActionAuditEntry {
   event: "action_run";
   timestamp: string;
   user: string;
-  role?: string;
-  tokenId?: string;
   mutations: string[];
   stores: string[];
   dryRun: boolean;
   variablesSha256: string;
-  /** Per store; shopifyEmail is the Shopify staff account the call ran as (per-user mode). */
+  /** Per store; shopifyEmail is the Shopify staff account the call ran as. */
   outcome: Array<{ store: string; ok: boolean; error?: AuditErrorInfo; userErrors?: number; shopifyEmail?: string }>;
 }
 

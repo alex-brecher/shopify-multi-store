@@ -23,7 +23,7 @@ export function storeAllowed(alias, scope = storeScope.getStore()) {
     const lower = alias.toLowerCase();
     return scope.stores.some((allowed) => allowed.toLowerCase() === lower);
 }
-/** The caller's per-user Shopify access, when the current hosted call runs in per-user mode. */
+/** The caller's per-user Shopify access, inside a hosted tool call. */
 export function currentUserAccess() {
     return storeScope.getStore()?.access;
 }
