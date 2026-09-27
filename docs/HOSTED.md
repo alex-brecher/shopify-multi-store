@@ -214,10 +214,14 @@ Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, and
 
 ### Audit log
 
-One JSON line per tool call (`event: "tool_call"`): `timestamp`, `user`, `role`, `tool`, `stores`, `readOnly`, `ok`, `error`, `durationMs`, and `argsSha256` (a sha256 of the canonical arguments).
+One JSON line per tool call (`event: "tool_call"`): `timestamp`, `user`, `role`, `tool`, `stores`, `readOnly`, `ok`, `error`, `durationMs`, `argsSha256` (a sha256 of the canonical arguments), and `args`.
 
-- Read-only calls also record the first 2,000 characters of a `query` argument, and nothing else from the arguments.
-- Other calls record the arguments. Values under secret-looking keys become `[REDACTED]`. Customer email, phone, and address fields become `[PII sha256:<hex>]`, so the same value can still be matched across lines. Every string is capped at 2,000 characters.
+`args` never holds free text, so customer data typed into a query or search cannot reach the log:
+
+- A GraphQL document (`query` on the query tools and bulk export, `mutation` on the mutation tool) becomes `{ "graphql": { operations, argumentNames, documentSha256 } }`: each operation's type and root field names, the argument names used, and a sha256 of the text. Literal values such as `query: "email:..."`, aliases, and operation names are dropped.
+- `variables` become `[sha256:<hex>]`.
+- Numbers and booleans are kept. Strings are kept only when they are Shopify GIDs, store aliases under `store`/`stores`/`alias`, numeric ids under id keys, or enum values under status and sort keys.
+- Every other string, including search expressions, becomes `[sha256:<hex>]` of its value, so the same value can still be matched across lines. Customer contact keys (email, phone, address, zip, names) are hashed whatever their type. Values under secret-looking keys become `[REDACTED]`.
 - A line is capped at 64 KB. If it would be longer, the arguments are dropped and `truncated: true` is set; `argsSha256` stays.
 
 Auth events are logged to the same file with an `event` field: `sign_in`, `sign_in_denied` (with `reason`), `consent_approved`, `consent_denied`, `token_issued`, `token_refreshed`, `refresh_denied` (reuse, maximum session age, or policy), `personal_token_created`, `personal_token_revoked`, `request_unauthorized` (401), and `request_forbidden` (403). They carry `user` and `clientId` where known. Requests and tool calls made with a personal access token carry its `tokenId`.

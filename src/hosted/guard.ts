@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { storeAllowed, storeScope } from "../runtime.js";
-import { auditArguments, canonicalJson, capString, sha256Hex, type AuditLog } from "./audit.js";
+import { auditArguments, canonicalJson, sha256Hex, type AuditLog } from "./audit.js";
 import type { Principal, Role } from "./policy.js";
 
 /** Tools only an admin may call in hosted mode, whatever their annotations say. */
@@ -24,6 +24,14 @@ export const HOSTED_DISABLED_TOOLS: ReadonlySet<string> = new Set([
 /** Arguments that refer to the server's local filesystem and are refused in hosted mode. */
 export const HOSTED_DISABLED_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
   shopify_upload_image: ["imageFile"]
+};
+
+/** Tools whose named arguments hold a GraphQL document. The audit log keeps only a summary of it. */
+export const GRAPHQL_DOCUMENT_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
+  shopify_graphql_query: ["query"],
+  shopify_graphql_query_many: ["query"],
+  shopify_graphql_mutation: ["mutation"],
+  shopify_bulk_export_start: ["query"]
 };
 
 /** Top-level argument names that select stores. */
@@ -110,7 +118,6 @@ export function guardServer(server: McpServer, { principal, audit, tokenId }: Gu
           ? (failure instanceof Error ? failure.message : String(failure))
           : isError ? errorMessage(result) : undefined;
         try {
-          const query = input && typeof input === "object" ? (input as Record<string, unknown>).query : undefined;
           await audit.write({
             event: "tool_call",
             timestamp: new Date(started).toISOString(),
@@ -123,12 +130,13 @@ export function guardServer(server: McpServer, { principal, audit, tokenId }: Gu
             ok: !isError,
             ...(errorText ? { error: errorText.slice(0, 500) } : {}),
             durationMs: Date.now() - started,
-            // Every call records a hash of its arguments. Read-only calls add only the start of a
-            // query argument; mutations add the arguments with secrets and customer contact
-            // fields redacted and long strings capped.
-            ...(input !== undefined ? { argsSha256: sha256Hex(canonicalJson(input)) } : {}),
-            ...(readOnly && typeof query === "string" ? { query: capString(query) } : {}),
-            ...(!readOnly && input !== undefined ? { args: auditArguments(input) } : {})
+            // Every call records a hash of its arguments and the arguments reduced by
+            // auditArguments(): GraphQL documents summarized, variables and free text hashed,
+            // only ids, store aliases, enums, numbers and booleans kept as they are.
+            ...(input !== undefined ? {
+              argsSha256: sha256Hex(canonicalJson(input)),
+              args: auditArguments(input, { graphqlKeys: GRAPHQL_DOCUMENT_ARGUMENTS[name] ?? [] })
+            } : {})
           });
         } catch (error) {
           process.stderr.write(`Audit log write failed: ${error instanceof Error ? error.message : String(error)}\n`);

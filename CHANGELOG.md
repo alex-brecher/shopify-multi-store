@@ -4,6 +4,11 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+- Hosted audit log: stop storing raw GraphQL documents, search expressions, and
+  free-text arguments. Documents are summarized (operation types, root fields,
+  argument names, sha256), variables are hashed, and only ids, store aliases,
+  enums, numbers and booleans are kept; other strings become a sha256. Customer
+  data inside inline GraphQL literals or search strings no longer reaches the log.
 - Hosted: a personal access token revoked while a request was being verified
   could be written back by the last-used update. The update is now conditional
   on the stored record, and the request is refused.

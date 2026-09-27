@@ -509,8 +509,10 @@ test("audit log records mutations with an argument hash and hosted mode refuses 
   assert.equal(entry.ok, true);
   assert.deepEqual(entry.stores, ["main"]);
   assert.match(entry.argsSha256, /^[0-9a-f]{64}$/);
-  assert.equal(entry.args.mutation, mutation);
-  assert.equal(entry.args.variables.accessToken, "[REDACTED]");
+  assert.deepEqual(entry.args.mutation.graphql.operations, [{ type: "mutation", rootFields: ["productUpdate"] }]);
+  assert.equal(entry.args.mutation.graphql.documentSha256, createHash("sha256").update(mutation).digest("hex"));
+  assert.match(entry.args.variables, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.equal(entry.args.confirm, true);
   assert.equal(typeof entry.durationMs, "number");
   assert.ok(!JSON.stringify(lines).includes(tokens.access_token));
   assert.ok(!JSON.stringify(lines).includes("should-not-log"));
@@ -540,17 +542,116 @@ test("audit log records read-only argument hashes, capped query text, and redact
   const lines = await auditLines(auditPath);
   const readEntry = lines.find((line) => line.tool === "shopify_graphql_query");
   assert.match(readEntry.argsSha256, /^[0-9a-f]{64}$/);
-  assert.equal(readEntry.args, undefined);
-  assert.ok(readEntry.query.startsWith(query.slice(0, 2000)));
-  assert.ok(readEntry.query.length < 2100);
+  assert.equal(readEntry.query, undefined, "the raw query text is not stored");
+  assert.deepEqual(readEntry.args.query.graphql.operations, [{ type: "query", rootFields: ["shop"] }]);
+  assert.equal(readEntry.args.store, "main");
 
   const writeEntry = lines.find((line) => line.tool === "shopify_graphql_mutation");
-  assert.match(writeEntry.args.variables.email, /^\[PII sha256:[0-9a-f]{64}\]$/);
-  assert.match(writeEntry.args.variables.phone, /^\[PII sha256:[0-9a-f]{64}\]$/);
-  assert.match(writeEntry.args.variables.shippingAddress, /^\[PII sha256:[0-9a-f]{64}\]$/);
-  assert.ok(writeEntry.args.variables.note.length < 2100);
+  assert.match(writeEntry.args.variables, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.equal(writeEntry.args.store, "main");
   const raw = await readFile(auditPath, "utf8");
-  for (const secret of ["customer@example.com", "+15185551234", "1 Main St", tokens.access_token]) assert.ok(!raw.includes(secret), secret);
+  for (const secret of ["customer@example.com", "+15185551234", "1 Main St", "nnnnnnnnnn", "qqqqqqqqqq", tokens.access_token]) assert.ok(!raw.includes(secret), secret);
+});
+
+test("audit lines never contain customer PII from GraphQL literals, variables, or search arguments", async (t) => {
+  await shopifyMock(t);
+  const { app, auditPath } = await setup(t, {
+    allowedDomains: ["example.com"],
+    policy: staticPolicy({ users: { "admin@example.com": { role: "admin", stores: "*" } }, domains: {} })
+  });
+  const { tokens } = await login(app, "admin|example.com");
+  const client = await mcpClient(t, app, tokens.access_token);
+
+  const pii = ["jane.doe@example.com", "+1 555 010 0199", "5550100199", "Jane", "Doe", "Janet Q. Sample", "12 Elm Street", "Springfield", "90210"];
+  const search = 'email:jane.doe@example.com OR phone:5550100199 OR "Janet Q. Sample"';
+  const readDocument = `query Lookup($q: String!) {
+    customers(first: 5, query: "email:jane.doe@example.com") { nodes { id } }
+    byName: customers(first: 5, query: "first_name:Jane last_name:Doe") { nodes { id } }
+    orders(first: 1, query: $q) { nodes { id } }
+    ...Extra
+  }
+  fragment Extra on QueryRoot { shop { name } }`;
+  const mutation = `mutation {
+    customerUpdate(input: { id: "gid://shopify/Customer/7", email: "jane.doe@example.com", phone: "+1 555 010 0199",
+      firstName: "Jane", lastName: "Doe", addresses: [{ address1: "12 Elm Street", city: "Springfield", zip: "90210" }] }) {
+      customer { id } userErrors { field message }
+    }
+  }`;
+  const variables = { q: search, customer: { email: "jane.doe@example.com", phone: "+1 555 010 0199", firstName: "Jane", lastName: "Doe" } };
+
+  const calls = [
+    { name: "shopify_graphql_query", arguments: { store: "main", query: readDocument, variables } },
+    { name: "shopify_graphql_query_many", arguments: { stores: ["main", "wholesale"], query: readDocument, variables } },
+    { name: "shopify_graphql_mutation", arguments: { store: "main", mutation, variables, confirm: true } },
+    { name: "shopify_search_products_many", arguments: { stores: ["main"], query: search, first: 5 } },
+    { name: "shopify_list_customers", arguments: { store: "main", query: search } },
+    { name: "shopify_list_orders", arguments: { store: "main", query: "email:jane.doe@example.com" } }
+  ];
+  for (const request of calls) await client.callTool(request);
+
+  const raw = await readFile(auditPath, "utf8");
+  const lines = await auditLines(auditPath);
+  for (const request of calls) assert.ok(lines.some((line) => line.tool === request.name), request.name);
+  for (const value of pii) assert.ok(!raw.includes(value), `audit log contains ${value}`);
+  assert.ok(!raw.includes("email:"), "no search expression survives");
+
+  const query = lines.find((line) => line.tool === "shopify_graphql_query");
+  assert.deepEqual(query.args.query.graphql.operations, [{ type: "query", rootFields: ["customers", "orders", "shop"] }]);
+  assert.deepEqual(query.args.query.graphql.argumentNames, ["first", "query"]);
+  assert.equal(query.args.query.graphql.documentSha256, createHash("sha256").update(readDocument).digest("hex"));
+  assert.match(query.args.variables, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.equal(query.args.store, "main");
+
+  const many = lines.find((line) => line.tool === "shopify_graphql_query_many");
+  assert.deepEqual(many.args.stores, ["main", "wholesale"]);
+
+  const write = lines.find((line) => line.tool === "shopify_graphql_mutation");
+  assert.deepEqual(write.args.mutation.graphql.operations, [{ type: "mutation", rootFields: ["customerUpdate"] }]);
+  assert.deepEqual(write.args.mutation.graphql.argumentNames, ["input"]);
+
+  const searchEntry = lines.find((line) => line.tool === "shopify_search_products_many");
+  assert.match(searchEntry.args.query, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.equal(searchEntry.args.first, 5);
+  const orders = lines.find((line) => line.tool === "shopify_list_orders");
+  const customers = lines.find((line) => line.tool === "shopify_list_customers");
+  assert.match(orders.args.query, /^\[sha256:[0-9a-f]{64}\]$/);
+  assert.notEqual(orders.args.query, customers.args.query, "different searches hash differently");
+});
+
+test("audit argument reduction keeps only allowlisted scalars", async () => {
+  const { auditArguments, summarizeGraphql } = await import("../dist/hosted/audit.js");
+  const reduced = auditArguments({
+    store: "main",
+    stores: ["main", "Not An Alias!"],
+    id: "gid://shopify/Product/1",
+    productIds: ["gid://shopify/Product/2", "Jane Doe"],
+    orderId: "12345",
+    status: "ACTIVE",
+    sortKey: "Jane Doe",
+    first: 10,
+    confirm: true,
+    title: "Gift for Jane Doe",
+    tags: ["vip", "jane.doe@example.com"],
+    zip: 90210,
+    customerName: "Janet Q. Sample",
+    shipping: { address1: "12 Elm Street", note: "call +1 555 010 0199" },
+    apiToken: "secret-value"
+  });
+  const text = JSON.stringify(reduced);
+  for (const value of ["Jane", "Doe", "Janet", "jane.doe@example.com", "12 Elm Street", "90210", "555 010", "secret-value", "Not An Alias", "Gift", "vip"]) {
+    assert.ok(!text.includes(value), value);
+  }
+  assert.equal(reduced.store, "main");
+  assert.equal(reduced.stores[0], "main");
+  assert.equal(reduced.id, "gid://shopify/Product/1");
+  assert.equal(reduced.productIds[0], "gid://shopify/Product/2");
+  assert.equal(reduced.orderId, "12345");
+  assert.equal(reduced.status, "ACTIVE");
+  assert.equal(reduced.first, 10);
+  assert.equal(reduced.confirm, true);
+  assert.equal(reduced.apiToken, "[REDACTED]");
+  assert.match(reduced.zip, /^\[sha256:/);
+  assert.match(summarizeGraphql("email:jane.doe@example.com"), /^\[sha256:[0-9a-f]{64}\]$/, "unparseable text is only hashed");
 });
 
 test("audit lines are capped at 64KB", () => {
