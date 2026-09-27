@@ -30,6 +30,17 @@ person to their own staff permissions.
   destructive mutations, per-store variables, a denylist (`ACTIONS_DENYLIST`),
   and an `action_run` audit line.
 - Add a full scope set: `node scripts/print-scopes.mjs --full`.
+- Hosted per-user hardening: `SHOPIFY_TOKEN_ENCRYPTION_KEYS` rotates token
+  encryption keys; personal access tokens carry no Shopify access unless
+  `PERSONAL_TOKENS_SHOPIFY_ACCESS=1` (then capped at 30 days); `/shopify/connect`
+  starts only from a CSRF-protected POST; Shopify callbacks older than 300
+  seconds are refused; audit lines record the Shopify staff email per store.
+- Actions: webhook, server-pixel, and bulk-mutation subscriptions are denied by
+  default; `ACTIONS_DENYLIST` adds to the defaults (`ACTIONS_DENYLIST_REPLACE=1`
+  replaces them); `productSet`, `themePublish` and similar mutations need
+  confirm; in per-user mode `shopify_graphql_mutation` applies the same checks.
+- Mutations are never resent after Shopify throttles them; the result says the
+  change was not applied and is safe to retry.
 - Docs: add `docs/ACTIONS.md`.
 
 - Hosted: work with any MCP client on any plan, not only Claude. Built-in

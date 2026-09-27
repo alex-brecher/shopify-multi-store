@@ -9,13 +9,13 @@ import { redirectListFromEnv } from "./hosted/known-clients.js";
 import { DEFAULT_CIMD_HOSTS, DEFAULT_DISPLAY_NAME } from "./hosted/oauth.js";
 import type { ShopifyAccessMode } from "./hosted/guard.js";
 import { FilePolicySource, openDomainPolicy, type PolicySource } from "./hosted/policy.js";
-import { parseEncryptionKey } from "./hosted/shopify-connect.js";
+import { parseEncryptionKeys } from "./hosted/shopify-connect.js";
 import { FileStore } from "./hosted/store.js";
 import { loadStores, type StoreConfig } from "./config.js";
 import { fullScopes } from "./scope-requirements.js";
 import { enableHostedMode } from "./runtime.js";
 
-const FILE_SUFFIX_TARGETS = /^(SHOPIFY_TOKEN_[A-Z0-9_]+|SHOPIFY_CLIENT_SECRET_[A-Z0-9_]+|SHOPIFY_APP_CLIENT_SECRET|SHOPIFY_TOKEN_ENCRYPTION_KEY|GOOGLE_CLIENT_SECRET|STORES_JSON)_FILE$/;
+const FILE_SUFFIX_TARGETS = /^(SHOPIFY_TOKEN_[A-Z0-9_]+|SHOPIFY_CLIENT_SECRET_[A-Z0-9_]+|SHOPIFY_APP_CLIENT_SECRET|SHOPIFY_TOKEN_ENCRYPTION_KEYS?|GOOGLE_CLIENT_SECRET|STORES_JSON)_FILE$/;
 
 /**
  * Support secret mounts: for NAME_FILE=/run/secrets/x, set NAME from the file contents
@@ -113,7 +113,7 @@ export async function buildHostedAppFromEnv(env: NodeJS.ProcessEnv = process.env
     );
   }
   // Refuse to start per-user mode without an encryption key for the stored Shopify tokens.
-  const encryptionKey = mode === "per_user" ? parseEncryptionKey(env.SHOPIFY_TOKEN_ENCRYPTION_KEY) : undefined;
+  const encryptionKeys = mode === "per_user" ? parseEncryptionKeys({ SHOPIFY_TOKEN_ENCRYPTION_KEYS: env.SHOPIFY_TOKEN_ENCRYPTION_KEYS, SHOPIFY_TOKEN_ENCRYPTION_KEY: env.SHOPIFY_TOKEN_ENCRYPTION_KEY }) : undefined;
   const appClientId = env.SHOPIFY_APP_CLIENT_ID?.trim() || undefined;
   const appClientSecret = env.SHOPIFY_APP_CLIENT_SECRET?.trim() || undefined;
   const scopes = list(env.SHOPIFY_APP_SCOPES) ?? fullScopes();
@@ -144,9 +144,9 @@ export async function buildHostedAppFromEnv(env: NodeJS.ProcessEnv = process.env
     personalTokenMaxDays: personalTokenMaxDays(env),
     shopifyAccessMode: mode,
     personalTokensShopifyAccess: flag(env.PERSONAL_TOKENS_SHOPIFY_ACCESS),
-    ...(encryptionKey ? {
+    ...(encryptionKeys ? {
       shopifyConnect: {
-        encryptionKey,
+        encryptionKeys,
         loadStores,
         clientId: (store: StoreConfig) => (store.auth.type === "client_credentials" ? store.auth.clientId : undefined) ?? appClientId,
         clientSecret: (store: StoreConfig) => env[secretEnvName(store.alias)]?.trim() || appClientSecret,

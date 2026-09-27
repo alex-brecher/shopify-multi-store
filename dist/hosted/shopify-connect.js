@@ -14,41 +14,93 @@ const SESSION_TTL_MS = 30 * 60_000;
 const STATE_TTL_MS = 10 * 60_000;
 /** Keep an expired token record this long so /stores can say "Expired" rather than "Not connected". */
 const EXPIRED_RECORD_GRACE_MS = 30 * 24 * 3600_000;
-const TOKEN_FORMAT = "v1";
+const TOKEN_FORMAT = "v2";
 const SHOP_HOST = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
 /** Connect forms post to this server, which redirects to the store's Shopify admin. */
 const CONNECT_FORM_ACTION = "'self' https://*.myshopify.com";
 /** Shopify callbacks older than this (or this far in the future) are refused. */
 export const CALLBACK_MAX_AGE_SECONDS = 300;
-// ---------- Encryption ----------
-/** Parse SHOPIFY_TOKEN_ENCRYPTION_KEY: 32 bytes, base64 or base64url. */
-export function parseEncryptionKey(value) {
+const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/;
+/** Parse one 32-byte key, base64 or base64url. */
+export function parseEncryptionKey(value, name = "SHOPIFY_TOKEN_ENCRYPTION_KEY") {
     const text = value?.trim() ?? "";
     const key = Buffer.from(text, text.includes("-") || text.includes("_") ? "base64url" : "base64");
     if (!text || key.length !== 32) {
-        throw new Error("SHOPIFY_TOKEN_ENCRYPTION_KEY must be 32 random bytes, base64 encoded (for example: openssl rand -base64 32).");
+        throw new Error(`${name} must be 32 random bytes, base64 encoded (for example: openssl rand -base64 32).`);
     }
     return key;
 }
-function tokenAad(email, alias, shop) {
-    // Binds the ciphertext to its record, so a token cannot be moved to another user or store.
-    return Buffer.from(`${TOKEN_FORMAT}\0${email}\0${alias.toLowerCase()}\0${shop}`);
+/**
+ * The token encryption keys, newest first. SHOPIFY_TOKEN_ENCRYPTION_KEYS is a comma list of
+ * id:base64key; the first key encrypts and every key decrypts, so a key can be rotated by
+ * prepending a new one and dropping the old one once every token has been re-encrypted (tokens
+ * are re-encrypted with the first key on use, and online tokens live about a day).
+ * SHOPIFY_TOKEN_ENCRYPTION_KEY is the single-key form, with id "default".
+ */
+export function parseEncryptionKeys(env) {
+    const list = env.SHOPIFY_TOKEN_ENCRYPTION_KEYS?.trim();
+    if (!list) {
+        if (!env.SHOPIFY_TOKEN_ENCRYPTION_KEY?.trim()) {
+            throw new Error("SHOPIFY_TOKEN_ENCRYPTION_KEY (or SHOPIFY_TOKEN_ENCRYPTION_KEYS) is required in per-user mode: 32 random bytes, base64 encoded (for example: openssl rand -base64 32).");
+        }
+        return [{ id: "default", key: parseEncryptionKey(env.SHOPIFY_TOKEN_ENCRYPTION_KEY) }];
+    }
+    const keys = [];
+    for (const entry of list.split(",").map((item) => item.trim()).filter(Boolean)) {
+        const colon = entry.indexOf(":");
+        const id = colon > 0 ? entry.slice(0, colon) : "";
+        if (!KEY_ID.test(id))
+            throw new Error("SHOPIFY_TOKEN_ENCRYPTION_KEYS entries must be id:base64key, with ids of 1 to 32 letters, digits, - or _.");
+        if (keys.some((key) => key.id === id))
+            throw new Error(`SHOPIFY_TOKEN_ENCRYPTION_KEYS repeats key id ${id}.`);
+        keys.push({ id, key: parseEncryptionKey(entry.slice(colon + 1), `SHOPIFY_TOKEN_ENCRYPTION_KEYS key ${id}`) });
+    }
+    if (!keys.length)
+        throw new Error("SHOPIFY_TOKEN_ENCRYPTION_KEYS is empty.");
+    return keys;
 }
+function tokenAad(format, keyId, { email, alias, shop }) {
+    // Binds the ciphertext to its record and key id, so a token cannot be moved to another user or store.
+    return Buffer.from(format === "v1" ? `v1\0${email}\0${alias.toLowerCase()}\0${shop}` : `${format}\0${keyId}\0${email}\0${alias.toLowerCase()}\0${shop}`);
+}
+/** Encrypt with the given key: v2.<keyId>.<iv>.<tag>.<ciphertext>. */
 export function encryptToken(key, token, binding) {
     const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", key, iv);
-    cipher.setAAD(tokenAad(binding.email, binding.alias, binding.shop));
+    const cipher = createCipheriv("aes-256-gcm", key.key, iv);
+    cipher.setAAD(tokenAad(TOKEN_FORMAT, key.id, binding));
     const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
-    return [TOKEN_FORMAT, iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), ciphertext.toString("base64url")].join(".");
+    return [TOKEN_FORMAT, key.id, iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), ciphertext.toString("base64url")].join(".");
 }
-export function decryptToken(key, value, binding) {
-    const [format, iv, tag, ciphertext] = value.split(".");
-    if (format !== TOKEN_FORMAT || !iv || !tag || ciphertext === undefined)
-        throw new Error("Unknown encrypted token format.");
+function open(key, aad, iv, tag, ciphertext) {
     const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
-    decipher.setAAD(tokenAad(binding.email, binding.alias, binding.shop));
+    decipher.setAAD(aad);
     decipher.setAuthTag(Buffer.from(tag, "base64url"));
     return Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8");
+}
+/** Decrypt with whichever configured key produced the value. keyId says which one. */
+export function decryptToken(keys, value, binding) {
+    const parts = value.split(".");
+    if (parts[0] === TOKEN_FORMAT && parts.length === 5) {
+        const [, keyId, iv, tag, ciphertext] = parts;
+        const key = keys.find((candidate) => candidate.id === keyId);
+        if (!key)
+            throw new Error(`Encryption key ${keyId} is not configured.`);
+        return { token: open(key.key, tokenAad(TOKEN_FORMAT, keyId, binding), iv, tag, ciphertext), keyId };
+    }
+    if (parts[0] === "v1" && parts.length === 4) {
+        // Written before key ids existed: try each key.
+        const [, iv, tag, ciphertext] = parts;
+        for (const key of keys) {
+            try {
+                return { token: open(key.key, tokenAad("v1", "", binding), iv, tag, ciphertext), keyId: `v1:${key.id}` };
+            }
+            catch {
+                // Try the next key.
+            }
+        }
+        throw new Error("No configured key decrypts this token.");
+    }
+    throw new Error("Unknown encrypted token format.");
 }
 // ---------- Shopify request signatures ----------
 /**
@@ -142,7 +194,13 @@ export class ShopifyConnections {
             if (!record || record.shop !== store.shop)
                 continue;
             try {
-                const token = decryptToken(this.options.encryptionKey, record.encryptedToken, { email, alias: store.alias, shop: store.shop });
+                const binding = { email, alias: store.alias, shop: store.shop };
+                const { token, keyId } = decryptToken(this.options.encryptionKeys, record.encryptedToken, binding);
+                const primary = this.options.encryptionKeys[0];
+                if (keyId !== primary.id) {
+                    // Rotation: re-encrypt with the newest key so the old key can be retired.
+                    await this.options.store.put("shopify_token", tokenKey(email, store.alias), { ...record, encryptedToken: encryptToken(primary, token, binding) }, record.expiresAt + EXPIRED_RECORD_GRACE_MS);
+                }
                 tokens.set(store.alias.toLowerCase(), { token, expiresAt: record.expiresAt, ...(record.associatedUser.email ? { shopifyEmail: record.associatedUser.email } : {}) });
             }
             catch {
@@ -416,7 +474,7 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
             email: session.email,
             alias: store.alias,
             shop: store.shop,
-            encryptedToken: encryptToken(this.options.encryptionKey, payload.access_token, { email: session.email, alias: store.alias, shop: store.shop }),
+            encryptedToken: encryptToken(this.options.encryptionKeys[0], payload.access_token, { email: session.email, alias: store.alias, shop: store.shop }),
             scope: typeof payload.scope === "string" ? payload.scope : "",
             associatedUserScope: typeof payload.associated_user_scope === "string" ? payload.associated_user_scope : "",
             associatedUser,

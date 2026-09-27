@@ -9,7 +9,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { createHostedApp } from "../dist/hosted/app.js";
 import { FileAuditLog } from "../dist/hosted/audit.js";
 import { openDomainPolicy, staticPolicy } from "../dist/hosted/policy.js";
-import { decryptToken, encryptToken, parseEncryptionKey, shopifyHmacMessage, verifyShopifyHmac } from "../dist/hosted/shopify-connect.js";
+import { decryptToken, encryptToken, parseEncryptionKey, parseEncryptionKeys, shopifyHmacMessage, verifyShopifyHmac } from "../dist/hosted/shopify-connect.js";
 import { MemoryStore } from "../dist/hosted/store.js";
 import { loadStores } from "../dist/config.js";
 import { enableHostedMode } from "../dist/runtime.js";
@@ -23,6 +23,7 @@ const RESOURCE = `${ORIGIN}/mcp`;
 const CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 const SECRET = "shpss_test_secret";
 const KEY = randomBytes(32);
+const KEYS = [{ id: "k1", key: KEY }];
 
 function fakeGoogle() {
   return {
@@ -86,7 +87,8 @@ async function setup(t, overrides = {}, connect = {}) {
   const auditPath = join(dir, "audit.jsonl");
   let now = Date.now();
   const oauth = fakeShopifyOAuth(connect);
-  const store = new MemoryStore(() => now);
+  const store = overrides.store ?? new MemoryStore(() => now);
+  const { encryptionKeys, ...appOverrides } = overrides;
   const app = createHostedApp({
     issuer: ORIGIN,
     resource: RESOURCE,
@@ -99,7 +101,7 @@ async function setup(t, overrides = {}, connect = {}) {
     log: () => {},
     shopifyAccessMode: "per_user",
     shopifyConnect: {
-      encryptionKey: KEY,
+      encryptionKeys: encryptionKeys ?? KEYS,
       loadStores,
       clientId: () => "app-client-id",
       clientSecret: () => SECRET,
@@ -107,7 +109,8 @@ async function setup(t, overrides = {}, connect = {}) {
       requireEmailMatch: Boolean(connect.requireEmailMatch),
       fetch: oauth.fetch
     },
-    ...overrides
+    ...appOverrides,
+    store
   });
   t.after(() => app.close());
   return { app, store, oauth, auditPath, advance: (ms) => { now += ms; } };
@@ -214,13 +217,17 @@ test("Shopify HMAC verification accepts a correct signature and rejects any chan
 
 test("online tokens round-trip through AES-256-GCM and are bound to their user and store", () => {
   const binding = { email: "pat@bariatricpal.com", alias: "main", shop: "main.myshopify.com" };
-  const sealed = encryptToken(KEY, "shpua_secret", binding);
+  const sealed = encryptToken(KEYS[0], "shpua_secret", binding);
+  assert.match(sealed, /^v2\.k1\./);
   assert.ok(!sealed.includes("shpua_secret"));
-  assert.notEqual(sealed, encryptToken(KEY, "shpua_secret", binding), "random IV");
-  assert.equal(decryptToken(KEY, sealed, binding), "shpua_secret");
-  assert.throws(() => decryptToken(KEY, sealed, { ...binding, email: "other@bariatricpal.com" }));
-  assert.throws(() => decryptToken(KEY, sealed, { ...binding, alias: "wholesale" }));
-  assert.throws(() => decryptToken(randomBytes(32), sealed, binding));
+  assert.notEqual(sealed, encryptToken(KEYS[0], "shpua_secret", binding), "random IV");
+  assert.deepEqual(decryptToken(KEYS, sealed, binding), { token: "shpua_secret", keyId: "k1" });
+  assert.throws(() => decryptToken(KEYS, sealed, { ...binding, email: "other@bariatricpal.com" }));
+  assert.throws(() => decryptToken(KEYS, sealed, { ...binding, alias: "wholesale" }));
+  assert.throws(() => decryptToken([{ id: "k1", key: randomBytes(32) }], sealed, binding));
+  assert.throws(() => decryptToken([{ id: "k2", key: KEY }], sealed, binding), /k1 is not configured/);
+  // A different key id cannot be swapped in for the same key.
+  assert.throws(() => decryptToken([{ id: "k2", key: KEY }], sealed.replace("v2.k1.", "v2.k2."), binding));
   assert.equal(parseEncryptionKey(KEY.toString("base64")).length, 32);
   assert.throws(() => parseEncryptionKey(undefined), /SHOPIFY_TOKEN_ENCRYPTION_KEY/);
   assert.throws(() => parseEncryptionKey(randomBytes(16).toString("base64")), /32 random bytes/);
@@ -575,4 +582,32 @@ test("/shopify/connect starts Shopify only from a same-origin POST with the CSRF
   assert.equal((await store.entries("shopify_state")).length, 0);
   assert.equal((await postConnect(app, cookie, { csrf, store: "main" })).status, 302);
   assert.equal((await store.entries("shopify_state")).length, 1);
+});
+
+test("SHOPIFY_TOKEN_ENCRYPTION_KEYS rotates keys: the first encrypts, all decrypt, and old tokens are re-encrypted on use", async (t) => {
+  const oldKey = { id: "old", key: randomBytes(32) };
+  const newKey = { id: "new", key: randomBytes(32) };
+  assert.deepEqual(parseEncryptionKeys({ SHOPIFY_TOKEN_ENCRYPTION_KEYS: `new:${newKey.key.toString("base64")}, old:${oldKey.key.toString("base64url")}` }), [newKey, oldKey]);
+  assert.deepEqual(parseEncryptionKeys({ SHOPIFY_TOKEN_ENCRYPTION_KEY: KEY.toString("base64") }), [{ id: "default", key: KEY }]);
+  assert.throws(() => parseEncryptionKeys({}), /SHOPIFY_TOKEN_ENCRYPTION_KEY/);
+  assert.throws(() => parseEncryptionKeys({ SHOPIFY_TOKEN_ENCRYPTION_KEYS: KEY.toString("base64") }), /id:base64key/);
+  assert.throws(() => parseEncryptionKeys({ SHOPIFY_TOKEN_ENCRYPTION_KEYS: `a:${KEY.toString("base64")},a:${KEY.toString("base64")}` }), /repeats/);
+
+  const requests = await shopifyMock(t);
+  const first = await setup(t, { encryptionKeys: [oldKey] });
+  await connectStore(first.app, await storesSession(first.app, "pat|bariatricpal.com"), { token: "pat-online-main" });
+  const [[key, record]] = await first.store.entries("shopify_token");
+  assert.match(record.encryptedToken, /^v2\.old\./);
+
+  // Same data, new key first: still works, and the record is re-encrypted with the new key.
+  const rotated = await setup(t, { store: first.store, encryptionKeys: [newKey, oldKey] });
+  let result = await (await mcpClient(t, rotated.app, await login(rotated.app, "pat|bariatricpal.com"))).callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.equal(requests.at(-1).token, "pat-online-main");
+  assert.match((await first.store.get("shopify_token", key)).encryptedToken, /^v2\.new\./);
+
+  // The old key can now be dropped.
+  const retired = await setup(t, { store: first.store, encryptionKeys: [newKey] });
+  result = await (await mcpClient(t, retired.app, await login(retired.app, "pat|bariatricpal.com"))).callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
 });

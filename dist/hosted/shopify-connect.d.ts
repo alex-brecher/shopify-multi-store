@@ -30,8 +30,8 @@ export interface ShopifyConnectOptions {
     auth: AuthorizationServer;
     store: OAuthStore;
     policy: PolicySource;
-    /** 32-byte AES-256-GCM key. */
-    encryptionKey: Buffer;
+    /** AES-256-GCM keys, newest first. The first encrypts; all decrypt. */
+    encryptionKeys: EncryptionKey[];
     /** Every configured store (unfiltered). */
     loadStores: () => Promise<StoreConfig[]>;
     /** The Shopify app client id for a store: its auth.clientId, else SHOPIFY_APP_CLIENT_ID. */
@@ -45,18 +45,36 @@ export interface ShopifyConnectOptions {
     fetch?: typeof fetch;
     now?: () => number;
 }
-/** Parse SHOPIFY_TOKEN_ENCRYPTION_KEY: 32 bytes, base64 or base64url. */
-export declare function parseEncryptionKey(value: string | undefined): Buffer;
-export declare function encryptToken(key: Buffer, token: string, binding: {
+/** One AES-256-GCM key with the id stored next to each ciphertext it produced. */
+export interface EncryptionKey {
+    id: string;
+    key: Buffer;
+}
+/** Parse one 32-byte key, base64 or base64url. */
+export declare function parseEncryptionKey(value: string | undefined, name?: string): Buffer;
+/**
+ * The token encryption keys, newest first. SHOPIFY_TOKEN_ENCRYPTION_KEYS is a comma list of
+ * id:base64key; the first key encrypts and every key decrypts, so a key can be rotated by
+ * prepending a new one and dropping the old one once every token has been re-encrypted (tokens
+ * are re-encrypted with the first key on use, and online tokens live about a day).
+ * SHOPIFY_TOKEN_ENCRYPTION_KEY is the single-key form, with id "default".
+ */
+export declare function parseEncryptionKeys(env: {
+    SHOPIFY_TOKEN_ENCRYPTION_KEYS?: string | undefined;
+    SHOPIFY_TOKEN_ENCRYPTION_KEY?: string | undefined;
+}): EncryptionKey[];
+type Binding = {
     email: string;
     alias: string;
     shop: string;
-}): string;
-export declare function decryptToken(key: Buffer, value: string, binding: {
-    email: string;
-    alias: string;
-    shop: string;
-}): string;
+};
+/** Encrypt with the given key: v2.<keyId>.<iv>.<tag>.<ciphertext>. */
+export declare function encryptToken(key: EncryptionKey, token: string, binding: Binding): string;
+/** Decrypt with whichever configured key produced the value. keyId says which one. */
+export declare function decryptToken(keys: EncryptionKey[], value: string, binding: Binding): {
+    token: string;
+    keyId: string;
+};
 /**
  * The message Shopify signs for an OAuth redirect: every parameter except hmac and signature,
  * with "%", "&" and "=" escaped in names and "%" and "&" escaped in values, array parameters
@@ -95,3 +113,4 @@ export declare class ShopifyConnections {
     private connectableStore;
     callback(request: Request): Promise<Response>;
 }
+export {};

@@ -176,7 +176,8 @@ After Google sign-in the server shows the client name, the client_id, the redire
 | `GOOGLE_CLIENT_SECRET` | yes | | Google OAuth client secret |
 | `ALLOWED_EMAIL_DOMAINS` | yes | | Comma list, for example `bariatricpal.com,netrition.com`. Both the `hd` claim and the email domain must be in it. |
 | `SHOPIFY_ACCESS_MODE` | no | `per_user` | `per_user`: each person connects stores with their own Shopify account and Shopify enforces their staff permissions. `app`: every call uses the store's app token (the previous behavior). |
-| `SHOPIFY_TOKEN_ENCRYPTION_KEY` | per-user mode | | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts stored Shopify tokens with AES-256-GCM. The server refuses to start per-user mode without it. Changing it disconnects everyone. |
+| `SHOPIFY_TOKEN_ENCRYPTION_KEY` | per-user mode | | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts stored Shopify tokens with AES-256-GCM. The server refuses to start per-user mode without it (or `SHOPIFY_TOKEN_ENCRYPTION_KEYS`). Same as `SHOPIFY_TOKEN_ENCRYPTION_KEYS=default:<key>`. |
+| `SHOPIFY_TOKEN_ENCRYPTION_KEYS` | no | | Key rotation: comma list of `id:base64key`, newest first. The first key encrypts; every key decrypts; tokens under an older key are re-encrypted with the first key when used. To rotate, prepend a new key, wait a day (online tokens expire), then drop the old one. Takes precedence over `SHOPIFY_TOKEN_ENCRYPTION_KEY`. |
 | `SHOPIFY_APP_CLIENT_ID` | per-user mode | | Client ID of the Shopify app people authorize. A `client_credentials` store's own `auth.clientId` takes precedence. |
 | `SHOPIFY_APP_CLIENT_SECRET` | per-user mode | | That app's client secret. `SHOPIFY_CLIENT_SECRET_<ALIAS>` takes precedence for one store. Also verifies Shopify's callback HMAC. |
 | `SHOPIFY_APP_SCOPES` | no | full set (`print-scopes --full`) | Comma list of scopes requested at `/shopify/connect` |
@@ -205,7 +206,7 @@ After Google sign-in the server shows the client name, the client_id, the redire
 
 `ACTIONS_DENYLIST` (all modes, stdio too) adds mutations to the list `shopify_run_action` refuses; `ACTIONS_DENYLIST_REPLACE=1` makes it replace the default list. See [ACTIONS.md](ACTIONS.md#denylist).
 
-Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, `SHOPIFY_CLIENT_SECRET_*`, `SHOPIFY_APP_CLIENT_SECRET`, and `SHOPIFY_TOKEN_ENCRYPTION_KEY`, you can set `<NAME>_FILE=/run/secrets/...` instead. In serve mode the OS keychain is never used.
+Secret mounts: for `GOOGLE_CLIENT_SECRET`, `STORES_JSON`, `SHOPIFY_TOKEN_*`, `SHOPIFY_CLIENT_SECRET_*`, `SHOPIFY_APP_CLIENT_SECRET`, `SHOPIFY_TOKEN_ENCRYPTION_KEY`, and `SHOPIFY_TOKEN_ENCRYPTION_KEYS`, you can set `<NAME>_FILE=/run/secrets/...` instead. In serve mode the OS keychain is never used.
 
 ### Policy file
 
@@ -271,7 +272,7 @@ docker run -d --name shopify-mcp -p 8080:8080 \
   shopify-multi-store
 ```
 
-Generate the encryption key once and keep it (a new key disconnects everyone). In the Shopify app, add `https://<host>/shopify/callback` as an allowed redirect URL and request the scopes from `node scripts/print-scopes.mjs --full`; see [ACTIONS.md](ACTIONS.md#shopify-admin-setup).
+Generate the encryption key once and keep it. Replacing it outright disconnects everyone; rotate with `SHOPIFY_TOKEN_ENCRYPTION_KEYS` instead. In the Shopify app, add `https://<host>/shopify/callback` as an allowed redirect URL and request the scopes from `node scripts/print-scopes.mjs --full`; see [ACTIONS.md](ACTIONS.md#shopify-admin-setup).
 
 App mode instead (one shared app token per store, policy file required):
 
