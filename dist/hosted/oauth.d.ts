@@ -7,6 +7,7 @@ export { isLoopbackRedirect };
 export declare const SCOPE = "mcp";
 /** Built-in redirect URIs. See known-clients.ts. */
 export declare const DEFAULT_REDIRECT_URIS: readonly string[];
+/** Client ID Metadata Document hosts. "*" allows any HTTPS host; every fetch is limited to public addresses. */
 export declare const DEFAULT_CIMD_HOSTS: string[];
 declare const AUTH_METHODS: readonly ["none", "client_secret_post", "client_secret_basic"];
 type AuthMethod = (typeof AUTH_METHODS)[number];
@@ -118,10 +119,8 @@ export declare class AuthorizationServer {
 /** True for an IP address a client metadata fetch must not connect to. Non-IP input is refused. */
 export declare function isForbiddenAddress(address: string): boolean;
 /**
- * Fetch a Client ID Metadata Document: HTTPS only, no redirects, 5-second limit, small body.
- * With restrictAddresses, the host must resolve only to public addresses (checked at connect time,
- * so a DNS answer cannot change between the check and the connection).
+ * Fetch a Client ID Metadata Document: HTTPS only, no redirects, 5-second limit, 16 KB body.
+ * The host, named or wildcard-admitted, must resolve only to public addresses (checked at
+ * connect time, so a DNS answer cannot change between the check and the connection).
  */
-export declare function fetchMetadataDocument(url: string, { restrictAddresses }?: {
-    restrictAddresses?: boolean;
-}): Promise<unknown>;
+export declare function fetchMetadataDocument(url: string): Promise<unknown>;

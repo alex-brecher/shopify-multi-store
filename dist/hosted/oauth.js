@@ -9,7 +9,8 @@ export { isLoopbackRedirect };
 export const SCOPE = "mcp";
 /** Built-in redirect URIs. See known-clients.ts. */
 export const DEFAULT_REDIRECT_URIS = KNOWN_REDIRECT_URIS;
-export const DEFAULT_CIMD_HOSTS = ["claude.ai", "claude.com"];
+/** Client ID Metadata Document hosts. "*" allows any HTTPS host; every fetch is limited to public addresses. */
+export const DEFAULT_CIMD_HOSTS = ["*"];
 const PENDING_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 2 * 60_000;
 const CONSENT_TTL_MS = 5 * 60_000;
@@ -215,12 +216,9 @@ export class AuthorizationServer {
             return { error: "client_id metadata URL must be HTTPS with a path and no credentials or fragment." };
         }
         const host = url.hostname.toLowerCase();
-        const listed = this.cimdHosts.some((allowed) => allowed !== "*" && (host === allowed || host.endsWith(`.${allowed}`)));
-        const hostAllowed = listed || this.cimdHosts.includes("*");
+        const hostAllowed = this.cimdHosts.includes("*") || this.cimdHosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
         if (!hostAllowed)
             return { error: `Client metadata host ${host} is not allowed on this server.` };
-        // A host admitted only by "*" could point anywhere, so its addresses must be public.
-        const restrictAddresses = !listed;
         const cached = this.cimdCache.get(clientId);
         if (cached && this.now() - cached.fetchedAt < CIMD_CACHE_MS)
             return cached.client;
@@ -228,7 +226,7 @@ export class AuthorizationServer {
         try {
             document = this.options.fetchClientMetadata
                 ? await this.options.fetchClientMetadata(clientId)
-                : await fetchMetadataDocument(clientId, { restrictAddresses });
+                : await fetchMetadataDocument(clientId);
         }
         catch (error) {
             this.log(`Client metadata fetch failed for ${clientId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -711,11 +709,11 @@ const publicOnlyLookup = (hostname, options, callback) => {
     });
 };
 /**
- * Fetch a Client ID Metadata Document: HTTPS only, no redirects, 5-second limit, small body.
- * With restrictAddresses, the host must resolve only to public addresses (checked at connect time,
- * so a DNS answer cannot change between the check and the connection).
+ * Fetch a Client ID Metadata Document: HTTPS only, no redirects, 5-second limit, 16 KB body.
+ * The host, named or wildcard-admitted, must resolve only to public addresses (checked at
+ * connect time, so a DNS answer cannot change between the check and the connection).
  */
-export function fetchMetadataDocument(url, { restrictAddresses = true } = {}) {
+export function fetchMetadataDocument(url) {
     return new Promise((resolve, reject) => {
         let target;
         try {
@@ -730,14 +728,14 @@ export function fetchMetadataDocument(url, { restrictAddresses = true } = {}) {
             return;
         }
         const literal = target.hostname.replace(/^\[|\]$/g, "");
-        if (restrictAddresses && isIP(literal) && isForbiddenAddress(literal)) {
+        if (isIP(literal) && isForbiddenAddress(literal)) {
             reject(new Error(`Client metadata host ${literal} is a non-public address.`));
             return;
         }
         const request = httpsRequest(target, {
             method: "GET",
             headers: { accept: "application/json" },
-            ...(restrictAddresses ? { lookup: publicOnlyLookup } : {})
+            lookup: publicOnlyLookup
         }, (response) => {
             const status = response.statusCode ?? 0;
             if (status >= 300 && status < 400) {

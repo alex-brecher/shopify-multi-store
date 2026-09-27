@@ -219,6 +219,7 @@ test("serves protected resource and authorization server metadata", async (t) =>
   assert.deepEqual(metadata.code_challenge_methods_supported, ["S256"]);
   assert.deepEqual(metadata.response_types_supported, ["code"]);
   assert.equal(metadata.client_id_metadata_document_supported, true);
+  for (const method of ["none", "client_secret_post", "client_secret_basic"]) assert.ok(metadata.token_endpoint_auth_methods_supported.includes(method), method);
   const health = await call(app, "/healthz");
   assert.equal(health.status, 200);
   assert.equal((await health.json()).ok, true);
@@ -264,7 +265,7 @@ test("client ID metadata documents are validated and bad redirects rejected", as
     "https://claude.ai/oauth/mismatch.json": { client_id: "https://claude.ai/oauth/other.json", redirect_uris: [CLAUDE_CALLBACK] }
   };
   const fetched = [];
-  const { app } = await setup(t, { fetchClientMetadata: async (url) => { fetched.push(url); return documents[url]; } });
+  const { app } = await setup(t, { cimdAllowedHosts: ["claude.ai"], fetchClientMetadata: async (url) => { fetched.push(url); return documents[url]; } });
   const { challenge } = pkce();
   const start = (clientId, redirectUri = CLAUDE_CALLBACK) => call(app, `/authorize?${new URLSearchParams({
     response_type: "code", client_id: clientId, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state: "s"
@@ -811,4 +812,25 @@ test("with OAUTH_ALLOW_ANY_REDIRECT, unlisted redirects always show consent with
   const back = await submitConsent(app, page);
   assert.equal(back.status, 303);
   assert.match(back.headers.get("location"), /^vendorapp:\/\/ide\.example\/mcp\/callback\?code=/);
+});
+
+test("client metadata documents are accepted from any HTTPS host by default", async (t) => {
+  const url = "https://tools.example.org/.well-known/mcp-client.json";
+  const fetched = [];
+  const { app } = await setup(t, { fetchClientMetadata: async (u) => { fetched.push(u); return { client_id: url, client_name: "Example", redirect_uris: ["http://127.0.0.1:7777/cb"] }; } });
+  const { challenge } = pkce();
+  const response = await call(app, `/authorize?${new URLSearchParams({ response_type: "code", client_id: url, redirect_uri: "http://127.0.0.1:7777/cb", code_challenge: challenge, code_challenge_method: "S256", state: "s" })}`);
+  assert.equal(response.status, 302);
+  assert.deepEqual(fetched, [url]);
+  const http = await call(app, `/authorize?${new URLSearchParams({ response_type: "code", client_id: "http://tools.example.org/c.json", redirect_uri: "http://127.0.0.1:7777/cb", code_challenge: challenge, code_challenge_method: "S256" })}`);
+  assert.equal(http.status, 400);
+});
+
+test("named client metadata hosts get the same public-address checks as the wildcard", async (t) => {
+  const logs = [];
+  const { app } = await setup(t, { cimdAllowedHosts: ["localhost"], fetchClientMetadata: undefined, log: (message) => logs.push(message) });
+  const { challenge } = pkce();
+  const response = await call(app, `/authorize?${new URLSearchParams({ response_type: "code", client_id: "https://localhost/client.json", redirect_uri: CLAUDE_CALLBACK, code_challenge: challenge, code_challenge_method: "S256", state: "s" })}`);
+  assert.equal(response.status, 400);
+  assert.ok(logs.some((message) => /non-public/.test(message)), logs.join("\n"));
 });
