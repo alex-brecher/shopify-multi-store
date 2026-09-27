@@ -158,6 +158,23 @@ function lacksMessage(scopes, alias) {
         : "Add the scope to the app and reinstall or re-authorize it.";
     return `Your Shopify account or the app lacks ${scopeText} on ${alias}. ${fix}`;
 }
+/**
+ * The shared write policy for shopify_run_action and (in per-user mode) shopify_graphql_mutation:
+ * refuse denylisted mutations, and require confirm equal to the destructive mutation names
+ * (comma-separated, in document order) before applying. Returns the refusal, or undefined.
+ */
+export function actionPolicyError(mutations, confirm, applying) {
+    const denied = mutations.filter((name) => isDenied(name, denylist()));
+    if (denied.length) {
+        return `Refused: ${denied.join(", ")} ${denied.length === 1 ? "is" : "are"} on this server's action denylist (mutations that mint credentials, change this app's own installation or billing, create lasting subscriptions, or hide other mutations).`;
+    }
+    const destructive = mutations.filter(isDestructive);
+    const expected = destructive.join(",");
+    if (applying && destructive.length && confirm !== expected) {
+        return `${expected} is destructive. Run a dry run first, then pass confirm: "${expected}" with dryRun: false.`;
+    }
+    return undefined;
+}
 // ---------- Tools ----------
 export function registerActionTools(server) {
     server.registerTool("shopify_find_actions", {
@@ -257,15 +274,11 @@ export function registerActionTools(server) {
                     return await refuse(`The document does not call ${args.mutation}; it calls ${parsed.rootFields.join(", ")}.`);
                 }
             }
-            const denied = mutations.filter((name) => isDenied(name, denylist()));
-            if (denied.length) {
-                return await refuse(`Refused: ${denied.join(", ")} ${denied.length === 1 ? "is" : "are"} on this server's action denylist (mutations that mint credentials or change this app's own installation or billing).`);
-            }
+            const policyError = actionPolicyError(mutations, args.confirm, !args.dryRun);
+            if (policyError)
+                return await refuse(policyError);
             const destructive = mutations.filter(isDestructive);
             const expectedConfirm = destructive.join(",");
-            if (!args.dryRun && destructive.length && args.confirm !== expectedConfirm) {
-                return await refuse(`${expectedConfirm} is destructive. Run a dry run first, then pass confirm: "${expectedConfirm}" with dryRun: false.`);
-            }
             const plans = await mapConcurrent(aliases, async (alias) => {
                 const plan = { alias, errors: [], warnings: [] };
                 try {

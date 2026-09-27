@@ -445,3 +445,25 @@ test("the raw mutation tool honors the action denylist on a hosted server", asyn
   assert.match(refused.content[0].text, /denylist/);
   assert.equal(requests.length, 0);
 });
+
+test("the raw mutation tool applies run_action's destructive confirm check in per-user mode", async (t) => {
+  const requests = await shopifyMock(t);
+  const { app } = await setup(t);
+  const cookie = await storesSession(app, "pat|bariatricpal.com");
+  await connectStore(app, cookie);
+  const client = await mcpClient(t, app, await login(app, "pat|bariatricpal.com"));
+  const mutation = "mutation Del($input: ProductDeleteInput!) { productDelete(input: $input) { deletedProductId userErrors { field message } } }";
+  const args = { store: "main", mutation, variables: { input: { id: "gid://shopify/Product/1" } } };
+  const plain = await client.callTool({ name: "shopify_graphql_mutation", arguments: { ...args, confirm: true } });
+  assert.equal(plain.isError, true);
+  assert.match(plain.content[0].text, /productDelete is destructive.*confirm: "productDelete"/);
+  const wrong = await client.callTool({ name: "shopify_graphql_mutation", arguments: { ...args, confirm: "yes" } });
+  assert.equal(wrong.isError, true);
+  assert.equal(requests.length, 0);
+  const named = await client.callTool({ name: "shopify_graphql_mutation", arguments: { ...args, confirm: "productDelete" } });
+  assert.notEqual(named.isError, true, JSON.stringify(named));
+  assert.equal(requests.length, 1);
+  // Non-destructive mutations still take confirm: true.
+  const update = await client.callTool({ name: "shopify_graphql_mutation", arguments: { store: "main", mutation: "mutation { productUpdate(product: {id: \"gid://shopify/Product/1\"}) { userErrors { message } } }", variables: {}, confirm: true } });
+  assert.notEqual(update.isError, true, JSON.stringify(update));
+});

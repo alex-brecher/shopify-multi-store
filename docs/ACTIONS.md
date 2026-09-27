@@ -46,7 +46,7 @@ Notes:
 - Each store's result is `applied`, `rejected` (Shopify returned user errors), `partial`, `failed`, or `unknown`. `ACCESS_DENIED` becomes "Your Shopify account or the app lacks write_x on <store>".
 - On the hosted server, every call writes an `action_run` audit line with the user, stores, mutations, a hash of the variables, and each store's outcome.
 
-In app mode, `shopify_run_action` and `shopify_graphql_mutation` are admin-only. In per-user mode they are available to every signed-in user who is not a `viewer`, because Shopify enforces permissions.
+In app mode, `shopify_run_action` and `shopify_graphql_mutation` are admin-only. In per-user mode they are available to every signed-in user who is not a `viewer`, because Shopify enforces permissions. In per-user mode `shopify_graphql_mutation` applies the same denylist and destructive confirm check as `shopify_run_action`: a destructive mutation needs `confirm` set to its name instead of `true`.
 
 ### Denylist
 
