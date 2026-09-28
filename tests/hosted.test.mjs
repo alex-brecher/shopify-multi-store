@@ -104,7 +104,7 @@ test("client ID metadata documents are validated and bad redirects rejected", as
 
   const good = await start("https://claude.ai/oauth/good.json");
   assert.equal(good.status, 200, "the sign-in store chooser");
-  assert.match(await good.text(), /This step only confirms who you are/);
+  assert.match(await good.text(), /Sign in with Shopify/);
 
   const bad = await start("https://claude.ai/oauth/bad.json", "https://evil.example/callback");
   assert.equal(bad.status, 400);
@@ -169,11 +169,13 @@ test("sign-in shows a store chooser with the identity store first, or goes strai
   assert.equal(start.status, 200);
   const html = await start.clone().text();
   assert.match(start.headers.get("content-security-policy"), /form-action 'self' https:\/\/\*\.myshopify\.com/);
-  const buttons = [...html.matchAll(/name="store" value="([^"]+)"><button( class="primary")?/g)].map((m) => [m[1], Boolean(m[2])]);
-  assert.deepEqual(buttons, [["wholesale", true], ["main", false]], "the identity store is listed first and preselected");
+  const hidden = [...html.matchAll(/type="hidden" name="store" value="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(hidden, ["wholesale"], "one Sign in with Shopify button, for the identity store");
+  assert.ok(!/>main</.test(html) && !/main\.myshopify\.com/.test(html), "the public sign-in page does not list the other stores");
+  assert.match(html, /name="store" type="text"/, "another store can be typed");
   assert.ok(loginCookie(start), "the chooser binds the sign-in to this browser");
-  const { authorize: shopify } = await chooseStore(app, start, "main");
-  assert.equal(shopify.origin, "https://main.myshopify.com");
+  const { authorize: shopify } = await chooseStore(app, start, " https://Main.myshopify.com/admin ");
+  assert.equal(shopify.origin, "https://main.myshopify.com", "a typed .myshopify.com address picks that store");
   assert.equal(shopify.pathname, "/admin/oauth/authorize");
   assert.equal(shopify.searchParams.get("client_id"), "app-client-id");
   assert.equal(shopify.searchParams.get("scope"), "write_products,write_orders");

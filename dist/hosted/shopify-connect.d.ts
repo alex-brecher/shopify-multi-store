@@ -104,8 +104,9 @@ export declare class ShopifyConnections {
     /** Stores a person can sign in through: *.myshopify.com, with app credentials on this server. */
     private loginStores;
     /**
-     * The login step of a sign-in: with one store, straight to its Shopify admin; with several,
-     * a chooser listing them, the identity store (or the first) preselected.
+     * The login step of a sign-in: with one store, straight to its Shopify admin; with several, one
+     * "Sign in with Shopify" button for the identity store (or the first store) and a field to name
+     * another store. Store names are never listed on this public page.
      */
     private startLogin;
     /** POST /login/shopify: the store picked on the chooser. The browser must hold the sign-in's binding cookie. */

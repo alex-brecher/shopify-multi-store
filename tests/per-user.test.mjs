@@ -465,7 +465,7 @@ test("a Shopify callback forwarded to another browser cannot give it the attacke
   // Without a session the victim cannot start a Shopify connection at all: it starts a sign-in instead.
   const connect = await call(app, "/shopify/connect?store=main");
   assert.equal(connect.status, 200);
-  assert.match(await connect.text(), /This step only confirms who you are/);
+  assert.match(await connect.text(), /Sign in with Shopify/);
   // The attacker's own browser (with its binding cookie) still completes normally, proving the state was not consumed by the refusal.
   const own = await shopifyBack(app, authorize, { email: "mallory@bariatricpal.com", cookie });
   assert.equal(own.status, 303);
