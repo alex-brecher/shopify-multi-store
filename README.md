@@ -134,10 +134,8 @@ Copy the included skill for personal use:
 
 ```bash
 mkdir -p ~/.claude/skills/shopify-multi-store
-cp .claude/skills/shopify-multi-store/SKILL.md ~/.claude/skills/shopify-multi-store/SKILL.md
+cp skills/shopify-multi-store/SKILL.md ~/.claude/skills/shopify-multi-store/SKILL.md
 ```
-
-Claude Code also discovers `.claude/skills` inside this repository.
 
 </details>
 

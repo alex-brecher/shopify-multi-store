@@ -2,7 +2,6 @@ node_modules
 dist
 .git
 .github
-.claude
 .codex-plugin
 coverage
 data
