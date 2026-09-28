@@ -67,11 +67,22 @@ export function cookie(name, value, maxAgeSeconds) {
     return `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
 }
 /**
- * Same-origin check for form posts. Browsers send Origin on POST; a missing Origin is accepted
- * because the CSRF token and cookie binding still apply.
+ * Same-origin check for form posts.
+ *
+ * Pages here send Referrer-Policy: no-referrer, so Chromium sends `Origin: null` even on a
+ * same-origin form post. Sec-Fetch-Site is not affected by referrer policy, so it decides when
+ * present: only same-origin (or a user-typed "none") passes, and a real Origin must still match.
+ * Without Sec-Fetch-Site, a missing Origin is accepted because the CSRF token and cookie binding
+ * still apply, and an opaque "null" Origin is refused.
  */
 export function sameOrigin(request, origin) {
     const value = request.headers.get("origin");
+    const site = request.headers.get("sec-fetch-site");
+    if (site !== null) {
+        if (site !== "same-origin" && site !== "none")
+            return false;
+        return value === null || value === "null" || value === origin;
+    }
     return value === null || value === origin;
 }
 /** The CSP form-action source that lets a form post end in a redirect to this URI. */
