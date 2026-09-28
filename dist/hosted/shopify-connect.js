@@ -342,13 +342,26 @@ export class ShopifyConnections {
         const record = await this.options.store.get("shopify_token", tokenKey(email, store.alias));
         return record && record.shop === store.shop ? record : undefined;
     }
-    /** The next store that is not connected, or whose connection expired. */
+    /**
+     * Scopes the server now requests that this connection was not granted (a write_ scope covers
+     * its read_ scope). Non-empty after the requested scopes grow, so Reconnect all picks the store
+     * up and Shopify asks the person to approve the new access.
+     */
+    missingScopes(record) {
+        // A connection made in the last 10 minutes already went through Shopify's approval with the
+        // current scopes; if Shopify still left one out, asking again would loop Reconnect all.
+        if (record.connectedAt > this.now() - 10 * 60 * 1000)
+            return [];
+        const granted = new Set(record.scope.split(",").map((scope) => scope.trim()).filter(Boolean));
+        return this.options.scopes.filter((scope) => !granted.has(scope) && !(scope.startsWith("read_") && granted.has(`write_${scope.slice(5)}`)));
+    }
+    /** The next store that is not connected, whose connection expired, or that lacks newly requested access. */
     async nextUnconnected(email) {
         for (const store of await this.visibleStores()) {
             if (!SHOP_HOST.test(store.shop) || !this.options.clientId(store) || !this.options.clientSecret(store))
                 continue;
             const record = await this.record(email, store);
-            if (!record || record.expiresAt <= this.now())
+            if (!record || record.expiresAt <= this.now() || this.missingScopes(record).length)
                 return store;
         }
         return undefined;
@@ -389,14 +402,15 @@ export class ShopifyConnections {
         for (const store of stores) {
             const record = await this.record(session.email, store);
             const live = record && record.expiresAt > now;
-            if (!live)
+            const outdated = Boolean(live && record && this.missingScopes(record).length);
+            if (!live || outdated)
                 unconnected += 1;
             const user = record?.associatedUser;
             const who = user ? `${escapeHtml(user.email ?? `Shopify user ${user.id}`)}${user.accountOwner ? " (store owner)" : ""}${user.collaborator ? " (collaborator)" : ""}` : "";
             const statusText = !record
                 ? "Not connected"
                 : live
-                    ? `Connected as ${who}<br><span class="muted">Expires ${formatTime(record.expiresAt)}</span>`
+                    ? `Connected as ${who}<br><span class="muted">${outdated ? "Needs a reconnect to approve new access. " : ""}Expires ${formatTime(record.expiresAt)}</span>`
                     : `Expired<br><span class="muted">Was ${who}, expired ${formatTime(record.expiresAt)}</span>`;
             const connect = this.connectForm(session, store.alias, false, record ? "Reconnect" : "Connect");
             const disconnect = record

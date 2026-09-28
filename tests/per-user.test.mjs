@@ -503,3 +503,16 @@ test("store tokens are decrypted lazily: none for tools/list, only the store a c
   assert.equal(broken.isError, true);
   assert.match(JSON.stringify(broken.content), /not connected store "wholesale"|Connect it at/);
 });
+
+test("a connection missing a newly requested scope is flagged for Reconnect all, but not right after it was made", async (t) => {
+  await shopifyMock(t);
+  const { app, advance } = await setup(t, {}, { scopes: ["write_products", "write_orders", "read_all_orders"] });
+  const cookie = await storesSession(app, "pat@bariatricpal.com", "main", "shpua_login");
+  const fresh = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.ok(!fresh.includes("Needs a reconnect"), "a connection just approved is not asked for again");
+  assert.match(fresh, /Reconnect all \(1 store\)/);
+  advance(11 * 60 * 1000);
+  const later = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.match(later, /Needs a reconnect to approve new access/);
+  assert.match(later, /Reconnect all \(2 stores\)/, "the outdated connection joins Reconnect all");
+});

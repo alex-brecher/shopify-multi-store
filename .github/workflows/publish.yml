@@ -20,6 +20,14 @@ jobs:
           package-manager-cache: false
       - run: npm ci
       - run: npm publish
+      - name: Wait for npm to serve this version
+        run: |
+          for i in $(seq 1 30); do
+            if npm view "$(node -p "require('./package.json').name")@$(node -p "require('./package.json').version")" version >/dev/null 2>&1; then exit 0; fi
+            sleep 20
+          done
+          echo "npm did not serve the new version within 10 minutes" >&2
+          exit 1
       - name: Install MCP Registry publisher
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" -o mcp-publisher.tar.gz

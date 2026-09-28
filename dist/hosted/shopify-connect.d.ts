@@ -119,7 +119,13 @@ export declare class ShopifyConnections {
     /** Every configured store. Whether the person may use one is up to Shopify. */
     private visibleStores;
     private record;
-    /** The next store that is not connected, or whose connection expired. */
+    /**
+     * Scopes the server now requests that this connection was not granted (a write_ scope covers
+     * its read_ scope). Non-empty after the requested scopes grow, so Reconnect all picks the store
+     * up and Shopify asks the person to approve the new access.
+     */
+    private missingScopes;
+    /** The next store that is not connected, whose connection expired, or that lacks newly requested access. */
     private nextUnconnected;
     handleStoresPage(request: Request): Promise<Response>;
     /**
