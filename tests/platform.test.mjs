@@ -134,6 +134,7 @@ test("hosted settings come from an env object, and store config follows the host
     SHOPIFY_APP_CLIENT_ID: "cid",
     SHOPIFY_APP_CLIENT_SECRET: "csecret",
     SHOPIFY_CLIENT_SECRET_OUTLET: "outlet-secret",
+    SHOPIFY_CLIENT_ID_OUTLET: "outlet-cid",
     SHOPIFY_IDENTITY_STORE: "outlet",
     STORES_JSON: JSON.stringify({ stores: [{ alias: "main", shop: "main.myshopify.com" }, { alias: "outlet", shop: "outlet.myshopify.com" }] })
   };
@@ -149,6 +150,7 @@ test("hosted settings come from an env object, and store config follows the host
   assert.equal(options.shopifyConnect.clientId(main), "cid");
   assert.equal(options.shopifyConnect.clientSecret(main), "csecret");
   assert.equal(options.shopifyConnect.clientSecret(outlet), "outlet-secret");
+  assert.equal(options.shopifyConnect.clientId(outlet), "outlet-cid", "a store in another organization uses its own app");
   await assert.rejects(hostedOptionsFromEnv({ ...env, MCP_PUBLIC_URL: "https://mcp.example.test/path" }, { loadStores }), /no path/);
   await assert.rejects(hostedOptionsFromEnv({ ...env, SHOPIFY_TOKEN_ENCRYPTION_KEY: undefined }, { loadStores }), /SHOPIFY_TOKEN_ENCRYPTION_KEY/);
 });

@@ -28,7 +28,9 @@ const EXPIRED_RECORD_GRACE_MS = 30 * 24 * 3600_000;
 const TOKEN_FORMAT = "v2";
 const SHOP_HOST = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
 /** Connect forms post to this server, which redirects to the store's Shopify admin. */
-const CONNECT_FORM_ACTION = "'self' https://*.myshopify.com";
+// Shopify's authorize URL redirects through admin.shopify.com (logged in) or accounts.shopify.com (login), and
+// CSP form-action applies to every hop of a form post's redirect chain.
+const CONNECT_FORM_ACTION = "'self' https://*.myshopify.com https://admin.shopify.com https://accounts.shopify.com";
 /** Shopify callbacks older than this (or this far in the future) are refused. */
 export const CALLBACK_MAX_AGE_SECONDS = 300;
 

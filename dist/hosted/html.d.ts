@@ -15,8 +15,13 @@ export declare function readCookie(request: Request, name: string): string | und
 /** A host-only, HttpOnly, Secure, SameSite=Lax cookie. */
 export declare function cookie(name: string, value: string, maxAgeSeconds: number): string;
 /**
- * Same-origin check for form posts. Browsers send Origin on POST; a missing Origin is accepted
- * because the CSRF token and cookie binding still apply.
+ * Same-origin check for form posts.
+ *
+ * Pages here send Referrer-Policy: no-referrer, so Chromium sends `Origin: null` even on a
+ * same-origin form post. Sec-Fetch-Site is not affected by referrer policy, so it decides when
+ * present: only same-origin (or a user-typed "none") passes, and a real Origin must still match.
+ * Without Sec-Fetch-Site, a missing Origin is accepted because the CSRF token and cookie binding
+ * still apply, and an opaque "null" Origin is refused.
  */
 export declare function sameOrigin(request: Request, origin: string): boolean;
 /** The CSP form-action source that lets a form post end in a redirect to this URI. */
