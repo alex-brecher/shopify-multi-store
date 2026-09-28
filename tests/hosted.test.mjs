@@ -1007,9 +1007,8 @@ test("consent screen shows the client, redirect host, and signed-in Shopify user
   assert.ok(!/<(script|img|link|iframe)\b/i.test(html), "no external assets or scripts");
 });
 
-test("consent deny returns access_denied and approve is remembered for 30 days", async (t) => {
-  // Clients outlive the 30-day approval here; idle client expiry has its own test.
-  const { app, advance } = await setup(t, { clientIdleTtlSeconds: 90 * 24 * 3600 });
+test("consent deny returns access_denied, and approval is never remembered", async (t) => {
+  const { app } = await setup(t);
   const { body: client } = await registerClient(app);
   const denied = await authorize(app, { clientId: client.client_id, challenge: pkce().challenge, decision: "deny" });
   assert.equal(denied.searchParams.get("error"), "access_denied");
@@ -1018,14 +1017,18 @@ test("consent deny returns access_denied and approve is remembered for 30 days",
 
   const approved = await authorize(app, { clientId: client.client_id, challenge: pkce().challenge });
   assert.ok(approved.searchParams.get("code"));
-  // Remembered: the next sign-in goes straight back with a code.
+  // Regression (2026-09-28): Claude never exchanged codes delivered by a direct 302 at the end
+  // of the Shopify sign-in chain. The next sign-in must show the consent screen again, with no
+  // Location header and no code, so the code only ever returns through the Approve click.
   const again = await startToCallback(app, { clientId: client.client_id });
-  assert.equal(again.status, 302);
-  assert.ok(new URL(again.headers.get("location")).searchParams.get("code"));
-  // Another user, or after 30 days, sees the screen again.
+  assert.equal(again.status, 200);
+  assert.equal(again.headers.get("location"), null);
+  const { html } = await consentForm(again.clone());
+  assert.ok(!html.includes("remembered for 30 days"));
+  const back = await submitConsent(app, again);
+  assert.equal(back.status, 303);
+  assert.ok(new URL(back.headers.get("location")).searchParams.get("code"));
   assert.equal((await startToCallback(app, { clientId: client.client_id, email: "sam@bariatricpal.com" })).status, 200);
-  advance(30 * 24 * 3600_000 + 1);
-  assert.equal((await startToCallback(app, { clientId: client.client_id })).status, 200);
 });
 
 test("consent CSRF token and cookie are bound, single use, and short-lived", async (t) => {

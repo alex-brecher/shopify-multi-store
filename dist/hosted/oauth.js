@@ -14,7 +14,6 @@ export const DEFAULT_CIMD_HOSTS = ["*"];
 const PENDING_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 2 * 60_000;
 const CONSENT_TTL_MS = 5 * 60_000;
-const APPROVAL_TTL_MS = 30 * 24 * 3600_000;
 const CONSENT_COOKIE = "__Host-sms_consent";
 /**
  * Browser binding for a Shopify sign-in. One cookie per sign-in, named from its state, so two
@@ -63,9 +62,6 @@ export function appendSetCookie(response, value) {
     const headers = new Headers(response.headers);
     headers.append("set-cookie", value);
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
-function approvalKey(email, clientId, redirectUri) {
-    return sha256(`${email}\n${clientId}\n${redirectUri}`);
 }
 export class AuthorizationServer {
     options;
@@ -459,7 +455,7 @@ export class AuthorizationServer {
     onPageSignIn;
     /**
      * Finish a sign-in for a verified Shopify staff email: page sign-ins go to onPageSignIn;
-     * OAuth sign-ins get an authorization code (remembered approval) or the consent page.
+     * OAuth sign-ins always get the consent page.
      */
     async completeLogin(record, email) {
         const page = "purpose" in record ? record : undefined;
@@ -474,11 +470,10 @@ export class AuthorizationServer {
         const redirectClass = this.redirectUriClass(pending.redirectUri);
         if (!redirectClass)
             return back({ error: "access_denied", error_description: "The redirect URI is no longer allowed on this server." });
-        // A remembered approval skips the consent screen, except for redirects admitted only by
-        // OAUTH_ALLOW_ANY_REDIRECT, which always ask.
-        if (redirectClass !== "open" && await this.options.store.get("approval", approvalKey(email, pending.clientId, pending.redirectUri))) {
-            return redirect(await this.issueCode(pending, email));
-        }
+        // Every OAuth sign-in shows the consent screen, even for an app approved before. Claude
+        // dropped authorization codes that arrived by a direct 302 at the end of the Shopify
+        // sign-in redirect chain (it never called /token), but completed every sign-in whose code
+        // came back through a click on the consent screen. See CHANGELOG 2.0.2.
         return this.consentPage(pending, email, principal, redirectClass);
     }
     async issueCode(pending, email) {
@@ -518,7 +513,7 @@ ${open ? `<div class="warn"><p>This app's return address is not on this server's
 <dt>Redirect</dt><dd><code>${escapeHtml(pending.redirectUri)}</code></dd>
 <dt>Signed in as</dt><dd>${escapeHtml(principal.email)}${pending.loginStore ? ` <span class="muted">(Shopify, ${escapeHtml(pending.loginStore)})</span>` : ""}</dd>
 </dl>
-<p class="muted">The app can call ${server} tools as you. In each store it can do only what your own Shopify staff permissions allow.${open ? "" : " Approval is remembered for 30 days for this app."}</p>
+<p class="muted">The app can call ${server} tools as you. In each store it can do only what your own Shopify staff permissions allow.</p>
 <form method="post" action="/consent">
 <input type="hidden" name="consent" value="${consentId}">
 <input type="hidden" name="csrf" value="${csrf}">
@@ -563,9 +558,6 @@ ${open ? `<div class="warn"><p>This app's return address is not on this server's
         const redirectClass = this.redirectUriClass(pending.redirectUri);
         if (!redirectClass)
             return back({ error: "access_denied", error_description: "The redirect URI is no longer allowed on this server." });
-        if (redirectClass !== "open") {
-            await this.options.store.put("approval", approvalKey(email, pending.clientId, pending.redirectUri), { approvedAt: this.now() }, this.now() + APPROVAL_TTL_MS);
-        }
         await this.auditAuth({ event: "consent_approved", user: email, clientId: pending.clientId });
         return redirect(await this.issueCode(pending, email), 303, clearCookie);
     }

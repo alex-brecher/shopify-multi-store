@@ -198,7 +198,7 @@ export declare class AuthorizationServer {
     onPageSignIn?: (purpose: PageSignInPurpose, email: string) => Promise<Response>;
     /**
      * Finish a sign-in for a verified Shopify staff email: page sign-ins go to onPageSignIn;
-     * OAuth sign-ins get an authorization code (remembered approval) or the consent page.
+     * OAuth sign-ins always get the consent page.
      */
     completeLogin(record: LoginRecord, email: string): Promise<Response>;
     private issueCode;

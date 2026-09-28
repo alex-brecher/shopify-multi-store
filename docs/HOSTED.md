@@ -48,7 +48,7 @@ Shopify online tokens are per user and per store. Shopify ends each one after 24
 
 ## Connect from your AI app
 
-You need one thing from whoever runs the server: the MCP URL, `https://<host>/mcp`. Most apps then sign you in with OAuth: a browser opens, you click Sign in with Shopify and log in with your staff account (or type the name of a store you do have a login for), and you approve the app on the consent screen. The approval is remembered for 30 days per app.
+You need one thing from whoever runs the server: the MCP URL, `https://<host>/mcp`. Most apps then sign you in with OAuth: a browser opens, you click Sign in with Shopify and log in with your staff account (or type the name of a store you do have a login for), and you approve the app on the consent screen. You approve the app each time you connect it; once connected, the app stays signed in through refresh tokens.
 
 Menu names and config formats below belong to each vendor and change often. Treat them as a guide and check the vendor's current docs if something has moved.
 
@@ -169,11 +169,11 @@ The built-in list is in `src/hosted/known-clients.ts`, with a comment per entry:
 - Cursor: `cursor://anysphere.cursor-mcp/oauth/callback`
 - Loopback on any port and path: `http://localhost`, `http://127.0.0.1`, `http://[::1]` (Claude Code, Codex, Gemini CLI, desktop apps)
 
-`OAUTH_REDIRECT_URIS` adds exact URIs to that list; `OAUTH_REDIRECT_URIS_REPLACE=1` makes it replace the list instead. `OAUTH_ALLOW_ANY_REDIRECT=1` also accepts any `https` redirect or private-use scheme (such as `com.example.app:/cb`) that a client registers. Redirects admitted only that way always show the consent screen, with a warning and the redirect host in large type, and are never remembered. Private-use schemes that are web schemes or look like them (`http`, `https`, `httpx`, `https.evil`, `ws`), or that run code or read local data (`javascript:`, `data:`, `file:`, `blob:` and similar), are always refused, as are redirects with credentials or fragments.
+`OAUTH_REDIRECT_URIS` adds exact URIs to that list; `OAUTH_REDIRECT_URIS_REPLACE=1` makes it replace the list instead. `OAUTH_ALLOW_ANY_REDIRECT=1` also accepts any `https` redirect or private-use scheme (such as `com.example.app:/cb`) that a client registers. Redirects admitted only that way always show the consent screen, with a warning and the redirect host in large type. Private-use schemes that are web schemes or look like them (`http`, `https`, `httpx`, `https.evil`, `ws`), or that run code or read local data (`javascript:`, `data:`, `file:`, `blob:` and similar), are always refused, as are redirects with credentials or fragments.
 
 ### Consent screen
 
-After the Shopify login the server shows the client name, the client_id, the redirect host, and the signed-in Shopify email with the store used to sign in, with Approve and Deny. Deny sends `error=access_denied` back to the app. The form carries a single-use CSRF token and a `__Host-` cookie that bind it to the browser that signed in; both expire after five minutes. Approval is remembered per user, client_id and redirect URI for 30 days. The page has no scripts or external assets and cannot be framed.
+After the Shopify login the server shows the client name, the client_id, the redirect host, and the signed-in Shopify email with the store used to sign in, with Approve and Deny. Deny sends `error=access_denied` back to the app. The form carries a single-use CSRF token and a `__Host-` cookie that bind it to the browser that signed in; both expire after five minutes. The screen appears on every sign-in, even for an app approved before: Claude did not complete sign-ins whose code arrived by a direct redirect at the end of the Shopify login (2.0.2). The page has no scripts or external assets and cannot be framed.
 
 ## Configuration
 
