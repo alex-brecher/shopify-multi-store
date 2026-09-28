@@ -93,7 +93,15 @@ test("client ID metadata documents are validated and bad redirects rejected", as
   const documents = {
     "https://claude.ai/oauth/good.json": { client_id: "https://claude.ai/oauth/good.json", client_name: "Claude", redirect_uris: [CLAUDE_CALLBACK] },
     "https://claude.ai/oauth/bad.json": { client_id: "https://claude.ai/oauth/bad.json", redirect_uris: ["https://evil.example/callback"] },
-    "https://claude.ai/oauth/mismatch.json": { client_id: "https://claude.ai/oauth/other.json", redirect_uris: [CLAUDE_CALLBACK] }
+    "https://claude.ai/oauth/mismatch.json": { client_id: "https://claude.ai/oauth/other.json", redirect_uris: [CLAUDE_CALLBACK] },
+    "https://claude.ai/oauth/chatgpt-style.json": {
+      client_id: "https://claude.ai/oauth/chatgpt-style.json", redirect_uris: [CLAUDE_CALLBACK],
+      token_endpoint_auth_method: "private_key_jwt", token_endpoint_auth_methods_supported: ["none", "private_key_jwt"]
+    },
+    "https://claude.ai/oauth/jwt-only.json": {
+      client_id: "https://claude.ai/oauth/jwt-only.json", redirect_uris: [CLAUDE_CALLBACK],
+      token_endpoint_auth_method: "private_key_jwt", token_endpoint_auth_methods_supported: ["private_key_jwt"]
+    }
   };
   const fetched = [];
   const { app } = await setup(t, { cimdAllowedHosts: ["claude.ai"], fetchClientMetadata: async (url) => { fetched.push(url); return documents[url]; } });
@@ -114,6 +122,8 @@ test("client ID metadata documents are validated and bad redirects rejected", as
   assert.equal(unlisted.status, 400);
 
   assert.equal((await start("https://claude.ai/oauth/mismatch.json")).status, 400);
+  assert.equal((await start("https://claude.ai/oauth/chatgpt-style.json")).status, 200, "none in the supported list is enough");
+  assert.equal((await start("https://claude.ai/oauth/jwt-only.json")).status, 400, "private_key_jwt only is refused");
   const foreignHost = await start("https://attacker.example/client.json");
   assert.equal(foreignHost.status, 400);
   assert.ok(!fetched.includes("https://attacker.example/client.json"), "disallowed hosts are never fetched");
