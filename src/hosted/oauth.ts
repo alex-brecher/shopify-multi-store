@@ -432,8 +432,14 @@ export class AuthorizationServer {
     if (!Array.isArray(doc.redirect_uris) || doc.redirect_uris.length === 0 || !doc.redirect_uris.every((uri) => typeof uri === "string")) {
       return { error: "Client metadata must list redirect_uris." };
     }
+    // This server only runs public clients. Accept a document that allows "none" in either the
+    // singular field or the plural token_endpoint_auth_methods_supported list. ChatGPT's document
+    // names private_key_jwt in the singular field and lists ["none", "private_key_jwt"] in the plural.
     const method = doc.token_endpoint_auth_method ?? "none";
-    if (method !== "none") return { error: "Client metadata clients must use token_endpoint_auth_method none." };
+    const supported = Array.isArray(doc.token_endpoint_auth_methods_supported) ? doc.token_endpoint_auth_methods_supported : [];
+    if (method !== "none" && !supported.includes("none")) {
+      return { error: "Client metadata clients must allow token_endpoint_auth_method none." };
+    }
     // Keep only redirect URIs this server allows. A document with none left cannot be used.
     const redirectUris = (doc.redirect_uris as string[]).filter((uri) => this.redirectUriAllowed(uri));
     if (redirectUris.length === 0) return { error: "None of the client's redirect URIs are allowed on this server." };
