@@ -171,7 +171,7 @@ test("sign-in shows a store chooser with the identity store first, or goes strai
   assert.match(start.headers.get("content-security-policy"), /form-action 'self' https:\/\/\*\.myshopify\.com/);
   const hidden = [...html.matchAll(/type="hidden" name="store" value="([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual(hidden, ["wholesale"], "one Sign in with Shopify button, for the identity store");
-  assert.ok(!/>main</.test(html) && !html.includes("main.myshopify.com"), "the public sign-in page does not list the other stores");
+  assert.ok(!/>main</.test(html) && !/main\.myshopify\.com/.test(html), "the public sign-in page does not list the other stores");
   assert.match(html, /name="store" type="text"/, "another store can be typed");
   assert.ok(loginCookie(start), "the chooser binds the sign-in to this browser");
   const { authorize: shopify } = await chooseStore(app, start, " https://Main.myshopify.com/admin ");
