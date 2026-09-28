@@ -363,7 +363,7 @@ export class ShopifyConnections {
     const buttons = stores.map((store, index) => `<form class="inline" method="post" action="/login/shopify"><input type="hidden" name="state" value="${state}"><input type="hidden" name="store" value="${escapeHtml(store.alias)}"><button${index === 0 ? ` class="primary"` : ""} type="submit">${escapeHtml(store.alias)}</button></form>`).join(" ");
     const body = `<div class="card">
 <h1>Sign in to ${displayName}</h1>
-<p>Sign in with your Shopify staff account. Choose a store you work in; you will log in to its Shopify admin, and that store is connected right away.</p>
+<p>This step only confirms who you are. Pick any one store where you have a Shopify staff login. Every store you have connected stays available to your AI app, not just the one you pick here.</p>
 <div class="actions">${buttons}</div>
 <p class="muted">What you can do in each store is exactly what your Shopify staff permissions there allow.</p>
 </div>`;
