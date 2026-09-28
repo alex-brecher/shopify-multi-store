@@ -104,7 +104,7 @@ test("client ID metadata documents are validated and bad redirects rejected", as
 
   const good = await start("https://claude.ai/oauth/good.json");
   assert.equal(good.status, 200, "the sign-in store chooser");
-  assert.match(await good.text(), /Sign in with your Shopify staff account/);
+  assert.match(await good.text(), /This step only confirms who you are/);
 
   const bad = await start("https://claude.ai/oauth/bad.json", "https://evil.example/callback");
   assert.equal(bad.status, 400);
