@@ -4,6 +4,16 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+### Fixed
+
+- Hosted: Claude connects again after its first approval. The server skipped
+  the consent screen for an app approved in the last 30 days and sent the
+  authorization code straight back with a 302 at the end of the Shopify
+  sign-in. Claude dropped every one of those codes and never called /token
+  (10 of 10 on 2026-09-28), while every sign-in that went through the
+  consent screen completed. The consent screen now shows on every OAuth
+  sign-in and approvals are no longer remembered.
+
 ## [2.0.1] - 2026-09-27
 
 ### Fixed
