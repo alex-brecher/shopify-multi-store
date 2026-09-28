@@ -110,6 +110,11 @@ export function createHostedApp(options: HostedAppOptions): HostedApp {
 
     if (method === "OPTIONS") return new Response(null, { status: 204 });
 
+    // The Shopify app's App URL is the server root. Shopify opens it when someone clicks the app in
+    // the admin; send them to the stores page instead of a 404 ("application cannot be loaded").
+    if (path === "/" && (method === "GET" || method === "HEAD")) {
+      return new Response(null, { status: 302, headers: { location: "/stores", "cache-control": "no-store" } });
+    }
     if (path === "/healthz") {
       return method === "GET" ? jsonResponse({ ok: true, version: PACKAGE_VERSION }) : jsonResponse({ error: "method_not_allowed" }, 405);
     }
