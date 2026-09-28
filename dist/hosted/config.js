@@ -42,8 +42,19 @@ function displayName(env) {
         throw new Error("SERVER_DISPLAY_NAME must be 1 to 100 characters with no control characters.");
     return value;
 }
+function aliasEnvSuffix(alias) {
+    return alias.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+}
 function secretEnvName(alias) {
-    return `SHOPIFY_CLIENT_SECRET_${alias.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+    return `SHOPIFY_CLIENT_SECRET_${aliasEnvSuffix(alias)}`;
+}
+/**
+ * A store in another Shopify organization cannot install the main app (a custom app installs only
+ * in its own organization), so it gets its own app: SHOPIFY_CLIENT_ID_<ALIAS> with
+ * SHOPIFY_CLIENT_SECRET_<ALIAS>.
+ */
+function clientIdEnvName(alias) {
+    return `SHOPIFY_CLIENT_ID_${aliasEnvSuffix(alias)}`;
 }
 /** MCP_PUBLIC_URL as an origin: https (http only for localhost), no path. */
 export function publicOrigin(env) {
@@ -89,7 +100,7 @@ export async function hostedOptionsFromEnv(env, platform) {
         shopifyConnect: {
             encryptionKeys,
             loadStores: platform.loadStores,
-            clientId: (store) => (store.auth.type === "client_credentials" ? store.auth.clientId : undefined) ?? appClientId,
+            clientId: (store) => env[clientIdEnvName(store.alias)]?.trim() || (store.auth.type === "client_credentials" ? store.auth.clientId : undefined) || appClientId,
             clientSecret: (store) => env[secretEnvName(store.alias)]?.trim() || appClientSecret,
             scopes,
             ...(identityStore ? { identityStore } : {})
