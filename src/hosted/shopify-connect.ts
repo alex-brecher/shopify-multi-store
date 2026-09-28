@@ -351,8 +351,9 @@ export class ShopifyConnections {
   }
 
   /**
-   * The login step of a sign-in: with one store, straight to its Shopify admin; with several,
-   * a chooser listing them, the identity store (or the first) preselected.
+   * The login step of a sign-in: with one store, straight to its Shopify admin; with several, one
+   * "Sign in with Shopify" button for the identity store (or the first store) and a field to name
+   * another store. Store names are never listed on this public page.
    */
   private async startLogin(loginState: string): Promise<Response> {
     const stores = await this.loginStores();
@@ -360,11 +361,12 @@ export class ShopifyConnections {
     if (stores.length === 1) return this.redirectLogin(loginState, stores[0]!);
     const displayName = escapeHtml(this.options.auth.displayName);
     const state = escapeHtml(loginState);
-    const buttons = stores.map((store, index) => `<form class="inline" method="post" action="/login/shopify"><input type="hidden" name="state" value="${state}"><input type="hidden" name="store" value="${escapeHtml(store.alias)}"><button${index === 0 ? ` class="primary"` : ""} type="submit">${escapeHtml(store.alias)}</button></form>`).join(" ");
     const body = `<div class="card">
 <h1>Sign in to ${displayName}</h1>
-<p>This step only confirms who you are. Pick any one store where you have a Shopify staff login. Every store you have connected stays available to your AI app, not just the one you pick here.</p>
-<div class="actions">${buttons}</div>
+<p>Sign in with your Shopify staff login. This only confirms who you are; every store you connect stays available to your AI app.</p>
+<form method="post" action="/login/shopify"><input type="hidden" name="state" value="${state}"><input type="hidden" name="store" value="${escapeHtml(stores[0]!.alias)}"><div class="actions"><button class="primary" type="submit">Sign in with Shopify</button></div></form>
+<h2>No login on our main store?</h2>
+<form method="post" action="/login/shopify"><input type="hidden" name="state" value="${state}"><label for="store">Your store's name or .myshopify.com address</label><input id="store" name="store" type="text" autocomplete="off" required maxlength="100"> <button type="submit">Continue</button></form>
 <p class="muted">What you can do in each store is exactly what your Shopify staff permissions there allow.</p>
 </div>`;
     return htmlPage({ title: `Sign in - ${this.options.auth.displayName}`, body, formAction: CONNECT_FORM_ACTION });
@@ -383,9 +385,10 @@ export class ShopifyConnections {
     const loginState = form.get("state") ?? "";
     const peeked = await this.options.auth.peekLogin(request, loginState);
     if ("response" in peeked) return peeked.response;
-    const alias = (form.get("store") ?? "").toLowerCase();
-    const store = (await this.loginStores()).find((candidate) => candidate.alias.toLowerCase() === alias);
-    if (!store) return page(400, "Sign-in problem", "That store cannot be used to sign in on this server.");
+    const typed = (form.get("store") ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    const handle = typed.endsWith(".myshopify.com") ? typed.slice(0, -".myshopify.com".length) : typed;
+    const store = (await this.loginStores()).find((candidate) => candidate.alias.toLowerCase() === handle || candidate.shop.toLowerCase() === `${handle}.myshopify.com`);
+    if (!store) return page(400, "Sign-in problem", "We couldn't find that store. Check the name, or use Sign in with Shopify.");
     return this.redirectLogin(loginState, store);
   }
 
