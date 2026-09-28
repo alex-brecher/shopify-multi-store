@@ -19,7 +19,7 @@ AI app ──HTTPS──> /mcp (Streamable HTTP, bearer token)
    │ OAuth 2.1       ├─ the caller's own Shopify online token per store
    │                 ├─ audit log
    ▼
-/authorize ──> store chooser ──> Shopify staff login ──> /shopify/callback ──> consent screen ──> code back to the app
+/authorize ──> Sign in with Shopify ──> Shopify staff login ──> /shopify/callback ──> consent screen ──> code back to the app
 /token, /register, /.well-known/*
 /stores ──> Reconnect all ──> Shopify (one store after another) ──> /shopify/callback
 ```
@@ -48,7 +48,7 @@ Shopify online tokens are per user and per store. Shopify ends each one after 24
 
 ## Connect from your AI app
 
-You need one thing from whoever runs the server: the MCP URL, `https://<host>/mcp`. Most apps then sign you in with OAuth: a browser opens, you pick a store and log in to its Shopify admin with your staff account, and you approve the app on the consent screen. The approval is remembered for 30 days per app.
+You need one thing from whoever runs the server: the MCP URL, `https://<host>/mcp`. Most apps then sign you in with OAuth: a browser opens, you click Sign in with Shopify and log in with your staff account (or type the name of a store you do have a login for), and you approve the app on the consent screen. The approval is remembered for 30 days per app.
 
 Menu names and config formats below belong to each vendor and change often. Treat them as a guide and check the vendor's current docs if something has moved.
 
@@ -62,9 +62,11 @@ This works as a personal custom connector on any Claude plan, within the connect
 
 ### ChatGPT
 
-1. Settings > Apps and Connectors > Advanced settings: turn on developer mode.
-2. Create a connector (or app), paste `https://<host>/mcp` as the MCP server URL, and choose OAuth.
-3. Sign in with Shopify and approve.
+1. Settings > Apps > Advanced settings: turn on developer mode. On a company workspace an admin may need to allow it first.
+2. Apps > Create. Paste `https://<host>/mcp` as the MCP server URL and choose OAuth. Leave the other OAuth settings at their defaults; you do not need to pick DCR.
+3. Click Scan Tools, sign in with Shopify, approve, then click Create.
+
+ChatGPT registers itself with a Client ID Metadata Document. It works on the ChatGPT website, not the phone app.
 
 Which ChatGPT plans can add custom MCP servers, and whether they can write or only read, is set per OpenAI's current terms.
 
@@ -144,8 +146,8 @@ Personal access tokens were removed: every supported client signs in with OAuth,
 | `POST /mcp` | MCP Streamable HTTP. Requires `Authorization: Bearer` with an OAuth access token. |
 | `GET /.well-known/oauth-protected-resource[/mcp]` | RFC 9728 resource metadata |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 server metadata |
-| `GET /authorize` | Authorization code + PKCE S256. Shows the store chooser (or goes straight to Shopify with one store). |
-| `POST /login/shopify` | The store picked on the chooser; needs the sign-in's browser binding cookie |
+| `GET /authorize` | Authorization code + PKCE S256. Shows the Sign in with Shopify page (or goes straight to Shopify with one store). |
+| `POST /login/shopify` | Sign in with Shopify, or the store name typed on the sign-in page; needs the sign-in's browser binding cookie |
 | `POST /token` | Code exchange and refresh (refresh tokens rotate) |
 | `POST /register` | Dynamic Client Registration (RFC 7591) |
 | `POST /consent` | Approve or deny on the consent screen |
@@ -155,7 +157,7 @@ Personal access tokens were removed: every supported client signs in with OAuth,
 | `GET /shopify/callback` | Shopify's return for sign-in and store connections; verifies the HMAC (Shopify's escaping rules, timestamp at most 300 seconds old) and the state, stores the encrypted token |
 | `GET /healthz` | Health check |
 
-Client ID Metadata Documents are supported: a `client_id` that is an HTTPS URL is fetched and its `redirect_uris` are checked against the redirect policy. Public clients (`token_endpoint_auth_method: none`) and confidential DCR clients (`client_secret_post`, `client_secret_basic`) are both supported.
+Client ID Metadata Documents are supported: a `client_id` that is an HTTPS URL is fetched and its `redirect_uris` are checked against the redirect policy. A metadata document is accepted as a public client when it allows `none` in `token_endpoint_auth_method` or in `token_endpoint_auth_methods_supported` (ChatGPT names `private_key_jwt` in the first and lists `none` in the second); a document that allows only other methods is refused. Public clients and confidential DCR clients (`client_secret_post`, `client_secret_basic`) are both supported.
 
 ### Redirect URIs
 
@@ -287,7 +289,7 @@ After this, the only credentials that work are Shopify online tokens that each p
 - Shopify permissions are the only access rule. Every call uses the caller's own online token; Shopify applies that person's staff permissions. There is no fallback to an app token or a static token.
 - Each store connection must carry the same verified email as the sign-in, so nobody can act through someone else's staff account.
 - The Shopify callback verifies Shopify's HMAC with the app secret and a timestamp at most 300 seconds old, and that the shop is a configured store.
-- Every sign-in, whether an app connecting or a page sign-in at `/stores`, is bound to the browser that started it by a short-lived `__Host-` cookie. The store chooser and the Shopify callback both check it before the state is used, so a forwarded sign-in link cannot log someone in as another person, and a refused callback does not burn the real sign-in. Store connections use a single-use 10-minute state bound to the `/stores` browser session.
+- Every sign-in, whether an app connecting or a page sign-in at `/stores`, is bound to the browser that started it by a short-lived `__Host-` cookie. The sign-in page and the Shopify callback both check it before the state is used, so a forwarded sign-in link cannot log someone in as another person, and a refused callback does not burn the real sign-in. Store connections use a single-use 10-minute state bound to the `/stores` browser session.
 - Nothing is issued until the person approves the app on the consent screen, which names the app and where it will return to.
 - Authorization codes are single use, expire after 2 minutes, and require PKCE S256.
 - Access tokens are bound to `https://<host>/mcp`. Refresh tokens rotate; reuse of an old refresh token revokes the whole token family.

@@ -4,6 +4,21 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-27
+
+### Fixed
+
+- Hosted: ChatGPT connects with its default OAuth settings. Its Client ID
+  Metadata Document names `private_key_jwt` in `token_endpoint_auth_method`
+  and lists `["none", "private_key_jwt"]` in
+  `token_endpoint_auth_methods_supported`; the server now accepts a document
+  that allows `none` in either field and still refuses one that does not.
+- Hosted: Reconnect all also picks up stores whose connection is missing a
+  scope added to the app later (for example `read_all_orders`), and the
+  stores page marks them "Needs a reconnect to approve new access".
+- Release workflow waits until npm serves the new version before publishing
+  to the MCP Registry.
+
 ## [2.0.0] - 2026-09-27
 
 Breaking: hosted mode is now per-user Shopify sign-in only. Google sign-in, the

@@ -9,7 +9,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   // The package version for /healthz and serverInfo; a test keeps it equal to package.json.
-  "define": { "__SMS_PACKAGE_VERSION__": "\"2.0.0\"" },
+  "define": { "__SMS_PACKAGE_VERSION__": "\"2.0.1\"" },
   // A hosted server never reads the OS keychain; keep its native code out of the bundle.
   "alias": { "cross-keychain": "./src/workers/stubs/cross-keychain.ts" },
   // The bundled Admin schema stays gzipped in the script (one version only).

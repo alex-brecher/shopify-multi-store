@@ -4,7 +4,7 @@
 
 ### One MCP server. Every Shopify store.
 
-Query, compare, report, and make guarded updates across Shopify stores from Claude, Codex, Cursor, VS Code, and other MCP clients.
+Query, compare, report, and make guarded updates across Shopify stores from Claude, ChatGPT, Codex, Cursor, VS Code, and other MCP clients.
 
 <img src="docs/assets/shopify-multi-store-hero.png" alt="One MCP server connected to multiple ecommerce stores" width="1200">
 
@@ -19,9 +19,9 @@ Query, compare, report, and make guarded updates across Shopify stores from Clau
 
 </div>
 
-## Version 1.6.0
+## Version 2.0
 
-This branch adds guided Admin workflows, ShopifyQL reports, schema validation, and a generic action surface for any Admin mutation.
+Run it locally, or host one server for your team: everyone signs in with their own Shopify staff account and connects from Claude, ChatGPT, Codex or any remote MCP client, with Shopify's own staff permissions deciding what each person can do. Guided Admin workflows, ShopifyQL reports, schema validation, and a generic action surface for any Admin mutation are included.
 See [feature coverage and acceptance requirements](docs/PARITY.md).
 Full Shopify ChatGPT parity is not yet verified.
 
