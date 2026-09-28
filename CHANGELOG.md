@@ -4,6 +4,25 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-27
+
+Breaking: hosted mode is now per-user Shopify sign-in only. Google sign-in, the
+policy file, roles and personal access tokens were removed.
+
+### Live deployment fixes
+
+- Form posts no longer fail with "This form was submitted from another site"
+  when Chromium sends `Origin: null` under `Referrer-Policy: no-referrer`;
+  `Sec-Fetch-Site` decides when present.
+- The connect pages allow the redirect through `admin.shopify.com` and
+  `accounts.shopify.com` in CSP `form-action`, so sign-in buttons work.
+- `SHOPIFY_CLIENT_ID_<ALIAS>` pairs with `SHOPIFY_CLIENT_SECRET_<ALIAS>`, so a
+  store in another Shopify organization can use its own app.
+- The public sign-in page no longer lists store names: one "Sign in with
+  Shopify" button plus a field for another store's name or .myshopify.com
+  address.
+- `/` redirects to `/stores`, so opening the app from the Shopify admin loads.
+
 ### Cloudflare Workers review fixes
 
 - Guided tools (prices, metafields, redirects, tags, orders, customers,
