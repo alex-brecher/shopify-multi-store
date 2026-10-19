@@ -48,6 +48,21 @@ export function isLoopbackRedirect(uri: string): boolean {
 }
 
 /**
+ * Whether a requested redirect_uri matches one the client registered. Exact match, or, for
+ * loopback redirects, the same scheme, host and path with any port (RFC 8252 section 7.3: a
+ * native app binds an ephemeral port per sign-in and registers the URI without one). Claude
+ * Code's client metadata document lists http://localhost/callback and sends
+ * http://localhost:<port>/callback. The query string, when present, must match exactly.
+ */
+export function redirectUriMatches(registered: string, requested: string): boolean {
+  if (registered === requested) return true;
+  if (!isLoopbackRedirect(registered) || !isLoopbackRedirect(requested)) return false;
+  const a = new URL(registered);
+  const b = new URL(requested);
+  return a.protocol === b.protocol && a.hostname === b.hostname && a.pathname === b.pathname && a.search === b.search;
+}
+
+/**
  * Schemes a private-use redirect may never use: web schemes and their lookalikes, and schemes
  * that run code or read local data in a browser.
  */

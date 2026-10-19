@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { fetchMetadataDocumentWithFetch } from "../platform/cimd-fetch.js";
 import { constantTimeEqual, randomToken, randomUuid } from "../platform/crypto.js";
 import { requestSource } from "./request-source.js";
-import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDisplayHost } from "./known-clients.js";
+import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDisplayHost, redirectUriMatches } from "./known-clients.js";
 import { cookie, escapeHtml, formActionSource, htmlPage, readCookie, sameOrigin } from "./html.js";
 export { isLoopbackRedirect };
 export const SCOPE = "mcp";
@@ -315,7 +315,8 @@ export class AuthorizationServer {
             return errorPage(400, client.error);
         const requestedRedirect = params.get("redirect_uri");
         const redirectUri = requestedRedirect ?? (client.redirect_uris.length === 1 ? client.redirect_uris[0] : undefined);
-        if (!redirectUri || !client.redirect_uris.includes(redirectUri) || !this.redirectUriAllowed(redirectUri)) {
+        const registered = redirectUri !== undefined && client.redirect_uris.some((uri) => redirectUriMatches(uri, redirectUri));
+        if (!redirectUri || !registered || !this.redirectUriAllowed(redirectUri)) {
             // Never redirect to an unverified URI.
             return errorPage(400, "The redirect_uri is not registered for this client or is not allowed on this server.");
         }

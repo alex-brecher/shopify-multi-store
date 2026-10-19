@@ -6,6 +6,15 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ### Fixed
 
+- Hosted: Claude Code signs in. Its client metadata document lists
+  `http://localhost/callback` without a port and each sign-in uses an
+  ephemeral port, which RFC 8252 allows for loopback redirects. The
+  authorization endpoint compared the requested redirect_uri to the
+  registered list verbatim and answered "The redirect_uri is not registered
+  for this client". Loopback redirects now match a registered loopback URI
+  with the same scheme, host and path on any port, for metadata-document and
+  dynamically registered clients alike. The token endpoint still requires
+  the exact redirect_uri used at authorization.
 - `install-shopify-skills` installs the Shopify AI Toolkit's current `shopify`
   skill. Toolkit 2.0.0 merged the `shopify-admin` and `shopify-shopifyql`
   skills the command asked for into that one skill, so the command reported

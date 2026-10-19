@@ -169,6 +169,8 @@ The built-in list is in `src/hosted/known-clients.ts`, with a comment per entry:
 - Cursor: `cursor://anysphere.cursor-mcp/oauth/callback`
 - Loopback on any port and path: `http://localhost`, `http://127.0.0.1`, `http://[::1]` (Claude Code, Codex, Gemini CLI, desktop apps)
 
+A loopback redirect also matches a client's registered loopback URI on any port: a native app registers `http://localhost/callback` (Claude Code's client metadata document does) and sends `http://localhost:<port>/callback` with a fresh port each sign-in, as RFC 8252 section 7.3 describes. Scheme, host and path must still match.
+
 `OAUTH_REDIRECT_URIS` adds exact URIs to that list; `OAUTH_REDIRECT_URIS_REPLACE=1` makes it replace the list instead. `OAUTH_ALLOW_ANY_REDIRECT=1` also accepts any `https` redirect or private-use scheme (such as `com.example.app:/cb`) that a client registers. Redirects admitted only that way always show the consent screen, with a warning and the redirect host in large type. Private-use schemes that are web schemes or look like them (`http`, `https`, `httpx`, `https.evil`, `ws`), or that run code or read local data (`javascript:`, `data:`, `file:`, `blob:` and similar), are always refused, as are redirects with credentials or fragments.
 
 ### Consent screen
