@@ -18,6 +18,14 @@ export declare const KNOWN_REDIRECT_URIS: readonly string[];
 /** Loopback redirect per RFC 8252 section 7.3: http, a loopback host, any port and path. Claude Code, Codex, Gemini CLI and desktop apps. */
 export declare function isLoopbackRedirect(uri: string): boolean;
 /**
+ * Whether a requested redirect_uri matches one the client registered. Exact match, or, for
+ * loopback redirects, the same scheme, host and path with any port (RFC 8252 section 7.3: a
+ * native app binds an ephemeral port per sign-in and registers the URI without one). Claude
+ * Code's client metadata document lists http://localhost/callback and sends
+ * http://localhost:<port>/callback. The query string, when present, must match exactly.
+ */
+export declare function redirectUriMatches(registered: string, requested: string): boolean;
+/**
  * A private-use (custom scheme) redirect such as cursor://host/path or com.example.app:/cb.
  * The scheme must not be a web scheme or look like one (httpx, https.evil, ...), and the URI
  * must carry no credentials or fragment.
