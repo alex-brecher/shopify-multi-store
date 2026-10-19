@@ -2,9 +2,9 @@
 
 Use this workflow only when the task needs a custom Admin GraphQL operation. The ready-made report tools do not need this workflow.
 
-## Official Shopify skills
+## Official Shopify skill
 
-Use `shopify-admin` for a custom Admin GraphQL record operation. Use `shopify-shopifyql` for aggregate sales, revenue, orders, conversion, and trend reports.
+Use Shopify's `shopify` skill from the Shopify AI Toolkit. Install it with `shopify-multi-store install-shopify-skills`. Pick its `admin` topic for a custom Admin GraphQL record operation. Pick its `shopifyql` topic for aggregate sales, revenue, orders, conversion, and trend reports. The former `shopify-admin` and `shopify-shopifyql` skills are deprecated upstream; both live on as topics inside `shopify`.
 
 1. Select the API version from the target store configuration.
 2. Search Shopify documentation for the exact query, mutation, field, or input type.
@@ -12,7 +12,7 @@ Use `shopify-admin` for a custom Admin GraphQL record operation. Use `shopify-sh
 4. Validate the operation against the selected API version.
 5. Use this plugin's query or mutation tool to run the operation.
 
-The official skills help with operation design, documentation, schema validation, and ShopifyQL syntax. This plugin keeps store selection, credentials, execution, and mutation authorization.
+The official skill helps with operation design, documentation, schema validation, and ShopifyQL syntax. This plugin keeps store selection, credentials, execution, and mutation authorization.
 
 Wrap a ShopifyQL query in the `shopifyqlQuery` Admin GraphQL field. Run the wrapper with `shopify_graphql_query_many` when the same report applies to multiple stores, or use `shopify_report` with `report: "analytics"`.
 
