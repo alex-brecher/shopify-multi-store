@@ -4,6 +4,8 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-10-19
+
 ### Fixed
 
 - Hosted: Claude Code signs in. Its client metadata document lists
