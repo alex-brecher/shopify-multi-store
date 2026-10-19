@@ -6,6 +6,14 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ### Fixed
 
+- `install-shopify-skills` installs the Shopify AI Toolkit's current `shopify`
+  skill. Toolkit 2.0.0 merged the `shopify-admin` and `shopify-shopifyql`
+  skills the command asked for into that one skill, so the command reported
+  "No matching skills found", installed nothing, and still exited 0. It now
+  reads the `skills` CLI result, exits 1 when the requested skill is not in the
+  toolkit, lists the skills the toolkit ships, and shows how to install one by
+  name. The README and the companion reference point at the `shopify` skill's
+  `admin` and `shopifyql` topics.
 - Hosted: Claude connects again after its first approval. The server skipped
   the consent screen for an app approved in the last 30 days and sent the
   authorization code straight back with a 302 at the end of the Shopify

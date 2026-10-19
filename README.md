@@ -304,23 +304,25 @@ Three tools reach every Shopify Admin API mutation (514 in API 2026-04), includi
 
 A denylist blocks mutations that mint credentials or change the app's own billing. Request the full scope set with `node scripts/print-scopes.mjs --full`. See [docs/ACTIONS.md](docs/ACTIONS.md) for worked examples and what no third-party app can do.
 
-## Shopify companion skills
+## Shopify companion skill
 
-Install Shopify's official Admin GraphQL and ShopifyQL skills:
+Install Shopify's official `shopify` skill:
 
 ```bash
 shopify-multi-store install-shopify-skills
 ```
 
-The command installs both skills for supported agents. Pass `--agent <name>` to select one agent.
+The command installs the skill for every supported agent it detects. Pass `--agent <name>` to select one agent, for example `--agent claude-code`.
 
-The skills search Shopify documentation and check custom GraphQL operations. ShopifyQL adds sales, revenue, order, conversion, and trend analysis.
+The `shopify` skill is one skill with a routing table. Its `admin` topic searches Shopify documentation and validates custom Admin GraphQL operations. Its `shopifyql` topic covers sales, revenue, order, conversion, and trend analysis. Shopify's toolkit 2.0.0 merged the former `shopify-admin` and `shopify-shopifyql` skills into this one skill, and the toolkit's `ucp` skill (a shopping CLI) is not part of this install.
+
+If Shopify renames the skill again, the command exits with status 1, prints the skills the toolkit ships, and shows the `npx skills add` command to install one by name. It never reports success after installing nothing.
 
 This server still controls store selection, credentials, execution, and mutation authorization. Shopify's skill scripts send usage telemetry by default.
 
 Set `OPT_OUT_INSTRUMENTATION=true` to turn off that telemetry.
 
-This integration uses the official [Shopify AI Toolkit](https://github.com/Shopify/Shopify-AI-Toolkit). It also reflects useful patterns from [Shopify Admin Skills](https://github.com/40rty-ai/shopify-admin-skills).
+This integration uses the official [Shopify AI Toolkit](https://github.com/Shopify/shopify-ai-toolkit). It also reflects useful patterns from [Shopify Admin Skills](https://github.com/40rty-ai/shopify-admin-skills).
 
 ## Security model
 
