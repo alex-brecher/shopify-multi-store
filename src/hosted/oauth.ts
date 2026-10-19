@@ -5,7 +5,7 @@ import type { Principal } from "./guard.js";
 import type { OAuthStore } from "./store.js";
 import type { AuditLog, AuthAuditEntry } from "./audit.js";
 import { requestSource } from "./request-source.js";
-import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDisplayHost, type RedirectClass } from "./known-clients.js";
+import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDisplayHost, redirectUriMatches, type RedirectClass } from "./known-clients.js";
 import { cookie, escapeHtml, formActionSource, htmlPage, readCookie, sameOrigin } from "./html.js";
 
 export { isLoopbackRedirect };
@@ -466,7 +466,8 @@ export class AuthorizationServer {
 
     const requestedRedirect = params.get("redirect_uri");
     const redirectUri = requestedRedirect ?? (client.redirect_uris.length === 1 ? client.redirect_uris[0] : undefined);
-    if (!redirectUri || !client.redirect_uris.includes(redirectUri) || !this.redirectUriAllowed(redirectUri)) {
+    const registered = redirectUri !== undefined && client.redirect_uris.some((uri) => redirectUriMatches(uri, redirectUri));
+    if (!redirectUri || !registered || !this.redirectUriAllowed(redirectUri)) {
       // Never redirect to an unverified URI.
       return errorPage(400, "The redirect_uri is not registered for this client or is not allowed on this server.");
     }

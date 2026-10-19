@@ -12,7 +12,7 @@ import { isForbiddenAddress } from "../dist/platform/ip.js";
 import { FileStore, MemoryStore, nodeDurableFs, writeFileDurable } from "../dist/hosted/store.js";
 import { enableHostedMode } from "../dist/runtime.js";
 import { requestSource, setRequestSource } from "../dist/hosted/request-source.js";
-import { KNOWN_CLIENT_REDIRECTS, RedirectPolicy, isSafePrivateUseRedirect, redirectListFromEnv } from "../dist/hosted/known-clients.js";
+import { KNOWN_CLIENT_REDIRECTS, RedirectPolicy, isSafePrivateUseRedirect, redirectListFromEnv, redirectUriMatches } from "../dist/hosted/known-clients.js";
 import { buildHostedAppFromEnv } from "../dist/serve.js";
 import {
   CLAUDE_CALLBACK, KEY, ORIGIN, RESOURCE, auditLines, authorize, authorizeQuery, call, chooseStore, consentForm, cookieNamed, login, loginCookie,
@@ -127,6 +127,55 @@ test("client ID metadata documents are validated and bad redirects rejected", as
   const foreignHost = await start("https://attacker.example/client.json");
   assert.equal(foreignHost.status, 400);
   assert.ok(!fetched.includes("https://attacker.example/client.json"), "disallowed hosts are never fetched");
+});
+
+test("loopback redirects match a registered loopback URI on any port (RFC 8252 section 7.3)", async (t) => {
+  // Claude Code's client metadata document lists the loopback callbacks without a port and
+  // sends an ephemeral port on each sign-in.
+  const clientId = "https://claude.ai/oauth/claude-code-client-metadata";
+  const documents = {
+    [clientId]: { client_id: clientId, client_name: "Claude Code", redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"], token_endpoint_auth_method: "none" }
+  };
+  const { app } = await setup(t, { cimdAllowedHosts: ["claude.ai"], fetchClientMetadata: async (url) => documents[url] });
+  const { challenge, verifier } = pkce();
+  const start = (redirectUri) => call(app, `/authorize?${authorizeQuery({ clientId, redirectUri, challenge })}`);
+
+  assert.equal((await start("http://localhost:60122/callback")).status, 200, "an ephemeral port on a registered loopback URI");
+  assert.equal((await start("http://127.0.0.1:60123/callback")).status, 200);
+  assert.equal((await start("http://localhost:60122/other")).status, 400, "the path must match");
+  assert.equal((await start("http://localhost:60122/callback?x=1")).status, 400, "the query must match");
+  assert.equal((await start("http://localhost:60122/callback#frag")).status, 400);
+  assert.equal((await start("http://evil.example/callback")).status, 400);
+
+  // The whole flow: consent, the code arrives on the ephemeral port, and the token endpoint
+  // takes that exact redirect_uri (and no other).
+  const redirectUri = "http://localhost:60122/callback";
+  const done = await authorize(app, { clientId, redirectUri, challenge });
+  assert.equal(done.origin, "http://localhost:60122");
+  assert.equal(done.pathname, "/callback");
+  assert.equal(done.searchParams.get("state"), "client-state");
+  const code = done.searchParams.get("code");
+  assert.ok(code);
+  const wrongPort = await tokenRequest(app, { grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: "http://localhost:60999/callback", client_id: clientId });
+  assert.equal(wrongPort.body.error, "invalid_grant", "the token endpoint still requires the redirect_uri used at authorization");
+  const second = await authorize(app, { clientId, redirectUri, challenge });
+  const token = await tokenRequest(app, { grant_type: "authorization_code", code: second.searchParams.get("code"), code_verifier: verifier, redirect_uri: redirectUri, client_id: clientId });
+  assert.equal(token.response.status, 200, JSON.stringify(token.body));
+  assert.ok(token.body.access_token);
+
+  // Dynamically registered clients get the same treatment, host for host.
+  const { body: client } = await registerClient(app, { redirect_uris: ["http://127.0.0.1:43123/callback"] });
+  const dcr = (redirectUri) => call(app, `/authorize?${authorizeQuery({ clientId: client.client_id, redirectUri, challenge })}`);
+  assert.equal((await dcr("http://127.0.0.1:50001/callback")).status, 200);
+  assert.equal((await dcr("http://localhost:50001/callback")).status, 400, "a different loopback host is not the registered one");
+
+  // Non-loopback registrations stay exact.
+  assert.equal(redirectUriMatches(CLAUDE_CALLBACK, CLAUDE_CALLBACK), true);
+  assert.equal(redirectUriMatches(CLAUDE_CALLBACK, "https://claude.ai/api/mcp/auth_callback2"), false);
+  assert.equal(redirectUriMatches("http://localhost/callback", "http://localhost:1/callback"), true);
+  assert.equal(redirectUriMatches("http://localhost:2/callback", "http://localhost:1/callback"), true);
+  assert.equal(redirectUriMatches("http://localhost/callback", "https://localhost:1/callback"), false);
+  assert.equal(redirectUriMatches("http://localhost/callback", "http://localhost.evil.example:1/callback"), false);
 });
 
 test("client metadata fetches refuse private, loopback, link-local, and metadata addresses", async (t) => {
