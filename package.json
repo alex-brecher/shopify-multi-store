@@ -103,14 +103,14 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.3.1",
     "@shopify/admin-api-client": "^2.0.0",
     "cross-keychain": "^1.1.0",
     "graphql": "^16.14.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.3.1",
     "@types/node": "^24.10.1",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
