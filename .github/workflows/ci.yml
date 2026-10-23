@@ -18,7 +18,7 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
         # Node 22 runs everything, including the workerd test (wrangler needs Node 22).
         # Node 20, the minimum for local installs, runs on Ubuntu; the workerd test skips there.
-        node: [22]
+        node: [22.23.4]
         include:
           - os: ubuntu-latest
             node: 20
