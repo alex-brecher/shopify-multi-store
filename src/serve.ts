@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import { resolve } from "node:path";
-import { createHostedApp, type HostedApp } from "./hosted/app.js";
+import { createHostedApp, HOSTED_MAX_REQUEST_BODY_BYTES, type HostedApp } from "./hosted/app.js";
 import { FileAuditLog } from "./hosted/audit.js";
 import { hostedOptionsFromEnv, positiveInt } from "./hosted/config.js";
 import { toNodeListener } from "./hosted/node-adapter.js";
@@ -55,7 +55,7 @@ export async function buildHostedAppFromEnv(env: NodeJS.ProcessEnv = process.env
 export async function serve(env: NodeJS.ProcessEnv = process.env): Promise<http.Server> {
   enableHostedMode(env);
   const { app, config } = await buildHostedAppFromEnv(env);
-  const server = http.createServer(toNodeListener(app.fetch, { origin: config.publicUrl, maxBodyBytes: 4 * 1024 * 1024 }));
+  const server = http.createServer(toNodeListener(app.fetch, { origin: config.publicUrl, maxBodyBytes: HOSTED_MAX_REQUEST_BODY_BYTES }));
   server.headersTimeout = 30_000;
   server.requestTimeout = 60_000;
   await new Promise<void>((resolveListen) => server.listen(config.port, config.host, resolveListen));

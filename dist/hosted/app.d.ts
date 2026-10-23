@@ -1,6 +1,8 @@
 import type { AuditLog } from "./audit.js";
 import { AuthorizationServer, type AuthServerOptions } from "./oauth.js";
 import { ShopifyConnections, type ShopifyConnectOptions } from "./shopify-connect.js";
+export declare const HOSTED_MAX_REQUEST_BODY_BYTES: number;
+export declare const HOSTED_MAX_TOOL_INPUT_ELEMENTS = 10000;
 export interface HostedAppOptions extends AuthServerOptions {
     audit: AuditLog;
     /** Shopify app credentials, token encryption and the configured stores. auth, store and now come from these options. */

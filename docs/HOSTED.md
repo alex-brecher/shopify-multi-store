@@ -303,6 +303,8 @@ After this, the only credentials that work are Shopify online tokens that each p
 
 ## Limitations
 
+- Hosted MCP requests are limited to 1 MiB and 10,000 total array elements and object keys in tool arguments. Requests exceeding the byte limit return HTTP 413; excessive tool inputs return an MCP tool error before Shopify is called. Use smaller batches for larger operations. These limits apply to Node hosting and Cloudflare Workers.
+
 - Single instance only with the file store. The Cloudflare Worker uses one Durable Object instead, which is strongly consistent.
 - Remembered consent approvals cannot be cleared from a page; they expire after 30 days.
 - No rate limiting on the OAuth endpoints. Put the server behind a proxy that limits requests.

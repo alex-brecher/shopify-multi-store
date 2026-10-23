@@ -222,6 +222,22 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
   const tagsAdd = body(found).actions.find((action) => action.name === "tagsAdd");
   assert.equal(tagsAdd?.denied, true, JSON.stringify(body(found)).slice(0, 400));
 
+  // Bound authenticated validation work before tool dispatch, including in the real Worker bundle.
+  const callsBeforeLimits = upstream.admin.length;
+  const tooMany = await rpc(17, "tools/call", { name: "shopify_graphql_query", arguments: {
+    store: "main", query: "query { shop { name } }", variables: { entries: Array(10_000).fill(null) }
+  } });
+  assert.equal(tooMany.result.isError, true);
+  assert.match(JSON.stringify(tooMany.result.content), /elements|10000/);
+  const oversized = await call("/mcp", { method: "POST", headers: {
+    authorization: `Bearer ${tokens.access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream"
+  }, body: JSON.stringify({ jsonrpc: "2.0", id: 18, method: "tools/call", params: {
+    name: "shopify_graphql_query", arguments: { store: "main", query: "query { shop { name } }", variables: { padding: "x".repeat(1024 * 1024) } }
+  } }) });
+  assert.equal(oversized.status, 413);
+  assert.equal(upstream.admin.length, callsBeforeLimits, "limits refuse before Shopify calls");
+  const afterLimits = await rpc(19, "tools/call", { name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(afterLimits.result.isError, true, "valid requests still work after input rejection");
 
   const db = await mf.getD1Database("AUDIT_DB");
   const rows = (await db.prepare("SELECT event, user, tool, line FROM audit ORDER BY id").all()).results;
