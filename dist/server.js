@@ -37,7 +37,7 @@ export function createServer(options = {}) {
         name: "shopify-multi-store-mcp-server",
         version: PACKAGE_VERSION,
         ...(options.title ? { title: options.title } : {})
-    });
+    }, { maxToolInputElements: options.maxToolInputElements });
     options.beforeRegister?.(server);
     registerAdminTools(server);
     registerParityTools(server);

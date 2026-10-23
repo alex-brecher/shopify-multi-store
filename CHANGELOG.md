@@ -4,6 +4,11 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-10-23
+
+- Upgrade the MCP server and client SDK to 2.3.1 for published security fixes.
+- Bound hosted MCP tool inputs to 10,000 array elements and object keys, and HTTP request bodies to 1 MiB before tool dispatch. The Node server and Cloudflare Worker use the same limits. Local stdio behavior is unchanged.
+
 ## [2.0.2] - 2026-10-19
 
 ### Fixed

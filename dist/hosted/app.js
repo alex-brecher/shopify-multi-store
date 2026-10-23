@@ -4,6 +4,8 @@ import { PACKAGE_VERSION } from "../shopify.js";
 import { guardServer } from "./guard.js";
 import { AuthorizationServer, SCOPE } from "./oauth.js";
 import { ShopifyConnections } from "./shopify-connect.js";
+export const HOSTED_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+export const HOSTED_MAX_TOOL_INPUT_ELEMENTS = 10_000;
 const CORS_HEADERS = {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
@@ -40,9 +42,10 @@ export function createHostedApp(options) {
         const access = context.authInfo?.extra?.access;
         if (!principal || !access)
             throw new Error("Unauthenticated MCP request reached the server factory.");
-        return createServer({ title: auth.displayName, beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, access }) });
+        return createServer({ title: auth.displayName, maxToolInputElements: HOSTED_MAX_TOOL_INPUT_ELEMENTS, beforeRegister: (server) => guardServer(server, { principal, audit: options.audit, access }) });
     }, {
         legacy: "stateless",
+        maxRequestBodySize: HOSTED_MAX_REQUEST_BODY_BYTES,
         onerror: (error) => console.error(`MCP error: ${error.message}`)
     });
     const unauthorized = (description) => {

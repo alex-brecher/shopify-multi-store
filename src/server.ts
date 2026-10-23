@@ -44,6 +44,8 @@ export interface CreateServerOptions {
   beforeRegister?: (server: McpServer) => void;
   /** Display name reported as serverInfo.title. Hosted mode sets it from SERVER_DISPLAY_NAME; stdio leaves it unset. */
   title?: string;
+  /** Bound validation work for HTTP clients. Stdio retains the SDK default. */
+  maxToolInputElements?: number;
 }
 
 /** Build a fully registered MCP server. Used by stdio (one per process) and HTTP (one per request). */
@@ -52,7 +54,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     name: "shopify-multi-store-mcp-server",
     version: PACKAGE_VERSION,
     ...(options.title ? { title: options.title } : {})
-  });
+  }, { maxToolInputElements: options.maxToolInputElements });
   options.beforeRegister?.(server);
   registerAdminTools(server);
   registerParityTools(server);
