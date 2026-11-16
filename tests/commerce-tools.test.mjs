@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "graphql";
-import { registerCommerceTools, MANAGE_OPERATIONS, variantInput, sameAmount } from "../dist/commerce-tools.js";
+import { registerCommerceTools, MANAGE_OPERATIONS, variantInput } from "../dist/commerce-tools.js";
 import { registerReadTools } from "../dist/read-tools.js";
 import { CDOCS } from "../dist/commerce-documents.js";
 import { validateDocument } from "../dist/schema.js";
@@ -274,6 +274,8 @@ test("variants: preview, foreign-variant guard, then create, update and delete",
   assert.equal(foreign.isError, true);
   assert.deepEqual(foreign.json.foreign, [gid("ProductVariant", 99)]);
 
+  const dup = await manage("variants", { productId: gid("Product"), delete: [gid("ProductVariant", 1), gid("ProductVariant", 1)] });
+  assert.equal(dup.isError, undefined, "a repeated id is not every variant");
   const all = await manage("variants", { productId: gid("Product"), delete: [gid("ProductVariant", 1), gid("ProductVariant", 2)] }, false);
   assert.equal(all.isError, true);
   assert.match(all.json.error, /leave the product with none/);
@@ -336,6 +338,8 @@ test("delete: previews the record, then deletes a product or customer with the m
   assert.equal(sent("CommerceProductSummary").length, 1, "no request without confirm");
   const wrongWord = await manage("delete", { id: gid("Product") }, false, "yes");
   assert.equal(wrongWord.isError, true);
+  const inner = await manage("delete", { id: gid("Product", 4), confirm: "delete" }, false);
+  assert.equal(inner.isError, undefined, "confirm inside input is accepted");
   const product = await manage("delete", { id: gid("Product") }, false, "delete");
   assert.equal(product.json.deletedId, gid("Product"));
   const customer = await manage("delete", { id: gid("Customer") }, false, "delete");
@@ -423,9 +427,14 @@ test("create_draft_order: preview calculates real totals; apply creates with the
   assert.deepEqual(input.purchasingEntity, { customerId: gid("Customer") });
   assert.deepEqual(input.lineItems[1].originalUnitPriceWithCurrency, { amount: "5.00", currencyCode: "USD" });
   assert.deepEqual(input.shippingLine, { title: "Ground", priceWithCurrency: { amount: "7.00", currencyCode: "USD" } });
+  const override = await manage("create_draft_order", { lineItems: [{ variantId: gid("ProductVariant"), price: "9.00", quantity: 1 }] });
+  const overrideInput = sent("CommerceDraftCalculate")[1].variables.input.lineItems[0];
+  assert.deepEqual(overrideInput.priceOverride, { amount: "9.00", currencyCode: "USD" });
+  assert.equal(overrideInput.originalUnitPriceWithCurrency, undefined);
+  assert.equal(override.isError, undefined);
   const created = await manage("create_draft_order", { lineItems: [{ variantId: gid("ProductVariant"), quantity: 1 }] }, false);
   assert.equal(created.json.draftOrder.id, gid("DraftOrder"));
-  assert.equal(sent("CommerceShopCurrency").length, 1, "currency only looked up when a custom price needs it");
+  assert.equal(sent("CommerceShopCurrency").length, 2, "currency only looked up when a price needs it");
 });
 
 test("complete_draft_order: previews, refuses a completed draft, and completes", async (t) => {
@@ -508,19 +517,17 @@ test("refund: previews Shopify's suggestion and applies only with a matching exp
   assert.deepEqual(input.refundLineItems, items);
 });
 
-test("sameAmount compares decimal strings exactly", () => {
-  assert.equal(sameAmount("21.50", "21.5"), true);
-  assert.equal(sameAmount("021.500", "21.5"), true);
-  assert.equal(sameAmount("21.51", "21.5"), false);
-  assert.equal(sameAmount("abc", "abc"), false);
-  assert.equal(sameAmount(undefined, undefined), false);
-});
-
 test("shopify_get: customer, draft_order, variants, order_transactions, order_refunds and fulfillment_orders", async (t) => {
-  const { read } = await fixture(t);
+  const { read, state } = await fixture(t);
   const customer = await read("get", { resource: "customer", id: gid("Customer") });
   assert.equal(customer.isError, undefined, customer.content[0].text);
   assert.equal(customer.json.orders.nodes[0].name, "#1001");
+  const saved = state.scopes;
+  state.scopes = saved.filter((s) => s !== "read_orders" && s !== "write_orders");
+  const noOrders = await read("get", { resource: "customer", id: gid("Customer") });
+  assert.equal(noOrders.isError, true, "read_orders is checked before the read");
+  assert.deepEqual(noOrders.json.missingScopes, ["read_orders"]);
+  state.scopes = saved;
   const missing = await read("get", { resource: "customer", id: gid("Customer", 404) });
   assert.equal(missing.isError, true);
   const wrongType = await read("get", { resource: "customer", id: gid("Order") });

@@ -3,8 +3,6 @@ import { z } from "zod/v4";
 import { type Data, type Workflow } from "./admin-workflows.js";
 /** Tool variant arguments to ProductVariantsBulkInput: inventory fields move under inventoryItem. */
 export declare function variantInput(v: Data): Data;
-/** Equal decimal strings ("12", "12.0", "12.00") compare equal; no float rounding. */
-export declare function sameAmount(a: unknown, b: unknown): boolean;
 interface Operation {
     description: string;
     shape: z.ZodRawShape;

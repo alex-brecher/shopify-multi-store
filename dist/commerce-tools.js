@@ -2,7 +2,7 @@ import { z } from "zod/v4";
 import { textResult, WorkflowError } from "./admin-workflows.js";
 import { CDOCS } from "./commerce-documents.js";
 import { DOCS } from "./admin-documents.js";
-import { failure, parityWorkflow } from "./parity-tools.js";
+import { failure, parityWorkflow, sameMoney } from "./parity-tools.js";
 // Typed write tools for products, customers, draft orders, order lifecycle and refunds.
 // The tool set mirrors the operations GeLi2001/shopify-mcp (MIT) exposes, reimplemented on
 // this server's conventions: every tool takes a store alias, defaults to dryRun:true, reads
@@ -72,17 +72,6 @@ export function variantInput(v) {
         inventoryItem.harmonizedSystemCode = harmonizedSystemCode;
     return { ...rest, ...(Object.keys(inventoryItem).length ? { inventoryItem } : {}) };
 }
-/** Equal decimal strings ("12", "12.0", "12.00") compare equal; no float rounding. */
-export function sameAmount(a, b) {
-    const norm = (x) => {
-        const m = /^(\d+)(?:\.(\d*))?$/.exec(String(x ?? "").trim());
-        if (!m)
-            return undefined;
-        return `${m[1].replace(/^0+(?=\d)/, "")}.${(m[2] ?? "").replace(/0+$/, "")}`;
-    };
-    const left = norm(a);
-    return left !== undefined && left === norm(b);
-}
 /** Every shopify_manage operation, keyed by name. Exported for tests and docs. */
 export const MANAGE_OPERATIONS = {};
 /** The strict schema one operation's input is checked against (dryRun defaults to true). */
@@ -140,14 +129,17 @@ export function registerCommerceTools(server) {
         let w;
         try {
             const op = MANAGE_OPERATIONS[a.operation];
-            const checked = operationSchema(a.operation).safeParse({ ...a.input, dryRun: a.dryRun });
+            // Accept confirm inside input too; it is a tool-level guard, not an operation field.
+            const { confirm: innerConfirm, ...fields } = (a.input ?? {});
+            const confirm = a.confirm ?? innerConfirm;
+            const checked = operationSchema(a.operation).safeParse({ ...fields, dryRun: a.dryRun });
             if (!checked.success)
                 throw new WorkflowError(`Invalid input for ${a.operation}. No request sent.`, {
                     issues: checked.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`),
                     expectedFields: fieldList(op.shape),
                 });
             const word = checked.data.dryRun ? undefined : op.confirmWord?.(checked.data);
-            if (word && a.confirm !== word)
+            if (word && confirm !== word)
                 throw new WorkflowError(`${a.operation} cannot be undone. Pass confirm:"${word}" with dryRun:false after the user approves this exact change. No request sent.`, { requiredConfirm: word });
             w = await parityWorkflow(a.store);
             if (op.scopes.length)
@@ -181,11 +173,12 @@ register("variants", "Create, update and/or delete variants of one product (prod
         throw Error("Product not found in this store.");
     const known = new Set((before.variants?.nodes ?? []).map((v) => v.id));
     const complete = !before.variants?.pageInfo?.hasNextPage;
-    const named = [...(a.update ?? []).map((v) => v.id), ...(a.delete ?? [])];
+    const deleting = new Set(a.delete ?? []);
+    const named = [...(a.update ?? []).map((v) => v.id), ...deleting];
     const foreign = complete ? named.filter((id) => !known.has(id)) : [];
     if (foreign.length)
         throw new WorkflowError("These variants do not belong to this product. No write sent.", { foreign });
-    if (complete && a.delete?.length && a.delete.length >= known.size && !a.create?.length)
+    if (complete && deleting.size && [...known].every((id) => deleting.has(id)) && !a.create?.length)
         throw Error("Deleting every variant would leave the product with none. Delete the product instead (operation delete).");
     if (a.dryRun)
         return {
@@ -381,7 +374,7 @@ const lineItem = z
     .object({
     variantId: gid("ProductVariant").optional(),
     title: shortText.optional().describe("Custom line item title (with price, instead of variantId)."),
-    price: money.optional().describe("Custom line item unit price, in the order currency."),
+    price: money.optional().describe("Unit price in the order currency: the price of a custom line item, or a price override for a variant."),
     quantity: z.number().int().min(1).max(10000),
     sku: shortText.optional(),
     taxable: z.boolean().optional(),
@@ -419,7 +412,8 @@ register("create_draft_order", "Create a draft order (draftOrderCreate) from var
         lineItems: a.lineItems.map((li) => ({
             quantity: li.quantity,
             ...(li.variantId ? { variantId: li.variantId } : { title: li.title }),
-            ...(li.price ? { originalUnitPriceWithCurrency: { amount: li.price, currencyCode: currency } } : {}),
+            // A custom line item takes its price as originalUnitPrice; a variant line needs priceOverride.
+            ...(li.price ? { [li.variantId ? "priceOverride" : "originalUnitPriceWithCurrency"]: { amount: li.price, currencyCode: currency } } : {}),
             ...(li.sku !== undefined ? { sku: li.sku } : {}),
             ...(li.taxable !== undefined ? { taxable: li.taxable } : {}),
             ...(li.requiresShipping !== undefined ? { requiresShipping: li.requiresShipping } : {}),
@@ -534,7 +528,7 @@ register("refund", "Refund line items and/or shipping on an order (refundCreate)
         return { dryRun: true, order: { id: order.id, name: order.name, totalRefunded: order.totalRefundedSet }, suggestedRefund: suggestion, expectedAmount: total, currency: order.presentmentCurrencyCode, wouldRefundTransactions: transactions, notice: `${PREVIEW} To apply, also pass expectedAmount:"${total}".` };
     if (!a.expectedAmount)
         throw Error(`dryRun:false needs expectedAmount. Run the preview first; the suggested total is ${total} ${order.presentmentCurrencyCode}.`);
-    if (!sameAmount(a.expectedAmount, total))
+    if (total === undefined || !sameMoney(a.expectedAmount, total))
         throw new WorkflowError("The suggested refund no longer matches expectedAmount. No write sent.", { expectedAmount: a.expectedAmount, suggestedAmount: total });
     const refund = (await w.run(CDOCS.refundCreate, {
         input: {

@@ -152,9 +152,9 @@ async function get(w, resource, a) {
     }
 }
 const COMMERCE_GETS = {
-    customer: { document: CDOCS.customer, root: "customer", label: "Customer", scopes: ["read_customers"] },
+    customer: { document: CDOCS.customer, root: "customer", label: "Customer", scopes: ["read_customers", "read_orders"] },
     draft_order: { document: CDOCS.draftOrder, root: "draftOrder", label: "Draft order", scopes: ["read_draft_orders"] },
-    variants: { document: CDOCS.variants, root: "product", label: "Product", scopes: ["read_products"] },
+    variants: { document: CDOCS.variants, root: "product", label: "Product", scopes: ["read_products", "read_inventory"] },
     order_transactions: { document: CDOCS.orderTransactions, root: "order", label: "Order", scopes: ["read_orders"] },
     order_refunds: { document: CDOCS.orderRefunds, root: "order", label: "Order", scopes: ["read_orders"] },
     // No local scope check: merchant-managed and fulfillment-service orders need different scopes.
