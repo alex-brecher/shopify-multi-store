@@ -297,7 +297,7 @@ Every guided write tool defaults to `dryRun: true`, which returns a before/after
 
 ## Generic action tools
 
-Three tools reach every Shopify Admin API mutation (514 in API 2026-04), including the 483 without a dedicated tool:
+Three tools reach every Shopify Admin API mutation (523 in API 2026-07), including the 480 without a dedicated tool:
 
 | Tool | Action |
 | --- | --- |

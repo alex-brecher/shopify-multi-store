@@ -41,7 +41,8 @@ The MCP endpoint is stateless: each request builds a new server instance for the
 Shopify online tokens are per user and per store. Shopify ends each one after 24 hours, or earlier when the person logs out of the Shopify admin (see Shopify's documentation on online access tokens). They cannot be refreshed. So:
 
 - Reconnecting is needed at most once a day, and it is one click for all stores: **Reconnect all** on `https://<host>/stores`.
-- Reconnect all goes through every expired or unconnected store in a row. While the person is logged in to the Shopify admin, each hop is an automatic redirect with no clicks.
+- Reconnect all goes through every expired or unconnected store in a row. While the person is logged in to the Shopify admin, it needs no further clicks. Between stores a short progress page shows "Store 5 of 11" and which stores are connected, connecting, waiting or skipped. Each store is its own page load, so the browser's redirect limit (about 20 hops) never ends a long run.
+- A store that fails during Reconnect all (a different staff email, a failed token exchange, or two aliases for one store) is skipped, and the run goes on. The stores page then names it, and a single Reconnect on that row shows the reason.
 - When a tool needs a store whose connection expired (or was never made), the error carries one link, `https://<host>/stores/reconnect`. Opened while signed out, it signs in with Shopify and then reconnects every store with no further clicks; opened while signed in, it shows the stores page with the Reconnect all button.
 - Each store must be connected with the same verified Shopify email the person signed in with. If someone's staff email differs between stores, they cannot connect the store where it differs.
 - If the person is not staff on a store, Shopify shows its own error for that store and the chain stops there. The other stores stay as they are; the stores page connects each one on its own too.
