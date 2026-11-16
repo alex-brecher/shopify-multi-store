@@ -356,7 +356,7 @@ register("merge_customers", "Merge two customer records into one (customerMerge)
     })
         .strict()
         .optional(),
-}, ["write_customers"], async (w, a) => {
+}, ["write_customers", "write_customer_merge"], async (w, a) => {
     if (a.customerOneId === a.customerTwoId)
         throw Error("customerOneId and customerTwoId must differ.");
     const variables = { one: a.customerOneId, two: a.customerTwoId, overrideFields: a.overrideFields };

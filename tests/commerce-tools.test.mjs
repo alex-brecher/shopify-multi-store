@@ -16,7 +16,7 @@ const money = (amount, currencyCode = "USD") => ({ shopMoney: { amount, currency
 const page = (nodes) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null } });
 const SCOPES = [
   "read_products", "write_products", "read_inventory", "read_customers", "write_customers", "read_orders", "write_orders",
-  "read_draft_orders", "write_draft_orders", "read_locations",
+  "read_draft_orders", "write_draft_orders", "read_locations", "write_customer_merge",
 ];
 
 async function fixture(t) {
@@ -392,6 +392,10 @@ test("customer_address: checks ownership, accepts Shopify's address id form, and
 test("merge_customers: previews with customerMergePreview and refuses a blocked or self merge", async (t) => {
   const { manage, sent, state } = await fixture(t);
   const self = await manage("merge_customers", { customerOneId: gid("Customer"), customerTwoId: gid("Customer") });
+  state.scopes = state.scopes.filter((s) => s !== "write_customer_merge");
+  const noScope = await manage("merge_customers", { customerOneId: gid("Customer", 1), customerTwoId: gid("Customer", 2) });
+  assert.deepEqual(noScope.json.missingScopes, ["write_customer_merge"]);
+  state.scopes.push("write_customer_merge");
   assert.equal(self.isError, true);
   const preview = await manage("merge_customers", { customerOneId: gid("Customer", 1), customerTwoId: gid("Customer", 2) });
   assert.equal(preview.json.irreversible, true);

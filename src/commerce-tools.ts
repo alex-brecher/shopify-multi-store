@@ -402,7 +402,7 @@ function register(
         .strict()
         .optional(),
     },
-    ["write_customers"],
+    ["write_customers", "write_customer_merge"],
     async (w, a) => {
       if (a.customerOneId === a.customerTwoId) throw Error("customerOneId and customerTwoId must differ.");
       const variables = { one: a.customerOneId, two: a.customerTwoId, overrideFields: a.overrideFields };

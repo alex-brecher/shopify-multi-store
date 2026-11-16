@@ -94,7 +94,7 @@ export const REQUIRED_SCOPES = {
     "shopify_manage:delete": ["write_products", "write_customers"],
     "shopify_manage:create_customer": ["write_customers"],
     "shopify_manage:customer_address": ["write_customers"],
-    "shopify_manage:merge_customers": ["write_customers"],
+    "shopify_manage:merge_customers": ["write_customers", "write_customer_merge"],
     "shopify_manage:create_draft_order": ["write_draft_orders"],
     "shopify_manage:complete_draft_order": ["write_draft_orders"],
     "shopify_manage:order_status": ["write_orders"],
