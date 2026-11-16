@@ -7,9 +7,19 @@ export interface PageOptions {
     headers?: Record<string, string>;
     /** CSP form-action sources. Defaults to 'self'. */
     formAction?: string;
+    /** Extra trusted markup for <head>, such as a meta refresh. Escape any values in it. */
+    head?: string;
+    /** The viewer's chosen theme; "system" (the default) follows the device. */
+    theme?: Theme;
 }
+export type Theme = "system" | "light" | "dark";
+export declare const THEME_COOKIE = "__Host-sms_theme";
+/** The theme the viewer picked on an earlier visit, from its cookie. */
+export declare function themeFrom(request: Request): Theme;
+/** Light, Dark and System links. The pages run no scripts, so each link sets a cookie on the server. */
+export declare function themeSwitch(current: Theme, path: string): string;
 /** An HTML page that cannot be framed, cached, or load anything from elsewhere. */
-export declare function htmlPage({ title, body, status, headers, formAction }: PageOptions): Response;
+export declare function htmlPage({ title, body, status, headers, formAction, head, theme }: PageOptions): Response;
 /** Parse a Cookie header. */
 export declare function readCookie(request: Request, name: string): string | undefined;
 /** A host-only, HttpOnly, Secure, SameSite=Lax cookie. */
