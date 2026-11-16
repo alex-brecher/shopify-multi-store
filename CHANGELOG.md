@@ -4,6 +4,16 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.0.4] - 2026-11-16
+
+### Fixed
+- Hosted Reconnect all no longer stops after 5 or 6 stores. Each store now starts on a short progress page instead of a redirect, so the browser's redirect limit no longer applies.
+- A store that fails during Reconnect all is skipped and named on the stores page instead of ending the run.
+- The Shopify token exchange retries once on a network error, timeout, 429 or 5xx.
+
+### Changed
+- Hosted stores page: connected count with a progress bar, status pills, phone-friendly rows, relative expiry times, and a System, Light and Dark theme switch.
+
 ## [2.0.3] - 2026-10-23
 
 - Upgrade the MCP server and client SDK to 2.3.1 for published security fixes.
