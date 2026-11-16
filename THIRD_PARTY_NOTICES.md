@@ -1,5 +1,7 @@
 # Third-party notices
 
+The operation set of `shopify_manage` and the extra `shopify_get` / `shopify_search` resources (2.1.0) was compared against GeLi2001/shopify-mcp (MIT, Copyright (c) 2023 Shopify MCP Server Contributors, https://github.com/GeLi2001/shopify-mcp). The tools, schemas and GraphQL documents were written for this repository; no code from that project is included.
+
 The documentation search protocol in `src/discovery-tools.ts` follows Shopify-AI-Toolkit's `search_docs.mjs`.
 Source: https://github.com/Shopify/Shopify-AI-Toolkit
 

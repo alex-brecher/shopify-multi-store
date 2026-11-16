@@ -253,6 +253,11 @@ export function registerAdminTools(server) {
     register("update_product", "Update product fields, variants, media and tags. dryRun:true (the default) returns the current product and the change without applying it; dryRun:false applies it and returns before and after. Tags: addTags and removeTags change only the named tags; replaceTags replaces all tags. A status of ARCHIVED or DRAFT takes the product off every sales channel.", {
         id: gid("Product"),
         title: z.string().min(1).optional(),
+        handle: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).max(255).optional(),
+        redirectNewHandle: z.boolean().optional().describe("With handle: add a redirect from the old URL."),
+        seo: z.object({ title: z.string().max(255).optional(), description: z.string().max(320).optional() }).strict().optional(),
+        collectionsToJoin: z.array(gid("Collection")).max(250).optional(),
+        collectionsToLeave: z.array(gid("Collection")).max(250).optional(),
         descriptionHtml: z.string().max(50000).optional(),
         status: status.optional(),
         vendor: z.string().optional(),

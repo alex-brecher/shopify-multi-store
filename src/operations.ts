@@ -71,7 +71,7 @@ export function mutationErrors(document: string, data: unknown): unknown[] {
         const key = field.alias?.value ?? field.name.value;
         const child = (value as Record<string, unknown>)[key];
         if (
-          /^(userErrors|mediaUserErrors)$/.test(field.name.value) &&
+          /^(userErrors|[a-z][A-Za-z]*UserErrors)$/.test(field.name.value) &&
           Array.isArray(child)
         ) {
           errors.push(

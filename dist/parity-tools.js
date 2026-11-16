@@ -46,8 +46,8 @@ function pick(a, keys) {
             out[key] = a[key];
     return out;
 }
-const ORDER_INPUT_FIELDS = ["note", "email", "shippingAddress"];
-const CUSTOMER_INPUT_FIELDS = ["note", "email"];
+const ORDER_INPUT_FIELDS = ["note", "email", "phone", "poNumber", "customAttributes", "shippingAddress"];
+const CUSTOMER_INPUT_FIELDS = ["note", "email", "firstName", "lastName", "phone", "taxExempt"];
 /**
  * Canonical form of a decimal money string ("12", "12.0" and "12.00" all become "12"),
  * compared as text so there is no floating-point rounding. Returns undefined for
@@ -427,13 +427,13 @@ async function updatePricesCore(w, a) {
     };
 }
 /** A workflow for one store, pinned to PARITY_API_VERSION. */
-async function parityWorkflow(alias) {
+export async function parityWorkflow(alias) {
     const w = await workflow(alias);
     w.store = { ...w.store, apiVersion: PARITY_API_VERSION };
     return w;
 }
 /** A tool error that keeps the store, and any completed writes, in its details. */
-function failure(w, error, write) {
+export function failure(w, error, write) {
     if (!w)
         return toolError(error, write);
     return toolError(new WorkflowError(error instanceof Error ? error.message : String(error), {
@@ -643,11 +643,18 @@ export function registerParityTools(server) {
         return itemSummary(results);
     });
     // 4. Orders
-    register("update_order", "Update order note, email, shipping address and tags (orderUpdate). dryRun:true (the default) returns the current order and the change without applying it; dryRun:false applies it and returns before and after. Tags: addTags and removeTags change only the named tags; replaceTags replaces all tags. Requires write_orders.", {
+    register("update_order", "Update order note, email, phone, PO number, additional details (customAttributes), shipping address and tags (orderUpdate). dryRun:true (the default) returns the current order and the change without applying it; dryRun:false applies it and returns before and after. Tags: addTags and removeTags change only the named tags; replaceTags replaces all tags. Requires write_orders.", {
         id: gid("Order"),
         ...tagFields,
         note: z.string().max(5000).nullable().optional(),
         email: z.string().email().optional(),
+        phone: z.string().max(40).nullable().optional(),
+        poNumber: z.string().max(255).nullable().optional(),
+        customAttributes: z
+            .array(z.object({ key: z.string().min(1).max(255), value: z.string().max(5000) }).strict())
+            .max(100)
+            .optional()
+            .describe("Replaces the order's additional details (note attributes)."),
         shippingAddress: z
             .object({
             address1: z.string().optional(),
@@ -712,11 +719,15 @@ export function registerParityTools(server) {
         return { dryRun: false, node };
     });
     // 5. Customers
-    register("update_customer", "Update customer note, email and tags (customerUpdate). dryRun:true (the default) returns the current customer and the change without applying it; dryRun:false applies it and returns before and after. Tags: addTags and removeTags change only the named tags; replaceTags replaces all tags. Email marketing consent is out of scope. Requires write_customers.", {
+    register("update_customer", "Update customer name, email, phone, note, tax exemption and tags (customerUpdate). dryRun:true (the default) returns the current customer and the change without applying it; dryRun:false applies it and returns before and after. Tags: addTags and removeTags change only the named tags; replaceTags replaces all tags. Email marketing consent is out of scope. Requires write_customers.", {
         id: gid("Customer"),
         ...tagFields,
         note: z.string().max(5000).optional(),
         email: z.string().email().optional(),
+        firstName: z.string().max(255).optional(),
+        lastName: z.string().max(255).optional(),
+        phone: z.string().regex(/^\+[1-9][0-9]{6,14}$/).nullable().optional().describe("E.164, for example +16135551111; null clears it."),
+        taxExempt: z.boolean().optional(),
     }, true, async (w, a) => {
         checkTagArgs(a);
         await w.requireScopes(["write_customers"]);

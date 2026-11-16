@@ -46,7 +46,7 @@ export function mutationErrors(document, data) {
             else {
                 const key = field.alias?.value ?? field.name.value;
                 const child = value[key];
-                if (/^(userErrors|mediaUserErrors)$/.test(field.name.value) &&
+                if (/^(userErrors|[a-z][A-Za-z]*UserErrors)$/.test(field.name.value) &&
                     Array.isArray(child)) {
                     errors.push(...child.map((error) => ({ path: [...path, key], error })));
                 }

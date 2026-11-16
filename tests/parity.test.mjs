@@ -914,3 +914,27 @@ test("shopify_search, shopify_get and shopify_report validate their resource-spe
   const tooMany = await call("report", { report: "list_unfulfilled_orders", stores: ["fixture"], first: 250 });
   assert.equal(tooMany.isError, true);
 });
+test("update_product sends handle, seo, redirectNewHandle and collection membership in ProductUpdateInput", async (t) => {
+  const { call, state } = await fixture(t);
+  const r = await call("update_product", {
+    dryRun: false,
+    id: gid("Product"),
+    handle: "new-handle",
+    redirectNewHandle: true,
+    seo: { title: "SEO title", description: "SEO description" },
+    collectionsToJoin: [gid("Collection", 2)],
+    collectionsToLeave: [gid("Collection", 3)],
+  });
+  assert.equal(r.isError, undefined, JSON.stringify(r));
+  const update = state.requests.find((r) => r.query.includes("mutation UpdateProduct("));
+  assert.deepEqual(update.variables.input, {
+    id: gid("Product"),
+    handle: "new-handle",
+    redirectNewHandle: true,
+    seo: { title: "SEO title", description: "SEO description" },
+    collectionsToJoin: [gid("Collection", 2)],
+    collectionsToLeave: [gid("Collection", 3)],
+  });
+  const bad = await call("update_product", { id: gid("Product"), handle: "Not A Handle" }).catch((e) => e);
+  assert.ok(bad instanceof Error || bad.isError, "handles are lowercase slugs");
+});

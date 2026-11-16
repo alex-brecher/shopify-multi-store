@@ -36,8 +36,8 @@ export const PDOCS = {
   listFiles: `query ListFiles($query:String, $first:Int!, $after:String) { files(first:$first, after:$after, query:$query) { nodes { id alt fileStatus createdAt ... on GenericFile { url mimeType originalFileSize } ... on MediaImage { image { url } } } ${PAGE} } }`,
 
   // Orders
-  getOrderTagsNote: `query GetOrderTagsNote($id:ID!) { order(id:$id) { id name tags note email } }`,
-  updateOrder: `mutation UpdateOrder($input:OrderInput!) { orderUpdate(input:$input) { order { id name tags note email } userErrors { field message } } }`,
+  getOrderTagsNote: `query GetOrderTagsNote($id:ID!) { order(id:$id) { id name tags note email phone poNumber customAttributes { key value } } }`,
+  updateOrder: `mutation UpdateOrder($input:OrderInput!) { orderUpdate(input:$input) { order { id name tags note email phone poNumber customAttributes { key value } } userErrors { field message } } }`,
   getOrderFulfillmentOrders: `query GetOrderFulfillmentOrders($id:ID!) { order(id:$id) { id name fulfillmentOrders(first:50) { nodes { id status lineItems(first:250) { nodes { id remainingQuantity } pageInfo { hasNextPage } } } } } }`,
   createFulfillment: `mutation CreateFulfillment($fulfillment:FulfillmentV2Input!) { fulfillmentCreateV2(fulfillment:$fulfillment) { fulfillment { id status trackingInfo { company number url } } userErrors { field message } } }`,
 
@@ -46,8 +46,8 @@ export const PDOCS = {
   tagsRemove: `mutation RemoveTags($id:ID!, $tags:[String!]!) { tagsRemove(id:$id, tags:$tags) { node { id ... on Product { tags } ... on Order { tags } ... on Customer { tags } ... on DraftOrder { tags } } userErrors { field message } } }`,
 
   // Customers
-  getCustomer: `query GetCustomer($id:ID!) { customer(id:$id) { id displayName email tags note } }`,
-  updateCustomer: `mutation UpdateCustomer($input:CustomerInput!) { customerUpdate(input:$input) { customer { id displayName email tags note } userErrors { field message } } }`,
+  getCustomer: `query GetCustomer($id:ID!) { customer(id:$id) { id displayName firstName lastName email phone taxExempt tags note } }`,
+  updateCustomer: `mutation UpdateCustomer($input:CustomerInput!) { customerUpdate(input:$input) { customer { id displayName firstName lastName email phone taxExempt tags note } userErrors { field message } } }`,
 
   // Pages
   listPages: `query ListPages($query:String, $first:Int!, $after:String) { pages(first:$first, after:$after, query:$query) { nodes { id handle title isPublished updatedAt } ${PAGE} } }`,

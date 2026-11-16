@@ -7,6 +7,7 @@ import { mapConcurrent } from "./concurrency.js";
 import { resolveStoreTargets } from "./config.js";
 import { operation } from "./operations.js";
 import { PDOCS } from "./parity-documents.js";
+import { CDOCS } from "./commerce-documents.js";
 import { searchProductsMany } from "./reports.js";
 import { fitMultiStoreResults } from "./result-limits.js";
 
@@ -38,6 +39,10 @@ export const SEARCH_RESOURCES = {
   markets: { document: PDOCS.listMarkets, scopes: ["read_markets"], pinned: true, description: "Markets (no query)." },
   themes: { document: PDOCS.listThemes, scopes: ["read_themes"], pinned: true, description: "Themes with their role; MAIN is live (no query)." },
   delivery_profiles: { document: PDOCS.listDeliveryProfiles, scopes: ["read_shipping"], pinned: true, description: "Delivery profiles with zones, methods and flat rates (no query)." },
+  locations: { document: CDOCS.listLocations, scopes: ["read_locations"], pinned: true, description: "Locations with address, active status and fulfillment capabilities (query: location search syntax)." },
+  price_lists: { document: CDOCS.listPriceLists, scopes: [], pinned: true, description: "Price lists with currency, adjustment and catalog (no query)." },
+  metafield_definitions: { document: CDOCS.listMetafieldDefinitions, scopes: [], pinned: true, requires: "type", description: "Metafield definitions for one owner type (type required: PRODUCT, PRODUCTVARIANT, CUSTOMER, ORDER, COLLECTION, ...)." },
+  draft_orders: { document: CDOCS.listDraftOrders, scopes: ["read_draft_orders"], pinned: true, description: "Draft orders, most recently updated first (query: draft order search syntax)." },
 } as const satisfies Record<string, Listing>;
 export type SearchResource = keyof typeof SEARCH_RESOURCES;
 
@@ -52,6 +57,12 @@ export const GET_RESOURCES = {
   blog_articles: "A blog's articles. id: Blog GID.",
   uploaded_image: "Image processing status and CDN URL. id: MediaImage GID.",
   bulk_operation: "A bulk operation's status and result URLs. id: BulkOperation GID. Partial exports stay marked incomplete.",
+  customer: "Customer details, addresses, marketing consent state and a page of orders, newest first. id: Customer GID.",
+  draft_order: "Draft order with status, totals, addresses and line items. id: DraftOrder GID.",
+  variants: "Every variant field of a product (price, barcode, tax, inventory policy, weight, cost, origin, HS code, options) with first/after. id: Product GID.",
+  order_transactions: "An order's payment transactions (authorizations, captures, refunds, voids). id: Order GID.",
+  order_refunds: "An order's refunds with refunded items, restock status and transactions. id: Order GID.",
+  fulfillment_orders: "An order's fulfillment orders with status, location, delivery method, holds and line items. id: Order GID.",
 } as const;
 export type GetResource = keyof typeof GET_RESOURCES;
 
@@ -66,6 +77,12 @@ const GET_TYPES: Record<GetResource, readonly string[] | undefined> = {
   blog_articles: ["Blog"],
   uploaded_image: ["MediaImage"],
   bulk_operation: ["BulkOperation"],
+  customer: ["Customer"],
+  draft_order: ["DraftOrder"],
+  variants: ["Product"],
+  order_transactions: ["Order"],
+  order_refunds: ["Order"],
+  fulfillment_orders: ["Order"],
 };
 
 /** Only the variables a document declares, so tool-only arguments never reach Shopify. */
@@ -124,6 +141,19 @@ async function get(w: Workflow, resource: GetResource, a: Data): Promise<Data> {
     }
     case "uploaded_image":
       return w.run(DOCS.fileRead, { id });
+    case "customer":
+    case "draft_order":
+    case "variants":
+    case "order_transactions":
+    case "order_refunds":
+    case "fulfillment_orders": {
+      w.store = { ...w.store, apiVersion: PARITY_API_VERSION };
+      const read = COMMERCE_GETS[resource];
+      if (read.scopes.length) await w.requireScopes(read.scopes);
+      const d = await w.run(read.document, declared(read.document, { id, first: a.first, after: a.after }));
+      if (!d[read.root]) throw new Error(`${read.label} not found in this store.`);
+      return d[read.root];
+    }
     case "bulk_operation": {
       const d = await w.run(DOCS.bulkRead, { id });
       if (!d.node) throw new Error("Bulk operation not found.");
@@ -131,6 +161,16 @@ async function get(w: Workflow, resource: GetResource, a: Data): Promise<Data> {
     }
   }
 }
+
+const COMMERCE_GETS: Record<string, { document: string; root: string; label: string; scopes: string[] }> = {
+  customer: { document: CDOCS.customer, root: "customer", label: "Customer", scopes: ["read_customers", "read_orders"] },
+  draft_order: { document: CDOCS.draftOrder, root: "draftOrder", label: "Draft order", scopes: ["read_draft_orders"] },
+  variants: { document: CDOCS.variants, root: "product", label: "Product", scopes: ["read_products", "read_inventory"] },
+  order_transactions: { document: CDOCS.orderTransactions, root: "order", label: "Order", scopes: ["read_orders"] },
+  order_refunds: { document: CDOCS.orderRefunds, root: "order", label: "Order", scopes: ["read_orders"] },
+  // No local scope check: merchant-managed and fulfillment-service orders need different scopes.
+  fulfillment_orders: { document: CDOCS.fulfillmentOrders, root: "order", label: "Order", scopes: [] },
+};
 
 function storeFailure(alias: string, error: unknown): Data {
   return {
@@ -154,7 +194,7 @@ export function registerReadTools(server: McpServer): void {
           store: StoreAlias.optional().describe("One store alias. Give store or stores."),
           stores: z.array(StoreAlias).min(1).max(100).optional().describe("Several store aliases, searched in parallel."),
           query: z.string().max(1000).optional().describe("Shopify search syntax for the resource, where it takes one."),
-          type: z.string().min(1).max(255).optional().describe("metaobjects: the metaobject type."),
+          type: z.string().min(1).max(255).optional().describe("metaobjects: the metaobject type. metafield_definitions: the owner type, such as PRODUCT or CUSTOMER."),
           first: z.number().int().min(1).max(100).default(25),
           after: z.string().max(1000).optional().describe("Cursor from pageInfo.endCursor (single store only)."),
         })
