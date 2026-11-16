@@ -1,3 +1,7 @@
+import { EXPORT_SCOPES } from "./ops-tools.js";
+import "./extensions/index.js";
+import "./commerce-tools.js";
+import { MANAGE_OPERATIONS, extensionScopes } from "./extension-registry.js";
 // Best-effort map of every registered tool to the Shopify Admin API access-scope
 // handles it needs. Used by shopify_check_access and by scripts/print-scopes.mjs
 // to derive the scope list for a shopify.app.toml.
@@ -114,6 +118,13 @@ export const REQUIRED_SCOPES: Record<string, string[]> = {
   shopify_find_actions: [],
   shopify_describe_action: [],
   shopify_run_action: [],
+
+  // src/ops-tools.ts (one entry per export resource)
+  ...Object.fromEntries(Object.entries(EXPORT_SCOPES).map(([resource, scopes]) => [`shopify_bulk_export:${resource}`, [...scopes]])),
+
+  // src/extensions/*: shopify_search and shopify_get resources, and shopify_manage operations
+  ...extensionScopes(),
+  ...Object.fromEntries(Object.entries(MANAGE_OPERATIONS).map(([name, op]) => [`shopify_manage:${name}`, op.scopes])),
 };
 
 /** The tool name of a REQUIRED_SCOPES key ("shopify_search:products" is shopify_search). */

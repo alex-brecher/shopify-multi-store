@@ -147,6 +147,7 @@ export function auditError(thrown: unknown, result?: unknown, errorClass?: strin
   const httpStatus = status ? Number(status) : undefined;
   const exception = thrown instanceof Error && /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(thrown.name) ? thrown.name : undefined;
   const derivedClass = /^Access denied:/.test(message) ? "access_denied"
+    : /^Read-only:/.test(message) ? "read_only"
     : codes.has("THROTTLED") || /\bthrottled\b/i.test(message) ? "throttled"
       : /did not respond within/.test(message) ? "timeout"
         : httpStatus !== undefined ? "http_error"

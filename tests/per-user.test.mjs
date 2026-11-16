@@ -602,3 +602,89 @@ test("a connection missing a newly requested scope is flagged for Reconnect all,
   assert.match(later, /Needs approval.*Reconnect to approve new access/s);
   assert.match(later, /Reconnect all \(2 stores\)/, "the outdated connection joins Reconnect all");
 });
+
+test("read-only mode: a person read-only on one store cannot write there, and nothing reaches Shopify", async (t) => {
+  const requests = await shopifyMock(t);
+  // Set after shopifyMock: its env snapshot is restored after this test, so the setting does not leak.
+  process.env.SHOPIFY_READ_ONLY_USERS = "Pat@BariatricPal.com:main";
+  t.after(() => { delete process.env.SHOPIFY_READ_ONLY_USERS; });
+  const { app, auditPath } = await setup(t);
+  const client = await mcpClient(t, app, await signIn(app, { token: "pat-online-main" }));
+  const { tools } = await client.listTools();
+  assert.ok(tools.some((tool) => tool.name === "shopify_run_action"), "write tools stay listed when only some stores are read-only");
+  const before = requests.length;
+  const refused = await client.callTool({ name: "shopify_run_action", arguments: { stores: ["main"], mutation: "tagsAdd", variables: { id: "gid://shopify/Product/1", tags: ["sale"] }, dryRun: false } });
+  assert.equal(refused.isError, true);
+  assert.match(JSON.stringify(refused), /Read-only: changes to main are turned off for you/);
+  assert.ok(!requests.slice(before).some((request) => /^\s*mutation/.test(request.body.query ?? "")), "no mutation was sent");
+  const read = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(read.isError, true, JSON.stringify(read));
+  const listed = await client.callTool({ name: "shopify_list_stores", arguments: {} });
+  assert.equal(listed.structuredContent.stores.find((store) => store.alias === "main").readOnly, true);
+  const lines = (await readFile(auditPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const run = lines.find((line) => line.event === "action_run");
+  assert.equal(run.outcome[0].ok, false);
+});
+
+test("read-only mode: a person read-only everywhere does not see write tools; others are unaffected", async (t) => {
+  await shopifyMock(t);
+  process.env.SHOPIFY_READ_ONLY_USERS = "pat@bariatricpal.com";
+  t.after(() => { delete process.env.SHOPIFY_READ_ONLY_USERS; });
+  const { app } = await setup(t);
+  const pat = await mcpClient(t, app, await signIn(app, { token: "pat-online-main" }));
+  const names = (await pat.listTools()).tools.map((tool) => tool.name);
+  for (const write of ["shopify_run_action", "shopify_manage", "shopify_graphql_mutation", "shopify_update_product"]) assert.ok(!names.includes(write), write);
+  for (const read of ["shopify_search", "shopify_get", "shopify_list_stores", "shopify_find_actions"]) assert.ok(names.includes(read), read);
+  const sam = await mcpClient(t, app, await signIn(app, { email: "sam@bariatricpal.com", token: "sam-online-main" }));
+  assert.ok((await sam.listTools()).tools.some((tool) => tool.name === "shopify_run_action"), "other people keep write tools");
+});
+
+test("shopify_bulk_export starts a bulk query, waits, and returns the file; shopify_webhooks previews by default", async (t) => {
+  let polls = 0;
+  const requests = await shopifyMock(t, (body) => {
+    const q = body.query ?? "";
+    if (/StoreCapabilities/.test(q)) return { body: { data: { shop: { id: "gid://shopify/Shop/1", name: "Main", myshopifyDomain: "main.myshopify.com" }, currentAppInstallation: { id: "gid://shopify/AppInstallation/1", accessScopes: [{ handle: "read_orders" }] } } } };
+    if (/bulkOperationRunQuery/.test(q)) return { body: { data: { bulkOperationRunQuery: { bulkOperation: { id: "gid://shopify/BulkOperation/7", status: "CREATED" }, userErrors: [] } } } };
+    if (/query Bulk/.test(q)) {
+      polls += 1;
+      return { body: { data: { node: polls < 2 ? { id: "gid://shopify/BulkOperation/7", status: "RUNNING" } : { id: "gid://shopify/BulkOperation/7", status: "COMPLETED", objectCount: "12", rootObjectCount: "3", fileSize: "900", url: "https://storage.example.com/x.jsonl" } } } };
+    }
+    if (/webhookSubscriptions/.test(q)) return { body: { data: { webhookSubscriptions: { nodes: [], pageInfo: { hasNextPage: false } } } } };
+    return undefined;
+  });
+  process.env.SHOPIFY_TOKEN_ENCRYPTION_KEY = "test-ticket-key";
+  t.after(() => { delete process.env.SHOPIFY_TOKEN_ENCRYPTION_KEY; });
+  const { app } = await setup(t);
+  const client = await mcpClient(t, app, await signIn(app, { token: "pat-online-main" }));
+  const done = await client.callTool({ name: "shopify_bulk_export", arguments: { store: "main", resource: "orders", filter: "created_at:>=2026-10-01", waitSeconds: 10 } });
+  assert.notEqual(done.isError, true, JSON.stringify(done));
+  assert.equal(done.structuredContent.status, "COMPLETED");
+  assert.equal(done.structuredContent.url, "https://storage.example.com/x.jsonl");
+  assert.equal(done.structuredContent.rootObjectCount, 3);
+  const started = requests.find((request) => /bulkOperationRunQuery/.test(request.body.query));
+  assert.match(done.structuredContent.ticket, /^[A-Za-z0-9_-]{32}$/, "hosted exports come with a ticket");
+  const stranger = await client.callTool({ name: "shopify_bulk_export", arguments: { store: "main", action: "status", id: "gid://shopify/BulkOperation/7", waitSeconds: 0 } });
+  assert.equal(stranger.isError, true, "status without the ticket is refused");
+  const owner = await client.callTool({ name: "shopify_bulk_export", arguments: { store: "main", action: "status", id: "gid://shopify/BulkOperation/7", ticket: done.structuredContent.ticket, waitSeconds: 0 } });
+  assert.equal(owner.structuredContent.url, "https://storage.example.com/x.jsonl");
+  assert.match(started.body.variables.query, /orders\(query: "created_at:>=2026-10-01"\)/);
+
+  const before = requests.length;
+  const preview = await client.callTool({ name: "shopify_manage", arguments: { store: "main", operation: "webhook", input: { action: "create", topic: "orders_create", uri: "https://hooks.example.com/o" } } });
+  assert.notEqual(preview.isError, true, JSON.stringify(preview));
+  const shown = JSON.parse(preview.content[0].text);
+  assert.equal(shown.dryRun, true);
+  assert.equal(shown.wouldCreate.topic, "ORDERS_CREATE");
+  assert.ok(!requests.slice(before).some((request) => /webhookSubscriptionCreate/.test(request.body.query)), "dry run sends no write");
+  const refused = await client.callTool({ name: "shopify_manage", arguments: { store: "main", operation: "webhook", input: { action: "delete", id: "gid://shopify/WebhookSubscription/1" }, dryRun: false } });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /requiredConfirm.*delete/);
+  const unconfirmed = await client.callTool({ name: "shopify_manage", arguments: { store: "main", operation: "webhook", input: { action: "create", topic: "ORDERS_CREATE", uri: "https://hooks.example.com/o" }, dryRun: false } });
+  assert.equal(unconfirmed.isError, true);
+  assert.match(unconfirmed.content[0].text, /requiredConfirm.*webhook/);
+  const badUri = await client.callTool({ name: "shopify_manage", arguments: { store: "main", operation: "webhook", input: { action: "create", topic: "ORDERS_CREATE", uri: "http://plain.example.com" } } });
+  assert.equal(badUri.isError, true);
+  const tools = (await client.listTools()).tools;
+  assert.match(tools.find((tool) => tool.name === "shopify_search").description, /- webhooks:/);
+  assert.match(tools.find((tool) => tool.name === "shopify_get").description, /- webhook:/);
+});

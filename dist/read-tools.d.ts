@@ -1,3 +1,4 @@
+import "./extensions/index.js";
 import { McpServer } from "@modelcontextprotocol/server";
 /** Everything shopify_search lists. Keep in step with scope-requirements.ts. */
 export declare const SEARCH_RESOURCES: {

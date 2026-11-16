@@ -1,0 +1,226 @@
+import type { McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod/v4";
+import { findStore } from "./config.js";
+import { adminGraphql, type GraphqlEnvelope } from "./shopify.js";
+import type { StoreConfig } from "./config.js";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { Workflow } from "./admin-workflows.js";
+import { runtimeEnv, storeScope } from "./runtime.js";
+
+/**
+ * One-step bulk exports.
+ *
+ * shopify_bulk_export starts a Shopify bulk query for a whole resource (orders, products,
+ * customers, ...) with an optional search filter, waits for it, and returns the download URL
+ * of the JSONL file. No pagination, no response size limit.
+ */
+
+type Data = Record<string, any>;
+
+const Store = z.string().min(1).max(64).describe("Configured store alias");
+
+function ok(value: Data) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: value };
+}
+
+function fail(error: unknown) {
+  return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] };
+}
+
+/** GraphQL top-level errors or mutation userErrors, as one message, or undefined. */
+function problems(result: GraphqlEnvelope): string | undefined {
+  const list = [...(Array.isArray(result.errors) ? result.errors : []), ...(result.userErrors ?? [])] as Array<{ message?: string; field?: unknown }>;
+  if (!list.length) return undefined;
+  return list.map((item) => `${item.field ? `${JSON.stringify(item.field)}: ` : ""}${item.message ?? JSON.stringify(item)}`).join("; ");
+}
+
+async function run(store: StoreConfig, document: string, variables: Data = {}): Promise<Data> {
+  const result = await adminGraphql(store, document, variables);
+  const problem = problems(result);
+  if (problem) throw new Error(`Shopify refused the request on ${store.alias}: ${problem}`);
+  return (result.data ?? {}) as Data;
+}
+
+// ---------- bulk export ----------
+
+const money = "shopMoney { amount currencyCode }";
+
+/** One bulk query per resource. FILTER is replaced by the search filter argument, or removed. */
+export const EXPORT_QUERIES: Readonly<Record<string, string>> = {
+  orders: `{ orders(FILTER) { edges { node { id name createdAt processedAt updatedAt cancelledAt closedAt displayFinancialStatus displayFulfillmentStatus currencyCode sourceName tags email
+  totalPriceSet { ${money} } subtotalPriceSet { ${money} } totalTaxSet { ${money} } totalDiscountsSet { ${money} } totalShippingPriceSet { ${money} } totalRefundedSet { ${money} }
+  customer { id } shippingAddress { city provinceCode countryCodeV2 zip }
+  lineItems { edges { node { id sku name quantity variant { id } product { id } originalUnitPriceSet { ${money} } discountedTotalSet { ${money} } } } } } } } }`,
+  products: `{ products(FILTER) { edges { node { id title handle status vendor productType tags createdAt updatedAt publishedAt totalInventory
+  variants { edges { node { id sku title price compareAtPrice barcode inventoryQuantity inventoryItem { id unitCost { amount currencyCode } } } } } } } } }`,
+  variants: `{ productVariants(FILTER) { edges { node { id sku title price compareAtPrice barcode inventoryQuantity product { id title handle status vendor } inventoryItem { id tracked unitCost { amount currencyCode } } } } } }`,
+  customers: `{ customers(FILTER) { edges { node { id firstName lastName createdAt updatedAt numberOfOrders tags note verifiedEmail
+  amountSpent { amount currencyCode } defaultEmailAddress { emailAddress marketingState } defaultPhoneNumber { phoneNumber } defaultAddress { city provinceCode countryCodeV2 zip } } } } }`,
+  inventory: `{ inventoryItems(FILTER) { edges { node { id sku tracked unitCost { amount currencyCode } variant { id product { id title } }
+  inventoryLevels { edges { node { id location { id name } quantities(names: ["available", "on_hand", "committed", "incoming", "reserved"]) { name quantity } } } } } } } }`,
+  collections: `{ collections(FILTER) { edges { node { id title handle updatedAt sortOrder productsCount { count } ruleSet { appliedDisjunctively } } } } }`,
+  draft_orders: `{ draftOrders(FILTER) { edges { node { id name status createdAt updatedAt completedAt tags email totalPriceSet { ${money} } customer { id } order { id }
+  lineItems { edges { node { id sku name quantity variant { id } } } } } } } }`
+};
+
+export function exportQuery(resource: string, filter?: string): string {
+  const template = EXPORT_QUERIES[resource];
+  if (!template) throw new Error(`Unknown resource ${resource}.`);
+  // Bulk queries take no variables, so the filter goes in as a GraphQL string literal.
+  // A function replacement, so "$$", "$&" and similar in the filter are kept as typed.
+  return template.replace("(FILTER)", () => (filter ? `(query: ${JSON.stringify(filter)})` : ""));
+}
+
+/** The read scope each export needs (custom: whatever the query reads, checked by Shopify). */
+export const EXPORT_SCOPES: Readonly<Record<string, readonly string[]>> = {
+  orders: ["read_orders"],
+  products: ["read_products"],
+  variants: ["read_products"],
+  customers: ["read_customers"],
+  inventory: ["read_inventory"],
+  collections: ["read_products"],
+  draft_orders: ["read_draft_orders"],
+  custom: [],
+};
+
+/**
+ * On a hosted server an export's file belongs to the person who started it: start returns a
+ * ticket (an HMAC of person, shop and operation id with a server secret), and status and cancel
+ * need it. Bulk operation ids are sequential, so without this anyone could read another
+ * person's export link. Local (single-user) servers need no ticket.
+ */
+function ticketKey(): string | undefined {
+  const env = runtimeEnv();
+  return env.SHOPIFY_TOKEN_ENCRYPTION_KEYS || env.SHOPIFY_TOKEN_ENCRYPTION_KEY || env.SHOPIFY_APP_CLIENT_SECRET || undefined;
+}
+
+export function exportTicket(user: string, shop: string, id: string, key: string): string {
+  return createHmac("sha256", key).update(`bulk-export\0${user.toLowerCase()}\0${shop}\0${id}`).digest("base64url").slice(0, 32);
+}
+
+function checkTicket(store: StoreConfig, id: string, ticket: string | undefined): void {
+  const user = storeScope.getStore()?.user;
+  if (!user) return;
+  const key = ticketKey();
+  // Fail closed: a hosted server without a key cannot tell whose export this is.
+  if (!key) throw new Error("This server has no SHOPIFY_TOKEN_ENCRYPTION_KEYS, so export status and cancel are turned off.");
+  const expected = exportTicket(user, store.shop, id, key);
+  const given = Buffer.from(String(ticket ?? ""));
+  if (given.length !== expected.length || !timingSafeEqual(given, Buffer.from(expected))) {
+    throw new Error("This export was not started by you, or the ticket is missing. Pass the ticket that start returned. No request sent.");
+  }
+}
+
+function withTicket(store: StoreConfig, out: Data): Data {
+  const user = storeScope.getStore()?.user;
+  const key = ticketKey();
+  return user && key && out.id ? { ...out, ticket: exportTicket(user, store.shop, out.id, key) } : out;
+}
+
+const BULK_FIELDS = "id status type errorCode createdAt completedAt objectCount rootObjectCount fileSize url partialDataUrl query";
+const BULK_ID = /^gid:\/\/shopify\/BulkOperation\/\d+$/;
+const DONE = new Set(["COMPLETED", "FAILED", "CANCELED", "EXPIRED"]);
+
+const ExportInput = z.object({
+  store: Store,
+  action: z.enum(["start", "status", "cancel"]).default("start").describe("start (default), status, or cancel"),
+  resource: z.enum(["orders", "products", "variants", "customers", "inventory", "collections", "draft_orders", "custom"]).optional()
+    .describe("start: what to export. custom needs query."),
+  filter: z.string().max(1000).optional().describe("start: Shopify search filter, such as \"created_at:>=2026-10-01\" or \"status:active\""),
+  query: z.string().max(10_000).optional().describe("start with resource custom: your own bulk query (one top-level connection, no variables)"),
+  id: z.string().max(100).optional().describe("status/cancel: BulkOperation GID from start"),
+  ticket: z.string().max(64).optional().describe("status/cancel on a hosted server: the ticket start returned"),
+  waitSeconds: z.number().int().min(0).max(50).default(25).describe("start/status: wait up to this long for the export to finish"),
+  sampleRows: z.number().int().min(0).max(20).default(0).describe("When finished: also return the first rows of the file")
+}).strict();
+
+async function bulkStatus(store: StoreConfig, id: string): Promise<Data> {
+  return (await run(store, `query Bulk($id: ID!) { node(id: $id) { ... on BulkOperation { ${BULK_FIELDS} } } }`, { id })).node ?? {};
+}
+
+async function waitFor(store: StoreConfig, id: string, seconds: number, sleep: (ms: number) => Promise<void>): Promise<Data> {
+  const until = Date.now() + seconds * 1000;
+  let op = await bulkStatus(store, id);
+  while (!DONE.has(op.status) && Date.now() < until) {
+    await sleep(Math.min(2000, Math.max(0, until - Date.now())));
+    op = await bulkStatus(store, id);
+  }
+  return op;
+}
+
+async function sample(url: string, rows: number): Promise<unknown[]> {
+  const response = await fetch(url, { headers: { range: "bytes=0-65535" }, signal: AbortSignal.timeout(15_000) });
+  if (!response.ok && response.status !== 206) return [];
+  return (await response.text()).split("\n").slice(0, rows).filter(Boolean).flatMap((line) => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+}
+
+function describe(op: Data, store: StoreConfig): Data {
+  const finished = DONE.has(op.status);
+  return {
+    store: store.alias,
+    shop: store.shop,
+    id: op.id,
+    status: op.status,
+    ...(op.errorCode ? { errorCode: op.errorCode } : {}),
+    objectCount: op.objectCount !== undefined ? Number(op.objectCount) : undefined,
+    rootObjectCount: op.rootObjectCount !== undefined ? Number(op.rootObjectCount) : undefined,
+    fileSize: op.fileSize !== undefined && op.fileSize !== null ? Number(op.fileSize) : undefined,
+    createdAt: op.createdAt,
+    completedAt: op.completedAt,
+    ...(op.url ? { url: op.url } : {}),
+    ...(op.partialDataUrl ? { partialDataUrl: op.partialDataUrl } : {}),
+    ...(op.status === "COMPLETED" && !op.url ? { note: "Finished with no rows: nothing matched." } : {}),
+    ...(op.url ? { format: "JSONL: one object per line; nested rows (line items, variants, inventory levels) are their own lines with __parentId pointing at their parent. The link expires after 7 days. Anyone with the link can download the file, so share it carefully." } : {}),
+    ...(!finished ? { next: `Still ${String(op.status).toLowerCase()}. Call shopify_bulk_export with action:"status", id:"${op.id}" (and the ticket, on a hosted server) to check again.` } : {})
+  };
+}
+
+export async function bulkExport(a: Data, sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))): Promise<Data> {
+  const store = await findStore(a.store);
+  if (a.action === "status" || a.action === "cancel") {
+    if (!a.id || !BULK_ID.test(a.id)) throw new Error(`${a.action} needs id, a BulkOperation GID from start.`);
+    checkTicket(store, a.id, a.ticket);
+    if (a.action === "cancel") {
+      const data = await run(store, `mutation Cancel($id: ID!) { bulkOperationCancel(id: $id) { bulkOperation { ${BULK_FIELDS} } userErrors { field message } } }`, { id: a.id });
+      return withTicket(store, describe(data.bulkOperationCancel?.bulkOperation ?? {}, store));
+    }
+    const op = await waitFor(store, a.id, a.waitSeconds, sleep);
+    const out = withTicket(store, describe(op, store));
+    if (op.url && a.sampleRows) out.sample = await sample(op.url, a.sampleRows);
+    return out;
+  }
+  if (!a.resource) throw new Error("start needs resource.");
+  if (a.resource === "custom" ? !a.query : a.query) throw new Error("Give query only with resource custom.");
+  if (a.resource === "custom" && a.filter) throw new Error("With resource custom, put the filter in your query.");
+  const query = a.resource === "custom" ? a.query : exportQuery(a.resource, a.filter);
+  const scopes = EXPORT_SCOPES[a.resource] ?? [];
+  if (scopes.length) await new Workflow(store).requireScopes([...scopes]);
+  const data = await run(store, `mutation Export($query: String!) { bulkOperationRunQuery(query: $query) { bulkOperation { ${BULK_FIELDS} } userErrors { field message code } } }`, { query });
+  const started = data.bulkOperationRunQuery?.bulkOperation;
+  if (!started?.id) throw new Error(`Shopify did not start the export on ${store.alias}.`);
+  const op = a.waitSeconds ? await waitFor(store, started.id, a.waitSeconds, sleep) : started;
+  const out: Data = withTicket(store, { resource: a.resource, ...(a.filter ? { filter: a.filter } : {}), ...describe(op, store) });
+  if (op.url && a.sampleRows) out.sample = await sample(op.url, a.sampleRows);
+  return out;
+}
+
+export function registerOpsTools(server: McpServer): void {
+  server.registerTool(
+    "shopify_bulk_export",
+    {
+      title: "Bulk Export",
+      description: "Export a whole resource from one store in one step, with no pagination or size limit: orders, products, variants, customers, inventory (levels per location), collections or draft orders, with an optional Shopify search filter such as \"created_at:>=2026-10-01\". Starts a Shopify bulk operation, waits up to waitSeconds, and returns the JSONL download URL (valid 7 days) and row counts; sampleRows also returns the first rows. Large stores can take minutes: call again with action:\"status\" and the id. resource custom runs your own bulk query. Changes nothing in the store.",
+      inputSchema: ExportInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+    },
+    async (args) => {
+      try {
+        return ok(await bulkExport(args as Data));
+      } catch (error) {
+        return fail(error);
+      }
+    }
+  );
+}

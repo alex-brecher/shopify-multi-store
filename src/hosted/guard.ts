@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { storeScope, type ActionAuditDetails, type UserShopifyAccess } from "../runtime.js";
+import { readOnlyEverywhere } from "../read-only.js";
 import { auditArguments, auditError, canonicalJson, sha256Hex, type AuditLog } from "./audit.js";
 
 /**
@@ -83,6 +84,8 @@ export function guardServer(server: McpServer, { principal, audit, access }: Gua
   const guarded = (name: string, config: ToolConfig, callback: AnyCallback): unknown => {
     if (HOSTED_DISABLED_TOOLS.has(name)) return undefined;
     const readOnly = config.annotations?.readOnlyHint === true;
+    // Someone who can write nowhere does not see the write tools at all.
+    if (!readOnly && readOnlyEverywhere(principal.email)) return undefined;
     const hasInput = config.inputSchema !== undefined;
 
     const wrapped = async (...callArgs: unknown[]): Promise<unknown> => {
@@ -103,7 +106,7 @@ export function guardServer(server: McpServer, { principal, audit, access }: Gua
         } else {
           // Every configured store is in scope; loadStores() then keeps only the stores the
           // caller has a live Shopify connection to, and Shopify decides what each call may do.
-          result = await storeScope.run({ stores: "*", access, auditAction }, () => callback(...callArgs));
+          result = await storeScope.run({ stores: "*", access, auditAction, user: principal.email }, () => callback(...callArgs));
         }
         return result;
       } catch (error) {

@@ -193,6 +193,10 @@ These settings apply to `shopify-multi-store serve`. The Worker uses the same na
 | `STORES_JSON` | one of | | The stores this server serves, as JSON in the `stores.json` format. Store entries need only `alias` and `shop`. |
 | `SHOPIFY_MULTI_STORE_CONFIG` | one of | | Path to `stores.json` instead of `STORES_JSON` |
 | `SHOPIFY_IDENTITY_STORE` | no | first store | Alias of the store listed first (preselected) on the sign-in chooser |
+| `SHOPIFY_READ_ONLY` | no | `false` | `true` blocks every Admin API write on every store, for everyone. Write tools are then not listed. See [Read-only mode](../README.md#read-only-mode). |
+| `SHOPIFY_READ_ONLY_STORES` | no | | Comma list of store aliases where nobody can write. |
+| `SHOPIFY_READ_ONLY_USERS` | no | | Comma list of `email` (read-only everywhere: write tools are not listed for them) or `email:alias` (read-only on that store only). Emails are the verified Shopify staff emails people sign in with. |
+| `SHOPIFY_WEBHOOK_ALLOWED_HOSTS` | no | any | Comma list of host names webhooks may deliver to (a leading `.` allows subdomains; `pubsub` and `eventbridge` allow those targets). A subscription belongs to the app and keeps sending store data after its creator loses access, so a team server should name its own receivers. |
 | `SHOPIFY_APP_SCOPES` | no | full set (`print-scopes --full`) | Comma list of scopes requested at sign-in and when connecting a store |
 | `SERVER_DISPLAY_NAME` | no | `Shopify Multi-Store` | Name shown in AI apps (`serverInfo.title`), on the sign-in, consent and stores pages, and in resource metadata |
 | `SHOPIFY_MULTI_STORE_DATA_DIR` | no | `./data` (`/data` in Docker) | Holds the OAuth store and audit log |

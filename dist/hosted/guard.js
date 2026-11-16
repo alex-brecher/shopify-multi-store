@@ -1,4 +1,5 @@
 import { storeScope } from "../runtime.js";
+import { readOnlyEverywhere } from "../read-only.js";
 import { auditArguments, auditError, canonicalJson, sha256Hex } from "./audit.js";
 /**
  * Tools that need the local machine (Shopify CLI, local preview receipts).
@@ -61,6 +62,9 @@ export function guardServer(server, { principal, audit, access }) {
         if (HOSTED_DISABLED_TOOLS.has(name))
             return undefined;
         const readOnly = config.annotations?.readOnlyHint === true;
+        // Someone who can write nowhere does not see the write tools at all.
+        if (!readOnly && readOnlyEverywhere(principal.email))
+            return undefined;
         const hasInput = config.inputSchema !== undefined;
         const wrapped = async (...callArgs) => {
             const input = hasInput ? callArgs[0] : undefined;
@@ -81,7 +85,7 @@ export function guardServer(server, { principal, audit, access }) {
                 else {
                     // Every configured store is in scope; loadStores() then keeps only the stores the
                     // caller has a live Shopify connection to, and Shopify decides what each call may do.
-                    result = await storeScope.run({ stores: "*", access, auditAction }, () => callback(...callArgs));
+                    result = await storeScope.run({ stores: "*", access, auditAction, user: principal.email }, () => callback(...callArgs));
                 }
                 return result;
             }

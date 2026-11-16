@@ -5,8 +5,10 @@ import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerReportTools } from "./report-tools.js";
 import { registerReadTools } from "./read-tools.js";
+import { registerOpsTools } from "./ops-tools.js";
 import { actionPolicyError, destructiveMutations, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
-import { currentUserAccess } from "./runtime.js";
+import { currentUserAccess, isHostedMode } from "./runtime.js";
+import { isReadOnly, readOnlyEverywhere } from "./read-only.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
@@ -49,6 +51,12 @@ export interface CreateServerOptions {
   maxToolInputElements?: number;
 }
 
+/** With SHOPIFY_READ_ONLY=true on a local server, register only tools marked read-only. */
+function hideWriteTools(server: McpServer): void {
+  const register = server.registerTool.bind(server) as unknown as (name: string, config: { annotations?: { readOnlyHint?: boolean } }, cb: unknown) => unknown;
+  (server as unknown as { registerTool: typeof register }).registerTool = (name, config, cb) => config.annotations?.readOnlyHint === true ? register(name, config, cb) : undefined;
+}
+
 /** Build a fully registered MCP server. Used by stdio (one per process) and HTTP (one per request). */
 export function createServer(options: CreateServerOptions = {}): McpServer {
   const server = new McpServer({
@@ -57,6 +65,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     ...(options.title ? { title: options.title } : {})
   }, { maxToolInputElements: options.maxToolInputElements });
   options.beforeRegister?.(server);
+  if (!isHostedMode() && readOnlyEverywhere()) hideWriteTools(server);
   registerAdminTools(server);
   registerParityTools(server);
   registerCommerceTools(server);
@@ -64,6 +73,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   registerReportTools(server);
   registerDiscoveryTools(server);
   registerActionTools(server);
+  registerOpsTools(server);
 
   server.registerTool(
     "shopify_list_stores",
@@ -79,7 +89,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         const notConnected = await unconnectedStores();
         return success({
           count: stores.length,
-          stores: stores.map((store) => ({ alias: store.alias, shop: store.shop, apiVersion: store.apiVersion })),
+          stores: stores.map((store) => ({ alias: store.alias, shop: store.shop, apiVersion: store.apiVersion, ...(isReadOnly(store.alias) ? { readOnly: true } : {}) })),
           ...(notConnected.length ? {
             notConnected,
             hint: currentUserAccess()?.blockedReason ?? `These stores are not connected with your Shopify account, or the connection expired: ${notConnected.map((store) => store.alias).join(", ")}. Connect them at ${new URL("/stores", notConnected[0]!.connectUrl).toString()}.`
