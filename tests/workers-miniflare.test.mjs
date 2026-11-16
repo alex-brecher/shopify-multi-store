@@ -50,6 +50,25 @@ async function isolateHeap(port) {
   return { usedMB: +(usage.usedSize / 1048576).toFixed(1), totalMB: +(usage.totalSize / 1048576).toFixed(1) };
 }
 
+// The Worker answers an oversized body with 413 from its content-length, without reading it.
+// Over loopback TCP, workerd then closes the socket with the body unread, and on Windows that
+// reset often destroys the 413 before the client reads it ("fetch failed", read ECONNRESET).
+// This helper Worker reads the whole request from the test, then sends it to the Worker under
+// test over a service binding, which stays inside workerd and has no socket to reset.
+const OVERSIZED_SENDER = {
+  name: "oversized-sender",
+  modules: true,
+  compatibilityDate: "2026-09-01",
+  serviceBindings: { TARGET: "shopify-multi-store-mcp" },
+  script: `export default {
+    async fetch(request, env) {
+      const { url, init } = await request.json();
+      const response = await env.TARGET.fetch(url, init);
+      return new Response(await response.arrayBuffer(), { status: response.status, headers: response.headers });
+    }
+  };`
+};
+
 function cookieOf(response, prefix) {
   return response.headers.getSetCookie().find((value) => value.startsWith(prefix))?.split(";")[0];
 }
@@ -88,45 +107,47 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
     }
   };
   const mf = new Miniflare(convertV4MiniflareOptions({
-    name: "shopify-multi-store-mcp",
-    modules: [{ type: "ESModule", path: join(outdir, "index.js") }, ...schemaFiles.map((name) => ({ type: "Data", path: join(outdir, name) }))],
-    modulesRoot: outdir,
-    compatibilityDate: "2026-09-01",
-    // Settings must come from the Worker's env, not process.env: workerd fills process.env
-    // only for recent compatibility dates, so the test turns that off to prove the code
-    // does not depend on it (ACTIONS_DENYLIST below).
-    compatibilityFlags: ["nodejs_compat", "nodejs_compat_do_not_populate_process_env"],
     ...(MEASURE ? { inspectorPort: 9239 } : {}),
-    durableObjects: { OAUTH_STORE: { className: "OAuthStoreObject", useSQLite: true } },
-    d1Databases: ["AUDIT_DB"],
-    bindings: {
-      MCP_PUBLIC_URL: "",
-      STORES_JSON: JSON.stringify({ stores: [{ alias: "main", shop: "main.myshopify.com" }] }),
-      SHOPIFY_APP_CLIENT_ID: "workerd-client",
-      SHOPIFY_APP_CLIENT_SECRET: SECRET,
-      SHOPIFY_TOKEN_ENCRYPTION_KEYS: `k1:${randomBytes(32).toString("base64")}`,
-      SHOPIFY_APP_SCOPES: scopes.join(","),
-      // An operator's extra denylist entry, set only in the Worker's env (never process.env).
-      ACTIONS_DENYLIST: "tagsAdd"
-    },
-    outboundService: async (request) => {
-      const url = new URL(request.url);
-      if (url.pathname === "/admin/oauth/access_token") {
-        const body = await request.json();
-        upstream.exchanges.push(body);
-        const [email, token] = body.code.split("|");
-        return Response.json({ access_token: token, scope: scopes.join(","), expires_in: 86399, associated_user_scope: scopes.join(","), associated_user: { id: 9, email, email_verified: true } });
+    workers: [{
+      name: "shopify-multi-store-mcp",
+      modules: [{ type: "ESModule", path: join(outdir, "index.js") }, ...schemaFiles.map((name) => ({ type: "Data", path: join(outdir, name) }))],
+      modulesRoot: outdir,
+      compatibilityDate: "2026-09-01",
+      // Settings must come from the Worker's env, not process.env: workerd fills process.env
+      // only for recent compatibility dates, so the test turns that off to prove the code
+      // does not depend on it (ACTIONS_DENYLIST below).
+      compatibilityFlags: ["nodejs_compat", "nodejs_compat_do_not_populate_process_env"],
+      durableObjects: { OAUTH_STORE: { className: "OAuthStoreObject", useSQLite: true } },
+      d1Databases: ["AUDIT_DB"],
+      bindings: {
+        MCP_PUBLIC_URL: "",
+        STORES_JSON: JSON.stringify({ stores: [{ alias: "main", shop: "main.myshopify.com" }] }),
+        SHOPIFY_APP_CLIENT_ID: "workerd-client",
+        SHOPIFY_APP_CLIENT_SECRET: SECRET,
+        SHOPIFY_TOKEN_ENCRYPTION_KEYS: `k1:${randomBytes(32).toString("base64")}`,
+        SHOPIFY_APP_SCOPES: scopes.join(","),
+        // An operator's extra denylist entry, set only in the Worker's env (never process.env).
+        ACTIONS_DENYLIST: "tagsAdd"
+      },
+      outboundService: async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/admin/oauth/access_token") {
+          const body = await request.json();
+          upstream.exchanges.push(body);
+          const [email, token] = body.code.split("|");
+          return Response.json({ access_token: token, scope: scopes.join(","), expires_in: 86399, associated_user_scope: scopes.join(","), associated_user: { id: 9, email, email_verified: true } });
+        }
+        const admin = /^\/admin\/api\/([\d-]+)\/graphql\.json$/.exec(url.pathname);
+        if (admin) {
+          const body = await request.json();
+          const name = /^\s*(?:query|mutation)\s+(\w+)/.exec(body.query)?.[1];
+          upstream.admin.push({ host: url.host, token: request.headers.get("x-shopify-access-token"), version: admin[1], name, variables: body.variables });
+          return Response.json({ data: adminAnswer(name, body.variables ?? {}) });
+        }
+        upstream.other.push(request.url);
+        return new Response("unexpected outbound request", { status: 599 });
       }
-      const admin = /^\/admin\/api\/([\d-]+)\/graphql\.json$/.exec(url.pathname);
-      if (admin) {
-        const body = await request.json();
-        const name = /^\s*(?:query|mutation)\s+(\w+)/.exec(body.query)?.[1];
-        upstream.admin.push({ host: url.host, token: request.headers.get("x-shopify-access-token"), version: admin[1], name, variables: body.variables });
-        return Response.json({ data: adminAnswer(name, body.variables ?? {}) });
-      }
-      upstream.other.push(request.url);
-      return new Response("unexpected outbound request", { status: 599 });
-    }
+    }, OVERSIZED_SENDER]
   }));
   t.after(() => mf.dispose());
   const call = (path, init) => mf.dispatchFetch(`${ORIGIN}${path}`, { redirect: "manual", ...init });
@@ -229,12 +250,15 @@ test("the wrangler bundle runs in workerd: Shopify sign-in, Durable Object state
   } });
   assert.equal(tooMany.result.isError, true);
   assert.match(JSON.stringify(tooMany.result.content), /elements|10000/);
-  const oversized = await call("/mcp", { method: "POST", headers: {
+  // Sent through OVERSIZED_SENDER, not over a socket: see the note there.
+  const sender = await mf.getWorker("oversized-sender");
+  const oversized = await sender.fetch("http://oversized-sender/", { method: "POST", body: JSON.stringify({ url: `${ORIGIN}/mcp`, init: { method: "POST", headers: {
     authorization: `Bearer ${tokens.access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream"
   }, body: JSON.stringify({ jsonrpc: "2.0", id: 18, method: "tools/call", params: {
     name: "shopify_graphql_query", arguments: { store: "main", query: "query { shop { name } }", variables: { padding: "x".repeat(1024 * 1024) } }
-  } }) });
+  } }) } }) });
   assert.equal(oversized.status, 413);
+  assert.match(await oversized.text(), /Payload Too Large/);
   assert.equal(upstream.admin.length, callsBeforeLimits, "limits refuse before Shopify calls");
   const afterLimits = await rpc(19, "tools/call", { name: "shopify_get_shop_info", arguments: { store: "main" } });
   assert.notEqual(afterLimits.result.isError, true, "valid requests still work after input rejection");
