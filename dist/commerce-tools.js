@@ -1,3 +1,5 @@
+import "./extensions/index.js";
+import { MANAGE_OPERATIONS, registerManageOperation } from "./extension-registry.js";
 import { z } from "zod/v4";
 import { textResult, WorkflowError } from "./admin-workflows.js";
 import { CDOCS } from "./commerce-documents.js";
@@ -72,8 +74,7 @@ export function variantInput(v) {
         inventoryItem.harmonizedSystemCode = harmonizedSystemCode;
     return { ...rest, ...(Object.keys(inventoryItem).length ? { inventoryItem } : {}) };
 }
-/** Every shopify_manage operation, keyed by name. Exported for tests and docs. */
-export const MANAGE_OPERATIONS = {};
+export { MANAGE_OPERATIONS };
 /** The strict schema one operation's input is checked against (dryRun defaults to true). */
 export function operationSchema(name) {
     const op = MANAGE_OPERATIONS[name];
@@ -105,6 +106,7 @@ function fieldList(shape, depth = 0) {
         .join(", ");
 }
 export function registerCommerceTools(server) {
+    // Built-in operations register when this module loads; extension areas register on import.
     const names = Object.keys(MANAGE_OPERATIONS);
     server.registerTool("shopify_manage", {
         description: `Guided writes for one store, chosen by operation. Every operation reads the current state first, defaults to dryRun:true (a preview that changes nothing), never notifies customers unless asked, and reads the result back after a write. Put the operation's fields in input. Operations:\n${names
@@ -153,7 +155,7 @@ export function registerCommerceTools(server) {
     });
 }
 function register(name, description, shape, scopes, handler, confirmWord) {
-    MANAGE_OPERATIONS[name] = { description, shape, scopes, handler, confirmWord };
+    registerManageOperation(name, { description, shape, scopes, handler, confirmWord });
 }
 // ---------------------------------------------------------------- products
 register("variants", "Create, update and/or delete variants of one product (productVariantsBulkCreate / BulkUpdate / BulkDelete). Updates and deletes must name variants of this product. sku, tracked, cost, weight, requiresShipping, countryCodeOfOrigin and harmonizedSystemCode set the variant's inventory item.", {

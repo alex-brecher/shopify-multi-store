@@ -61,12 +61,13 @@ export function auditError(thrown, result, errorClass) {
     const httpStatus = status ? Number(status) : undefined;
     const exception = thrown instanceof Error && /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(thrown.name) ? thrown.name : undefined;
     const derivedClass = /^Access denied:/.test(message) ? "access_denied"
-        : codes.has("THROTTLED") || /\bthrottled\b/i.test(message) ? "throttled"
-            : /did not respond within/.test(message) ? "timeout"
-                : httpStatus !== undefined ? "http_error"
-                    : flags.user ? "user_errors"
-                        : flags.graphql ? "graphql_errors"
-                            : thrown !== undefined ? "exception" : "tool_error";
+        : /^Read-only:/.test(message) ? "read_only"
+            : codes.has("THROTTLED") || /\bthrottled\b/i.test(message) ? "throttled"
+                : /did not respond within/.test(message) ? "timeout"
+                    : httpStatus !== undefined ? "http_error"
+                        : flags.user ? "user_errors"
+                            : flags.graphql ? "graphql_errors"
+                                : thrown !== undefined ? "exception" : "tool_error";
     return {
         class: errorClass ?? derivedClass,
         ...(exception ? { exception } : {}),

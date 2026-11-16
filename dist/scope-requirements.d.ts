@@ -1,3 +1,5 @@
+import "./extensions/index.js";
+import "./commerce-tools.js";
 export declare const REQUIRED_SCOPES: Record<string, string[]>;
 /** The tool name of a REQUIRED_SCOPES key ("shopify_search:products" is shopify_search). */
 export declare function toolOfScopeKey(key: string): string;

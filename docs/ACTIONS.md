@@ -3,7 +3,7 @@
 Two features work together so that every person on the team can make any Shopify Admin API change from any AI app, across all stores, limited only by what that person may already do in Shopify:
 
 1. Per-user access (hosted server). Each person signs in with their own Shopify staff account and connects each store with it. Every tool call then runs with that person's Shopify token, so Shopify enforces their staff permissions. There is no separate permission system to maintain.
-2. Three generic action tools. `shopify_find_actions`, `shopify_describe_action`, and `shopify_run_action` reach every Admin API mutation (523 in API 2026-07), including the 480 that have no dedicated tool, without adding hundreds of tools.
+2. Three generic action tools. `shopify_find_actions`, `shopify_describe_action`, and `shopify_run_action` reach every Admin API mutation (523 in API 2026-07), including the 435 that have no dedicated tool, without adding hundreds of tools.
 
 ## Per-user access
 

@@ -5,8 +5,10 @@ import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerReportTools } from "./report-tools.js";
 import { registerReadTools } from "./read-tools.js";
+import { registerOpsTools } from "./ops-tools.js";
 import { actionPolicyError, destructiveMutations, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
-import { currentUserAccess } from "./runtime.js";
+import { currentUserAccess, isHostedMode } from "./runtime.js";
+import { isReadOnly, readOnlyEverywhere } from "./read-only.js";
 import { DOCS } from "./admin-documents.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
@@ -32,6 +34,11 @@ function failure(error) {
             }]
     };
 }
+/** With SHOPIFY_READ_ONLY=true on a local server, register only tools marked read-only. */
+function hideWriteTools(server) {
+    const register = server.registerTool.bind(server);
+    server.registerTool = (name, config, cb) => config.annotations?.readOnlyHint === true ? register(name, config, cb) : undefined;
+}
 /** Build a fully registered MCP server. Used by stdio (one per process) and HTTP (one per request). */
 export function createServer(options = {}) {
     const server = new McpServer({
@@ -40,6 +47,8 @@ export function createServer(options = {}) {
         ...(options.title ? { title: options.title } : {})
     }, { maxToolInputElements: options.maxToolInputElements });
     options.beforeRegister?.(server);
+    if (!isHostedMode() && readOnlyEverywhere())
+        hideWriteTools(server);
     registerAdminTools(server);
     registerParityTools(server);
     registerCommerceTools(server);
@@ -47,6 +56,7 @@ export function createServer(options = {}) {
     registerReportTools(server);
     registerDiscoveryTools(server);
     registerActionTools(server);
+    registerOpsTools(server);
     server.registerTool("shopify_list_stores", {
         title: "List Shopify Stores",
         description: "List every Shopify Admin store that remains connected to this plugin. On a hosted server in per-user mode, lists only the stores you have connected with your own Shopify account and names the others with a link to connect them. This tool does not expose access tokens.",
@@ -58,7 +68,7 @@ export function createServer(options = {}) {
             const notConnected = await unconnectedStores();
             return success({
                 count: stores.length,
-                stores: stores.map((store) => ({ alias: store.alias, shop: store.shop, apiVersion: store.apiVersion })),
+                stores: stores.map((store) => ({ alias: store.alias, shop: store.shop, apiVersion: store.apiVersion, ...(isReadOnly(store.alias) ? { readOnly: true } : {}) })),
                 ...(notConnected.length ? {
                     notConnected,
                     hint: currentUserAccess()?.blockedReason ?? `These stores are not connected with your Shopify account, or the connection expired: ${notConnected.map((store) => store.alias).join(", ")}. Connect them at ${new URL("/stores", notConnected[0].connectUrl).toString()}.`

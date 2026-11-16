@@ -4,11 +4,19 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-16
+
 ### Added
 
 - Read-only mode: `SHOPIFY_READ_ONLY`, `SHOPIFY_READ_ONLY_STORES` and `SHOPIFY_READ_ONLY_USERS` (`email` or `email:alias`) block Admin API writes for the whole server, chosen stores or chosen people. Enforced where every Shopify call is sent; refused writes reach nothing. People who are read-only everywhere do not see write tools.
 - `shopify_bulk_export`: one-step export of orders, products, variants, customers, inventory, collections or draft orders (or a custom bulk query) with a search filter. Starts a Shopify bulk operation, waits, and returns the JSONL link and counts.
 - Webhooks: `shopify_search` resource `webhooks`, `shopify_get` resource `webhook`, and `shopify_manage` operation `webhook` (create, update, delete) for HTTPS, Pub/Sub and EventBridge delivery.
+- Discounts: search `discounts`, get `discount`, and `shopify_manage` `discount` (create amount off, percentage, free shipping or buy X get Y, as a code or automatic; activate, deactivate, delete, add codes, update dates and limits). Previews state the exact discount in words and refuse an existing code.
+- Online Store content: search `blogs`, get `page` and `article`, and `shopify_manage` `page`, `article` (create, update, delete) and `blog` (update).
+- Metaobjects: search `metaobject_definitions`, get `metaobject` and `metaobject_definition`, and `shopify_manage` `metaobject` (create, update, upsert, delete; unknown field keys refused before any write) and `metafield_definition` (create).
+- Fulfillment and inventory: get `fulfillment`, and `shopify_manage` `fulfillment` (update tracking, cancel) and `inventory` (adjust by delta with compare-and-set, move between locations, move between states, update item cost, origin and HS code, activate, deactivate).
+- Draft orders, files and marketing: `shopify_manage` `draft_order` (update, delete) and `file` (create from an HTTPS URL, update, delete), and search `marketing_events` and `abandoned_checkouts`.
+- `shopify_find_actions` now points 88 mutations (was 43) to a dedicated tool or operation.
 - `src/extension-registry.ts`: feature areas add `shopify_search`/`shopify_get` resources and `shopify_manage` operations from their own file in `src/extensions/`, with their scopes.
 
 ### Changed
