@@ -1,3 +1,4 @@
+import { EXPORT_SCOPES } from "./ops-tools.js";
 import "./extensions/index.js";
 import "./commerce-tools.js";
 import { MANAGE_OPERATIONS, extensionScopes } from "./extension-registry.js";
@@ -108,8 +109,8 @@ export const REQUIRED_SCOPES = {
     shopify_find_actions: [],
     shopify_describe_action: [],
     shopify_run_action: [],
-    // src/ops-tools.ts
-    shopify_bulk_export: [],
+    // src/ops-tools.ts (one entry per export resource)
+    ...Object.fromEntries(Object.entries(EXPORT_SCOPES).map(([resource, scopes]) => [`shopify_bulk_export:${resource}`, [...scopes]])),
     // src/extensions/*: shopify_search and shopify_get resources, and shopify_manage operations
     ...extensionScopes(),
     ...Object.fromEntries(Object.entries(MANAGE_OPERATIONS).map(([name, op]) => [`shopify_manage:${name}`, op.scopes])),

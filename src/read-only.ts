@@ -16,7 +16,7 @@ import { runtimeEnv, storeScope } from "./runtime.js";
  */
 
 /** Mutations that change nothing in the store: previews and read-only exports. */
-export const READ_SAFE_MUTATIONS: ReadonlySet<string> = new Set(["draftOrderCalculate", "bulkOperationRunQuery"]);
+export const READ_SAFE_MUTATIONS: ReadonlySet<string> = new Set(["draftOrderCalculate", "bulkOperationRunQuery", "bulkOperationCancel"]);
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -27,8 +27,14 @@ interface Rules {
   users: Map<string, "*" | Set<string>>;
 }
 
+/** Items separated by commas, semicolons or spaces; "a@b.com : store" is read as "a@b.com:store". */
 function items(value: string | undefined): string[] {
-  return (value ?? "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+  return (value ?? "").replace(/\s*:\s*/g, ":").split(/[\s,;]+/).map((item) => item.trim().toLowerCase()).filter(Boolean);
+}
+
+/** True when no read-only rule is configured, so calls skip the document check entirely. */
+function noRules(env: Env = runtimeEnv()): boolean {
+  return !(env.SHOPIFY_READ_ONLY ?? "").trim() && !(env.SHOPIFY_READ_ONLY_STORES ?? "").trim() && !(env.SHOPIFY_READ_ONLY_USERS ?? "").trim();
 }
 
 function rules(env: Env = runtimeEnv()): Rules {
@@ -70,10 +76,11 @@ export class ReadOnlyError extends Error {
 
 /** Refuse a mutation on a read-only store before it reaches Shopify. Queries and read-safe mutations pass. */
 export function assertWritable(alias: string, document: string): void {
+  if (noRules() || !isReadOnly(alias)) return;
   const { selected } = operation(document);
   if (selected.operation !== "mutation") return;
   const roots = selected.selectionSet.selections;
   const safe = roots.length > 0 && roots.every((node) => node.kind === Kind.FIELD && READ_SAFE_MUTATIONS.has(node.name.value));
-  if (safe || !isReadOnly(alias)) return;
+  if (safe) return;
   throw new ReadOnlyError(`Read-only: changes to ${alias} are turned off for you on this server, so nothing was sent to Shopify. Ask the server operator if you need write access.`);
 }

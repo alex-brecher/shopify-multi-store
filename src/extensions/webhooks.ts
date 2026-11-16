@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { registerGetResource, registerManageOperation, registerSearchResource } from "../extension-registry.js";
 import type { Data } from "../admin-workflows.js";
+import { runtimeEnv, storeScope } from "../runtime.js";
 
 // Webhook subscriptions of this server's Shopify app. Shopify shows an app only the
 // subscriptions it created, so subscriptions made by other apps or in the admin are not listed.
@@ -53,6 +54,34 @@ registerGetResource("webhook", {
   description: "One webhook subscription of this app. id: WebhookSubscription GID.",
 });
 
+/**
+ * SHOPIFY_WEBHOOK_ALLOWED_HOSTS (comma list of host names; a leading "." also allows subdomains)
+ * limits where webhooks may deliver. A subscription belongs to the app, not to the person who made
+ * it, and keeps delivering store data after that person loses access, so a team server should
+ * name its own receivers. Pub/Sub and EventBridge targets are allowed only with "pubsub" or
+ * "eventbridge" in the list.
+ */
+export function webhookTargetAllowed(uri: string, env: Readonly<Record<string, string | undefined>> = runtimeEnv()): boolean {
+  const allowed = (env.SHOPIFY_WEBHOOK_ALLOWED_HOSTS ?? "").split(/[\s,;]+/).map((host) => host.trim().toLowerCase()).filter(Boolean);
+  if (!allowed.length) return true;
+  if (uri.startsWith("pubsub://")) return allowed.includes("pubsub");
+  if (uri.startsWith("arn:aws:events:")) return allowed.includes("eventbridge");
+  const host = new URL(uri).hostname.toLowerCase();
+  return allowed.some((entry) => (entry.startsWith(".") ? host.endsWith(entry) || host === entry.slice(1) : host === entry));
+}
+
+function checkTarget(uri: string | undefined): void {
+  if (uri && !webhookTargetAllowed(uri)) throw Error(`This server only delivers webhooks to ${runtimeEnv().SHOPIFY_WEBHOOK_ALLOWED_HOSTS} (SHOPIFY_WEBHOOK_ALLOWED_HOSTS). No request sent.`);
+}
+
+/** The subscription name records who created or last changed it, so a stray subscription can be traced. */
+function signedName(name: string | undefined): string | undefined {
+  const user = storeScope.getStore()?.user;
+  const base = (name ?? "").replace(/\s*\(by [^)]*\)$/, "").trim();
+  if (!user) return base || undefined;
+  return `${base ? `${base} ` : ""}(by ${user})`.slice(0, 100);
+}
+
 function subscriptionInput(a: Data): Data {
   const input: Data = {};
   for (const key of ["uri", "format", "filter", "includeFields", "metafieldNamespaces", "name"]) if (a[key] !== undefined) input[key] = a[key];
@@ -60,7 +89,7 @@ function subscriptionInput(a: Data): Data {
 }
 
 registerManageOperation("webhook", {
-  description: `Create, update or delete one of this app's webhook subscriptions (webhookSubscriptionCreate / Update / Delete). Deliver to an HTTPS URL, Google Pub/Sub (pubsub://project:topic) or Amazon EventBridge. create refuses a duplicate topic and uri. ${NOTE}`,
+  description: `Create, update or delete one of this app's webhook subscriptions (webhookSubscriptionCreate / Update / Delete). Deliver to an HTTPS URL, Google Pub/Sub (pubsub://project:topic) or Amazon EventBridge. A subscription keeps sending store data to its uri until it is deleted, whoever made it, so create, and an update that changes uri, need confirm:"webhook"; delete needs confirm:"delete". create refuses a duplicate topic and uri. The name records who made the change. ${NOTE}`,
   shape: {
     action: z.enum(["create", "update", "delete"]),
     id: z.string().regex(/^gid:\/\/shopify\/WebhookSubscription\/[0-9]+$/).optional().describe("update and delete"),
@@ -73,13 +102,14 @@ registerManageOperation("webhook", {
     name: z.string().max(100).optional(),
   },
   scopes: [],
-  confirmWord: (a) => (a.action === "delete" ? "delete" : undefined),
+  confirmWord: (a) => (a.action === "delete" ? "delete" : a.action === "create" || (a.action === "update" && a.uri !== undefined) ? "webhook" : undefined),
   handler: async (w, a) => {
     if (a.action === "create") {
       const topic = String(a.topic ?? "").toUpperCase();
       if (!TOPIC.test(topic)) throw Error("create needs topic, such as ORDERS_CREATE.");
       if (!a.uri) throw Error("create needs uri.");
-      const input = { format: "JSON", ...subscriptionInput(a) };
+      checkTarget(a.uri);
+      const input = { format: "JSON", ...subscriptionInput(a), name: signedName(a.name) };
       const duplicates = (await w.run(WEBHOOK_DOCS.same, { topics: [topic], uri: a.uri })).webhookSubscriptions?.nodes ?? [];
       if (duplicates.length) throw Error(`This app already sends ${topic} to that uri (${duplicates.map((item: Data) => item.id).join(", ")}). Update or delete that subscription instead.`);
       if (a.dryRun) return { dryRun: true, wouldCreate: { topic, ...input }, message: "Nothing was changed. Pass dryRun:false to apply." };
@@ -90,8 +120,10 @@ registerManageOperation("webhook", {
     const current = (await w.run(WEBHOOK_DOCS.get, { id: a.id })).webhookSubscription;
     if (!current) throw Error(`No webhook subscription ${a.id} on this store belongs to this app.`);
     if (a.action === "update") {
-      const input = subscriptionInput(a);
-      if (!Object.keys(input).length) throw Error("update needs at least one of uri, format, filter, includeFields, metafieldNamespaces or name.");
+      checkTarget(a.uri);
+      const fields = subscriptionInput(a);
+      if (!Object.keys(fields).length) throw Error("update needs at least one of uri, format, filter, includeFields, metafieldNamespaces or name.");
+      const input = { ...fields, name: signedName(a.name ?? current.name ?? undefined) };
       if (a.dryRun) return { dryRun: true, current, changes: input, message: "Nothing was changed. Pass dryRun:false to apply." };
       const d = await w.run(WEBHOOK_DOCS.update, { id: a.id, sub: input });
       return { dryRun: false, before: current, updated: d.webhookSubscriptionUpdate?.webhookSubscription };

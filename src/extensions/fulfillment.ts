@@ -97,7 +97,8 @@ registerManageOperation("fulfillment", {
     notifyCustomer: z.boolean().default(false).describe("update_tracking: email the customer; default false"),
   },
   scopes: ["read_orders", "write_merchant_managed_fulfillment_orders"],
-  confirmWord: (a) => (a.action === "cancel" ? "cancel" : undefined),
+  // Emailing a customer cannot be undone, so a notifying tracking update needs confirm too.
+  confirmWord: (a) => (a.action === "cancel" ? "cancel" : a.notifyCustomer ? "notify" : undefined),
   handler: async (w, a) => {
     const current = (await w.run(FULFILLMENT_DOCS.get, { id: a.id })).fulfillment;
     if (!current) throw Error(`Fulfillment ${a.id} was not found in this store.`);
@@ -245,7 +246,8 @@ registerManageOperation("inventory", {
     action: z.enum(["adjust", "move", "move_state", "update_item", "activate", "deactivate"]),
     changes: z.array(adjustChange).min(1).max(100).optional().describe("adjust"),
     items: z.array(moveItem).min(1).max(50).optional().describe("move and move_state"),
-    quantityName: z.enum(["available", "on_hand"]).default("available").describe("adjust: which quantity changes"),
+    // Only available: every other quantity name needs a ledger document on adjust.
+    quantityName: z.enum(["available"]).default("available").describe("adjust: available (other quantities: use move_state)"),
     reason: z.enum(REASONS).optional().describe("adjust, move and move_state; default correction (adjust, move_state) or movement_created (move)"),
     referenceDocumentUri: referenceUri.optional().describe("Audit trail URI; required for move_state"),
     fromLocationId: gid("Location").optional().describe("move"),

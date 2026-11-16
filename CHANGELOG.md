@@ -19,6 +19,11 @@ This file records notable changes to Shopify Multi-Store MCP.
 - `shopify_find_actions` now points 88 mutations (was 43) to a dedicated tool or operation.
 - `src/extension-registry.ts`: feature areas add `shopify_search`/`shopify_get` resources and `shopify_manage` operations from their own file in `src/extensions/`, with their scopes.
 
+### Security
+
+- Writes that reach outside the store need confirmation: a fulfillment tracking update that emails the customer needs `confirm:"notify"`, and creating a webhook or changing its uri needs `confirm:"webhook"`. Webhook names record who made the change, and `SHOPIFY_WEBHOOK_ALLOWED_HOSTS` can limit delivery targets.
+- On a hosted server, `shopify_bulk_export` returns a ticket bound to the person, shop and export; `status` and `cancel` need it, so nobody can fetch another person's export link by guessing its sequential id.
+
 ### Changed
 
 - Tool cap raised from 30 to 31 for `shopify_bulk_export`; new capabilities go into the existing tools.

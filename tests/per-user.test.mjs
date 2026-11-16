@@ -643,6 +643,7 @@ test("shopify_bulk_export starts a bulk query, waits, and returns the file; shop
   let polls = 0;
   const requests = await shopifyMock(t, (body) => {
     const q = body.query ?? "";
+    if (/StoreCapabilities/.test(q)) return { body: { data: { shop: { id: "gid://shopify/Shop/1", name: "Main", myshopifyDomain: "main.myshopify.com" }, currentAppInstallation: { id: "gid://shopify/AppInstallation/1", accessScopes: [{ handle: "read_orders" }] } } } };
     if (/bulkOperationRunQuery/.test(q)) return { body: { data: { bulkOperationRunQuery: { bulkOperation: { id: "gid://shopify/BulkOperation/7", status: "CREATED" }, userErrors: [] } } } };
     if (/query Bulk/.test(q)) {
       polls += 1;
@@ -651,6 +652,8 @@ test("shopify_bulk_export starts a bulk query, waits, and returns the file; shop
     if (/webhookSubscriptions/.test(q)) return { body: { data: { webhookSubscriptions: { nodes: [], pageInfo: { hasNextPage: false } } } } };
     return undefined;
   });
+  process.env.SHOPIFY_TOKEN_ENCRYPTION_KEY = "test-ticket-key";
+  t.after(() => { delete process.env.SHOPIFY_TOKEN_ENCRYPTION_KEY; });
   const { app } = await setup(t);
   const client = await mcpClient(t, app, await signIn(app, { token: "pat-online-main" }));
   const done = await client.callTool({ name: "shopify_bulk_export", arguments: { store: "main", resource: "orders", filter: "created_at:>=2026-10-01", waitSeconds: 10 } });
@@ -659,6 +662,11 @@ test("shopify_bulk_export starts a bulk query, waits, and returns the file; shop
   assert.equal(done.structuredContent.url, "https://storage.example.com/x.jsonl");
   assert.equal(done.structuredContent.rootObjectCount, 3);
   const started = requests.find((request) => /bulkOperationRunQuery/.test(request.body.query));
+  assert.match(done.structuredContent.ticket, /^[A-Za-z0-9_-]{32}$/, "hosted exports come with a ticket");
+  const stranger = await client.callTool({ name: "shopify_bulk_export", arguments: { store: "main", action: "status", id: "gid://shopify/BulkOperation/7", waitSeconds: 0 } });
+  assert.equal(stranger.isError, true, "status without the ticket is refused");
+  const owner = await client.callTool({ name: "shopify_bulk_export", arguments: { store: "main", action: "status", id: "gid://shopify/BulkOperation/7", ticket: done.structuredContent.ticket, waitSeconds: 0 } });
+  assert.equal(owner.structuredContent.url, "https://storage.example.com/x.jsonl");
   assert.match(started.body.variables.query, /orders\(query: "created_at:>=2026-10-01"\)/);
 
   const before = requests.length;
@@ -671,6 +679,9 @@ test("shopify_bulk_export starts a bulk query, waits, and returns the file; shop
   const refused = await client.callTool({ name: "shopify_manage", arguments: { store: "main", operation: "webhook", input: { action: "delete", id: "gid://shopify/WebhookSubscription/1" }, dryRun: false } });
   assert.equal(refused.isError, true);
   assert.match(refused.content[0].text, /requiredConfirm.*delete/);
+  const unconfirmed = await client.callTool({ name: "shopify_manage", arguments: { store: "main", operation: "webhook", input: { action: "create", topic: "ORDERS_CREATE", uri: "https://hooks.example.com/o" }, dryRun: false } });
+  assert.equal(unconfirmed.isError, true);
+  assert.match(unconfirmed.content[0].text, /requiredConfirm.*webhook/);
   const badUri = await client.callTool({ name: "shopify_manage", arguments: { store: "main", operation: "webhook", input: { action: "create", topic: "ORDERS_CREATE", uri: "http://plain.example.com" } } });
   assert.equal(badUri.isError, true);
   const tools = (await client.listTools()).tools;

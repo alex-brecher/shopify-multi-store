@@ -179,7 +179,10 @@ registerManageOperation("draft_order", {
     if (a.appliedDiscount?.valueType === "PERCENTAGE" && a.appliedDiscount.value > 100) throw Error("A percentage discount cannot exceed 100.");
     if (a.dryRun) {
       const calculated = input.lineItems ? (await w.run(CDOCS.draftCalculate, { input })).draftOrderCalculate?.calculatedDraftOrder : undefined;
-      return { dryRun: true, current, calculated, wouldChange: input, notice: PREVIEW };
+      return {
+        dryRun: true, current, calculated, wouldChange: input, notice: PREVIEW,
+        ...(calculated ? { calculatedNote: "calculated prices only the fields being changed; the saved draft keeps its other customer, address, shipping and discount settings, so final tax, shipping and total can differ." } : {}),
+      };
     }
     const d = await w.run(DRAFT_FILES_DOCS.draftUpdate, { id: a.id, input });
     return { dryRun: false, before: current, draftOrder: d.draftOrderUpdate?.draftOrder };

@@ -27,3 +27,17 @@ test("assertWritable refuses mutations on read-only stores but passes queries an
   assert.doesNotThrow(() => assertWritable("main", "mutation { draftOrderCalculate(input: {}) { calculatedDraftOrder { totalPriceSet { shopMoney { amount } } } } }"));
   assert.throws(() => assertWritable("main", "mutation { draftOrderCalculate(input: {}) { calculatedDraftOrder { lineItems { title } } } draftOrderCreate(input: {}) { draftOrder { id } } }"), /Read-only/, "a safe field cannot carry a write");
 });
+
+test("read-only rules forgive spaces, semicolons and spaces around the colon", () => {
+  const env = { SHOPIFY_READ_ONLY_USERS: "bob@x.com : storea; amy@x.com  carl@x.com:storeb" };
+  assert.equal(isReadOnly("storea", "bob@x.com", env), true);
+  assert.equal(isReadOnly("storec", "bob@x.com", env), false);
+  assert.equal(readOnlyEverywhere("amy@x.com", env), true);
+  assert.equal(isReadOnly("storeb", "carl@x.com", env), true);
+});
+
+test("bulkOperationCancel stays allowed for read-only people", (t) => {
+  process.env.SHOPIFY_READ_ONLY = "true";
+  t.after(() => { delete process.env.SHOPIFY_READ_ONLY; });
+  assert.doesNotThrow(() => assertWritable("main", "mutation { bulkOperationCancel(id: \"gid://shopify/BulkOperation/1\") { bulkOperation { id } } }"));
+});
