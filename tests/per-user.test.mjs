@@ -5,7 +5,7 @@ import test from "node:test";
 import { decryptToken, encryptToken, parseEncryptionKey, parseEncryptionKeys, shopifyHmacMessage, verifyShopifyHmac } from "../dist/hosted/shopify-connect.js";
 import { enableHostedMode } from "../dist/runtime.js";
 import {
-  KEY, KEYS, ORIGIN, SECRET, call, cookieNamed, login, mcpClient, pageSignIn, setup, shopifyBack, shopifyMock, signedCallback, storesSession, ts
+  KEY, KEYS, ORIGIN, SECRET, call, connectHop, cookieNamed, login, mcpClient, pageSignIn, setup, shopifyBack, shopifyMock, signedCallback, storesSession, ts
 } from "./hosted-fixture.mjs";
 
 // Per-user Shopify access on the hosted connector. Runs in its own process.
@@ -33,8 +33,7 @@ function postConnect(app, cookie, fields, headers = {}) {
 async function startConnect(app, cookie, alias = "main", chain = false) {
   const csrf = await connectCsrf(app, cookie, alias, chain);
   const response = await postConnect(app, cookie, { csrf, store: alias, ...(chain ? { chain: "1" } : {}) });
-  assert.equal(response.status, 302, await response.clone().text());
-  return new URL(response.headers.get("location"));
+  return connectHop(response);
 }
 
 async function connectStore(app, cookie, { alias = "wholesale", shopifyEmail = "pat@bariatricpal.com", token = `online-${alias}-token` } = {}) {
@@ -81,8 +80,8 @@ test("the /stores sign-in connects the login store, and connect stores an encryp
   const cookie = await storesSession(app, "pat@bariatricpal.com", "main", "shpua_login");
   const before = await (await call(app, "/stores", { headers: { cookie } })).text();
   assert.ok(before.includes(`<code>${ORIGIN}</code>`) && before.includes(`<code>${ORIGIN}/mcp</code>`), "the page names the server it belongs to");
-  assert.match(before, /signed in with Shopify as pat@bariatricpal\.com/);
-  assert.match(before, /Connected as pat@bariatricpal\.com/, "the login store is connected");
+  assert.match(before, /Signed in with Shopify as pat@bariatricpal\.com/);
+  assert.match(before, /Connected<\/span>.*As pat@bariatricpal\.com/s, "the login store is connected");
   assert.match(before, /Not connected/);
   assert.match(before, /Reconnect all \(1 store\)/);
   assert.ok(!before.includes('href="/shopify/connect'), "connect is a form post, not a link");
@@ -241,13 +240,16 @@ test("Reconnect all chains through every expired or unconnected store with no co
   for (;;) {
     hops.push(authorize.host);
     const done = await shopifyBack(app, authorize, { cookie });
-    assert.ok([302, 303].includes(done.status), await done.clone().text());
+    assert.ok([200, 303].includes(done.status), await done.clone().text());
     if (done.status === 303) {
       assert.equal(done.headers.get("location"), "/stores");
       break;
     }
-    // Each hop goes straight to the next store's Shopify authorization, not to a confirm page.
-    authorize = new URL(done.headers.get("location"));
+    // Each hop is a progress page that goes straight on to the next store's Shopify authorization.
+    const html = await done.clone().text();
+    assert.match(html, /Connecting your stores/);
+    assert.match(html, /Store \d of 3: opening Shopify/);
+    authorize = await connectHop(done);
     assert.equal(authorize.pathname, "/admin/oauth/authorize");
   }
   assert.deepEqual(hops, ["wholesale.myshopify.com", "outlet.myshopify.com"]);
@@ -255,14 +257,57 @@ test("Reconnect all chains through every expired or unconnected store with no co
   assert.equal(live.length, 3);
 });
 
+test("Reconnect all skips a store that fails, goes on to the rest, and names it on the stores page", async (t) => {
+  await shopifyMock(t, undefined);
+  process.env.STORES_JSON = JSON.stringify({ stores: [
+    { alias: "main", shop: "main.myshopify.com" },
+    { alias: "wholesale", shop: "wholesale.myshopify.com" },
+    { alias: "outlet", shop: "outlet.myshopify.com" }
+  ] });
+  const { app, store } = await setup(t);
+  const cookie = await storesSession(app, "pat@bariatricpal.com");
+  const first = await startConnect(app, cookie, "wholesale", true);
+  assert.equal(first.host, "wholesale.myshopify.com");
+  // Shopify reports another staff email for wholesale: refused, skipped, and the run goes on.
+  const skipped = await shopifyBack(app, first, { cookie, email: "someone@else.com" });
+  const html = await skipped.clone().text();
+  assert.match(html, /wholesale was skipped/);
+  assert.match(html, /class="step bad"><span class="dot" aria-hidden="true"><\/span><span class="step-name">wholesale/);
+  const next = await connectHop(skipped);
+  assert.equal(next.host, "outlet.myshopify.com");
+  const done = await shopifyBack(app, next, { cookie });
+  assert.equal(done.status, 303, await done.clone().text());
+  assert.equal(done.headers.get("location"), "/stores?skipped=wholesale");
+  const page = await (await call(app, "/stores?skipped=wholesale,nope", { headers: { cookie } })).text();
+  assert.match(page, /Could not connect wholesale\./);
+  assert.match(page, /Could not connect<\/span>/);
+  assert.match(page, /2 of 3 stores connected/);
+  const emails = (await store.entries("shopify_token")).map(([, record]) => record.alias).sort();
+  assert.deepEqual(emails, ["main", "outlet"]);
+});
+
+test("a token exchange that hits a network error is retried once", async (t) => {
+  await shopifyMock(t);
+  let real;
+  let failures = 0;
+  const { app, oauth } = await setup(t, {}, { fetch: (...args) => (failures++ === 0 ? Promise.reject(new TypeError("fetch failed")) : real(...args)) });
+  real = oauth.fetch;
+  failures = 1;
+  const cookie = await storesSession(app, "pat@bariatricpal.com");
+  failures = 0;
+  const authorize = await startConnect(app, cookie, "wholesale");
+  const done = await shopifyBack(app, authorize, { cookie });
+  assert.equal(done.status, 303, await done.clone().text());
+  assert.equal(failures, 2, "one failed attempt, then one that worked");
+});
+
 test("/stores/reconnect signs in with Shopify and then reconnects every other store, or shows the stores page when signed in", async (t) => {
   await shopifyMock(t);
   const { app, store } = await setup(t);
   // Signed out: the link starts a sign-in; after Shopify login on main, it goes straight on to wholesale.
   const { back, session } = await pageSignIn(app, { path: "/stores/reconnect", alias: "main" });
-  assert.equal(back.status, 302, await back.clone().text());
   assert.ok(session, "the /stores session is set on the way");
-  const next = new URL(back.headers.get("location"));
+  const next = await connectHop(back);
   assert.equal(next.host, "wholesale.myshopify.com");
   const done = await shopifyBack(app, next, { cookie: session });
   assert.equal(done.status, 303);
@@ -414,7 +459,7 @@ test("/shopify/connect starts Shopify only from a same-origin POST with the CSRF
   assert.equal((await postConnect(app, cookie, { csrf, store: "main" }, { origin: "https://evil.example" })).status, 403);
   assert.equal((await postConnect(app, "__Host-sms_stores=forged", { csrf, store: "main" })).status, 401);
   assert.equal((await store.entries("shopify_state")).length, 0);
-  assert.equal((await postConnect(app, cookie, { csrf, store: "main" })).status, 302);
+  assert.equal((await postConnect(app, cookie, { csrf, store: "main" })).status, 200);
   assert.equal((await store.entries("shopify_state")).length, 1);
 });
 
@@ -509,10 +554,10 @@ test("a connection missing a newly requested scope is flagged for Reconnect all,
   const { app, advance } = await setup(t, {}, { scopes: ["write_products", "write_orders", "read_all_orders"] });
   const cookie = await storesSession(app, "pat@bariatricpal.com", "main", "shpua_login");
   const fresh = await (await call(app, "/stores", { headers: { cookie } })).text();
-  assert.ok(!fresh.includes("Needs a reconnect"), "a connection just approved is not asked for again");
+  assert.ok(!fresh.includes("Needs approval"), "a connection just approved is not asked for again");
   assert.match(fresh, /Reconnect all \(1 store\)/);
   advance(11 * 60 * 1000);
   const later = await (await call(app, "/stores", { headers: { cookie } })).text();
-  assert.match(later, /Needs a reconnect to approve new access/);
+  assert.match(later, /Needs approval.*Reconnect to approve new access/s);
   assert.match(later, /Reconnect all \(2 stores\)/, "the outdated connection joins Reconnect all");
 });

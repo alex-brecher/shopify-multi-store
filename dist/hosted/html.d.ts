@@ -7,9 +7,11 @@ export interface PageOptions {
     headers?: Record<string, string>;
     /** CSP form-action sources. Defaults to 'self'. */
     formAction?: string;
+    /** Extra trusted markup for <head>, such as a meta refresh. Escape any values in it. */
+    head?: string;
 }
 /** An HTML page that cannot be framed, cached, or load anything from elsewhere. */
-export declare function htmlPage({ title, body, status, headers, formAction }: PageOptions): Response;
+export declare function htmlPage({ title, body, status, headers, formAction, head }: PageOptions): Response;
 /** Parse a Cookie header. */
 export declare function readCookie(request: Request, name: string): string | undefined;
 /** A host-only, HttpOnly, Secure, SameSite=Lax cookie. */

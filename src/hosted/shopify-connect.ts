@@ -64,6 +64,8 @@ interface StateRecord {
   /** Hash of the /stores session cookie that started the connection. */
   sessionSha256: string;
   chain: boolean;
+  /** Reconnect all: stores that failed earlier in this run and are skipped, so the run goes on. */
+  skip?: string[];
 }
 
 interface SessionRecord {
@@ -217,8 +219,11 @@ function tokenKey(email: string, alias: string): string {
 
 const safeEqual = constantTimeEqual;
 
-function formatTime(ms: number): string {
-  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+/** "in 23 h 5 min" or "2 h ago": no time zone to get wrong. */
+function relativeTime(ms: number, now: number): string {
+  const minutes = Math.round(Math.abs(ms - now) / 60_000);
+  const span = minutes < 1 ? "under a minute" : minutes < 60 ? `${minutes} min` : minutes < 48 * 60 ? `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ""}` : `${Math.round(minutes / 1440)} days`;
+  return ms >= now ? `in ${span}` : `${span} ago`;
 }
 
 /** Validate a token response: only an online token with a verified staff email is accepted. */
@@ -255,6 +260,17 @@ function page(status: number, title: string, message: string): Response {
 
 function redirect(location: string, headers: Record<string, string> = {}): Response {
   return new Response(null, { status: 303, headers: { location, "cache-control": "no-store", ...headers } });
+}
+
+/** Aliases in a ?skipped= list, kept only when they are configured stores. */
+function skippedFrom(url: URL, stores: StoreConfig[]): string[] {
+  const wanted = (url.searchParams.get("skipped") ?? "").slice(0, 2000).split(",").map((alias) => alias.trim().toLowerCase()).filter(Boolean);
+  return stores.filter((store) => wanted.includes(store.alias.toLowerCase())).map((store) => store.alias);
+}
+
+/** Where a finished Reconnect all lands: the stores page, naming any store it had to skip. */
+function storesLocation(skip: string[] = []): string {
+  return skip.length ? `/stores?skipped=${encodeURIComponent(skip.join(","))}` : "/stores";
 }
 
 export class ShopifyConnections {
@@ -459,13 +475,18 @@ export class ShopifyConnections {
   }
 
   /** The next store that is not connected, whose connection expired, or that lacks newly requested access. */
-  private async nextUnconnected(email: string): Promise<StoreConfig | undefined> {
+  private async nextUnconnected(email: string, skip: string[] = []): Promise<StoreConfig | undefined> {
+    const skipped = new Set(skip.map((alias) => alias.toLowerCase()));
     for (const store of await this.visibleStores()) {
-      if (!SHOP_HOST.test(store.shop) || !this.options.clientId(store) || !this.options.clientSecret(store)) continue;
+      if (!this.connectable(store) || skipped.has(store.alias.toLowerCase())) continue;
       const record = await this.record(email, store);
       if (!record || record.expiresAt <= this.now() || this.missingScopes(record).length) return store;
     }
     return undefined;
+  }
+
+  private connectable(store: StoreConfig): boolean {
+    return SHOP_HOST.test(store.shop) && Boolean(this.options.clientId(store)) && Boolean(this.options.clientSecret(store));
   }
 
   // ---------- /stores ----------
@@ -475,7 +496,7 @@ export class ShopifyConnections {
     if (method === "GET") {
       const session = await this.session(request);
       if (!session) return this.options.auth.startPageSignIn("stores");
-      return this.render(session);
+      return this.render(session, undefined, 200, skippedFrom(new URL(request.url), await this.visibleStores()));
     }
     if (method === "POST") return this.action(request);
     return new Response(JSON.stringify({ error: "method_not_allowed" }), { status: 405, headers: { "content-type": "application/json" } });
@@ -493,43 +514,108 @@ export class ShopifyConnections {
     return redirect("/stores");
   }
 
-  private async render(session: Session, message?: string, status = 200): Promise<Response> {
-    const displayName = this.options.auth.displayName;
+  /** Where each store stands for this person: connected, expired, never connected, or missing newly requested access. */
+  private async statuses(email: string): Promise<Array<{ store: StoreConfig; record?: ShopifyTokenRecord; live: boolean; outdated: boolean }>> {
+    const now = this.now();
     const stores = await this.visibleStores();
+    return Promise.all(stores.map(async (store) => {
+      const record = await this.record(email, store);
+      const live = Boolean(record && record.expiresAt > now);
+      const outdated = Boolean(live && record && this.missingScopes(record).length);
+      return { store, ...(record ? { record } : {}), live, outdated };
+    }));
+  }
+
+  private async render(session: Session, message?: string, status = 200, skipped: string[] = []): Promise<Response> {
+    const displayName = this.options.auth.displayName;
     const csrfField = `<input type="hidden" name="csrf" value="${session.csrf}">`;
     const now = this.now();
-    let unconnected = 0;
-    const rows: string[] = [];
-    for (const store of stores) {
-      const record = await this.record(session.email, store);
-      const live = record && record.expiresAt > now;
-      const outdated = Boolean(live && record && this.missingScopes(record).length);
-      if (!live || outdated) unconnected += 1;
+    const rows = await this.statuses(session.email);
+    const total = rows.length;
+    const ready = rows.filter((row) => row.live && !row.outdated).length;
+    const unconnected = total - ready;
+    const items = rows.map(({ store, record, live, outdated }) => {
       const user = record?.associatedUser;
       const who = user ? `${escapeHtml(user.email ?? `Shopify user ${user.id}`)}${user.accountOwner ? " (store owner)" : ""}${user.collaborator ? " (collaborator)" : ""}` : "";
-      const statusText = !record
-        ? "Not connected"
-        : live
-          ? `Connected as ${who}<br><span class="muted">${outdated ? "Needs a reconnect to approve new access. " : ""}Expires ${formatTime(record.expiresAt)}</span>`
-          : `Expired<br><span class="muted">Was ${who}, expired ${formatTime(record.expiresAt)}</span>`;
+      const failed = skipped.some((alias) => alias.toLowerCase() === store.alias.toLowerCase()) && !(live && !outdated);
+      const [pill, detail] = failed
+        ? [`<span class="pill bad">Could not connect</span>`, "Reconnect all skipped this store. Use Reconnect to see why."]
+        : !record
+          ? [`<span class="pill off">Not connected</span>`, ""]
+          : live && outdated
+            ? [`<span class="pill warn">Needs approval</span>`, `Connected as ${who}. Reconnect to approve new access.`]
+            : live
+              ? [`<span class="pill ok">Connected</span>`, `As ${who}. Expires ${relativeTime(record.expiresAt, now)}.`]
+              : [`<span class="pill warn">Expired</span>`, `Was ${who}. Expired ${relativeTime(record.expiresAt, now)}.`];
       const connect = this.connectForm(session, store.alias, false, record ? "Reconnect" : "Connect");
       const disconnect = record
-        ? ` <form class="inline" method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="disconnect"><input type="hidden" name="store" value="${escapeHtml(store.alias)}"><button class="danger" type="submit">Disconnect</button></form>`
+        ? `<form class="inline" method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="disconnect"><input type="hidden" name="store" value="${escapeHtml(store.alias)}"><button class="danger" type="submit">Disconnect</button></form>`
         : "";
-      rows.push(`<tr><td>${escapeHtml(store.alias)}<br><code class="muted">${escapeHtml(store.shop)}</code></td><td>${statusText}</td><td>${connect}${disconnect}</td></tr>`);
-    }
+      return `<li class="store"><div class="store-main"><div class="store-name">${escapeHtml(store.alias)} ${pill}</div><code class="muted">${escapeHtml(store.shop)}</code>${detail ? `<div class="muted">${detail}</div>` : ""}</div><div class="store-actions">${connect}${disconnect}</div></li>`;
+    });
     const first = unconnected ? await this.nextUnconnected(session.email) : undefined;
+    const percent = total ? Math.round((ready / total) * 100) : 0;
+    const summary = total
+      ? `<div class="summary"><div><div class="summary-count">${ready} of ${total} stores connected</div><div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${ready}" aria-label="Stores connected"><span style="width:${percent}%"></span></div></div>${first
+        ? `<div>${this.connectForm(session, first.alias, true, `Reconnect all (${unconnected} ${unconnected === 1 ? "store" : "stores"})`, "primary")}</div>`
+        : `<span class="pill ok">All set</span>`}</div>`
+      : "";
+    const skippedNames = rows.filter((row) => skipped.some((alias) => alias.toLowerCase() === row.store.alias.toLowerCase()) && !(row.live && !row.outdated)).map((row) => escapeHtml(row.store.alias));
     const body = `<div class="card">
 <h1>Your Shopify stores</h1>
-<p class="muted">${escapeHtml(displayName)} - signed in with Shopify as ${escapeHtml(session.email)}</p>
-<p class="muted">These connections belong to this server only: <code>${escapeHtml(this.options.auth.issuer)}</code>. AI apps reach it at <code>${escapeHtml(this.options.auth.resource)}</code>. Another server URL keeps its own connections.</p>
-<p>AI apps act as you in each connected store, and Shopify allows only what your staff permissions allow. Shopify ends each connection after 24 hours, or when you log out of the Shopify admin. Reconnect all takes one click; while you are logged in to Shopify, every store reconnects without further clicks.</p>
+<p class="muted">Signed in with Shopify as ${escapeHtml(session.email)}</p>
+${summary}
 ${message ? `<div class="warn"><p>${escapeHtml(message)}</p></div>` : ""}
-${first ? `<div class="actions">${this.connectForm(session, first.alias, true, `Reconnect all (${unconnected} ${unconnected === 1 ? "store" : "stores"})`, "primary")}</div>` : ""}
-${stores.length ? `<table><thead><tr><th>Store</th><th>Status</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>` : `<p class="muted">No stores are configured on this server.</p>`}
+${skippedNames.length ? `<div class="warn"><p>Could not connect ${skippedNames.join(", ")}. Make sure you are staff on ${skippedNames.length === 1 ? "that store" : "those stores"} with the same email, then press Reconnect on ${skippedNames.length === 1 ? "it" : "each one"}.</p></div>` : ""}
+${total ? `<ul class="stores">${items.join("")}</ul>` : `<p class="muted">No stores are configured on this server.</p>`}
+<p class="muted">Shopify ends each connection after 24 hours, or when you log out of the Shopify admin. While you are logged in to Shopify, Reconnect all goes through every store without more clicks. AI apps act as you in each connected store, limited by your Shopify staff permissions.</p>
+<details><summary class="muted">Server details</summary><p class="muted">${escapeHtml(displayName)}. These connections belong to this server only: <code>${escapeHtml(this.options.auth.issuer)}</code>. AI apps reach it at <code>${escapeHtml(this.options.auth.resource)}</code>. Another server URL keeps its own connections.</p></details>
 <form method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="signout"><div class="actions"><button type="submit">Sign out</button></div></form>
 </div>`;
     return htmlPage({ status, title: `Your Shopify stores - ${displayName}`, body, formAction: CONNECT_FORM_ACTION });
+  }
+
+  /**
+   * The page shown while the browser goes to Shopify. It is a real page rather than a redirect, so
+   * a long Reconnect all never hits the browser's redirect limit (about 20 hops, which stopped
+   * runs after 5 or 6 stores), and the person sees which store is connecting and how far along it is.
+   * A meta refresh moves on at once; the Continue link covers a browser that does not follow it.
+   */
+  private async progressPage(email: string, store: StoreConfig, location: string, chain: boolean, skip: string[], note?: string): Promise<Response> {
+    const target = escapeHtml(location);
+    const skipped = new Set(skip.map((alias) => alias.toLowerCase()));
+    let body: string;
+    if (chain) {
+      const rows = (await this.statuses(email)).filter((row) => this.connectable(row.store));
+      const total = rows.length;
+      const done = rows.filter((row) => row.live && !row.outdated && row.store.alias !== store.alias).length;
+      const position = Math.min(done + skipped.size + 1, total);
+      const percent = total ? Math.round(((position - 1) / total) * 100) : 0;
+      const list = rows.map(({ store: row, live, outdated }) => {
+        const [cls, label] = row.alias === store.alias
+          ? ["now", "Connecting"]
+          : skipped.has(row.alias.toLowerCase())
+            ? ["bad", "Skipped"]
+            : live && !outdated ? ["ok", "Connected"] : ["off", "Waiting"];
+        return `<li class="step ${cls}"><span class="dot" aria-hidden="true"></span><span class="step-name">${escapeHtml(row.alias)}</span><span class="muted">${label}</span></li>`;
+      }).join("");
+      body = `<div class="card">
+<h1><span class="spinner" aria-hidden="true"></span>Connecting your stores</h1>
+<p role="status">Store ${position} of ${total}: opening Shopify for <strong>${escapeHtml(store.alias)}</strong>.</p>
+<div class="bar"><span style="width:${percent}%"></span></div>
+${note ? `<div class="warn"><p>${escapeHtml(note)}</p></div>` : ""}
+<ul class="steps">${list}</ul>
+<p class="muted">If Shopify asks you to log in, log in once. The other stores then connect on their own.</p>
+<div class="actions"><a class="button primary" href="${target}">Continue</a><a class="button" href="/stores">Stop</a></div>
+</div>`;
+    } else {
+      body = `<div class="card">
+<h1><span class="spinner" aria-hidden="true"></span>Connecting ${escapeHtml(store.alias)}</h1>
+<p role="status">Opening Shopify for <code>${escapeHtml(store.shop)}</code>.</p>
+<div class="actions"><a class="button primary" href="${target}">Continue</a><a class="button" href="/stores">Back to your stores</a></div>
+</div>`;
+    }
+    return htmlPage({ title: chain ? "Connecting your stores" : `Connecting ${store.alias}`, body, head: `<meta http-equiv="refresh" content="0;url=${target}">` });
   }
 
   private async action(request: Request): Promise<Response> {
@@ -603,11 +689,23 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
   }
 
   /** Create a single-use connection state bound to the /stores session and send the browser to Shopify. */
-  private async startConnection(session: { key: string; email: string }, store: StoreConfig, chain: boolean): Promise<Response> {
+  private async startConnection(session: { key: string; email: string }, store: StoreConfig, chain: boolean, skip: string[] = [], note?: string): Promise<Response> {
     const state = randomToken(32);
-    const record: StateRecord = { email: session.email, alias: store.alias, shop: store.shop, sessionSha256: session.key, chain };
+    const record: StateRecord = { email: session.email, alias: store.alias, shop: store.shop, sessionSha256: session.key, chain, ...(skip.length ? { skip } : {}) };
     await this.options.store.put("shopify_state", sha256(state), record, this.now() + STATE_TTL_MS);
-    return new Response(null, { status: 302, headers: { location: this.authorizeUrl(store, state), "cache-control": "no-store" } });
+    return this.progressPage(session.email, store, this.authorizeUrl(store, state), chain, skip, note);
+  }
+
+  /**
+   * Reconnect all hit a store it cannot connect: note it, skip it, and go on to the next store,
+   * so one store does not stop the run. A single Connect shows the error instead.
+   */
+  private async skipInChain(session: { key: string; email: string }, state: StateRecord, store: StoreConfig, reason: string, error: () => Response): Promise<Response> {
+    if (!state.chain) return error();
+    const skip = [...(state.skip ?? []), store.alias];
+    const next = await this.nextUnconnected(session.email, skip);
+    if (next) return this.startConnection(session, next, true, skip, `${store.alias} was skipped: ${reason}`);
+    return redirect(storesLocation(skip));
   }
 
   private connectForm(session: Session, alias: string, chain: boolean, label: string, style = ""): string {
@@ -650,22 +748,33 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
 
   /** Exchange an authorization code for an online token. */
   private async exchange(store: StoreConfig, secret: string, code: string): Promise<OnlineToken | { error: string; offline?: boolean; failed?: unknown }> {
-    let payload: Record<string, unknown>;
-    try {
-      const response = await this.fetcher(`https://${store.shop}/admin/oauth/access_token`, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ client_id: this.options.clientId(store), client_secret: secret, code }),
-        // "manual" and a status check rather than "error", which Workers' fetch does not accept.
-        redirect: "manual",
-        signal: AbortSignal.timeout(15_000)
-      });
-      if (response.status >= 300 && response.status < 400) throw new Error(`HTTP ${response.status} redirect`);
-      payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-      if (!response.ok || typeof payload.access_token !== "string") throw new Error(`HTTP ${response.status}`);
-    } catch (error) {
-      return { error: "Shopify did not issue a token. Try again.", failed: error };
+    let payload: Record<string, unknown> = {};
+    let failed: unknown;
+    // One retry when Shopify is slow or busy (no answer in time, a network error, 429 or 5xx).
+    // A 4xx means the code itself was refused, and a used code cannot be exchanged twice.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      failed = undefined;
+      try {
+        const response = await this.fetcher(`https://${store.shop}/admin/oauth/access_token`, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ client_id: this.options.clientId(store), client_secret: secret, code }),
+          // "manual" and a status check rather than "error", which Workers' fetch does not accept.
+          redirect: "manual",
+          signal: AbortSignal.timeout(10_000)
+        });
+        if (response.status >= 300 && response.status < 400) throw Object.assign(new Error(`HTTP ${response.status} redirect`), { final: true });
+        payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+        if (!response.ok || typeof payload.access_token !== "string") {
+          throw Object.assign(new Error(`HTTP ${response.status}`), { final: response.status !== 429 && response.status < 500 });
+        }
+        break;
+      } catch (error) {
+        failed = error;
+        if ((error as { final?: boolean }).final) break;
+      }
     }
+    if (failed) return { error: "Shopify did not issue a token. Try again.", failed };
     return onlineToken(payload);
   }
 
@@ -724,24 +833,26 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
       return page(400, "Connection failed", "Shopify returned a different store than the one you were connecting.");
     }
     const code = params.get("code");
-    if (!code) return page(400, "Connection failed", "Shopify did not return an authorization code.");
+    if (!code) return this.skipInChain(session, state, store, "Shopify did not return an authorization code.", () => page(400, "Connection failed", "Shopify did not return an authorization code."));
     const token = await this.exchange(store, secret, code);
     if ("error" in token) {
       await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: token.offline ? "Shopify returned an offline token" : token.failed ? "token exchange failed" : "no verified staff email", ...(token.failed ? { error: auditError(token.failed) } : {}) });
-      return page(502, "Connection failed", escapeHtml(token.error));
+      return this.skipInChain(session, state, store, token.error, () => page(502, "Connection failed", escapeHtml(token.error)));
     }
     // One identity per person: every store connection must be the same verified Shopify email
     // the person signed in with, so nobody can act through someone else's staff account.
     if (token.associatedUser.email !== session.email) {
       await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, shopifyUserId: token.associatedUser.id, shopifyEmail: token.associatedUser.email!, reason: "Shopify email does not match the signed-in email" });
-      return page(403, "Connection refused", `You are signed in as ${escapeHtml(session.email)}, but Shopify reported ${escapeHtml(token.associatedUser.email!)} for ${escapeHtml(store.alias)}. Log in to that store's admin with the same staff email, then try again.`);
+      return this.skipInChain(session, state, store, `Shopify reported ${token.associatedUser.email!}, not ${session.email}.`, () => page(403, "Connection refused", `You are signed in as ${escapeHtml(session.email)}, but Shopify reported ${escapeHtml(token.associatedUser.email!)} for ${escapeHtml(store.alias)}. Log in to that store's admin with the same staff email, then try again.`));
     }
     await this.saveToken(session.email, store, token);
     if (state.chain) {
       // Reconnect all: go straight on to the next store. With an active Shopify admin session
       // Shopify redirects back without asking, so the whole chain needs no further clicks.
-      const next = await this.nextUnconnected(session.email);
-      if (next) return this.startConnection(session, next, true);
+      const skip = state.skip ?? [];
+      const next = await this.nextUnconnected(session.email, skip);
+      if (next) return this.startConnection(session, next, true, skip);
+      return redirect(storesLocation(skip));
     }
     return redirect("/stores");
   }

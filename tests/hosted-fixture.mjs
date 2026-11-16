@@ -298,3 +298,20 @@ export async function auditLines(path) {
     throw error;
   }
 }
+
+/**
+ * A store connection starts on a progress page, not a redirect, so Reconnect all never hits the
+ * browser's redirect limit. Return the Shopify authorize URL it moves on to (meta refresh and the
+ * Continue link must agree).
+ */
+export async function connectHop(response) {
+  const html = await response.clone().text();
+  assert.equal(response.status, 200, html);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const refresh = /<meta http-equiv="refresh" content="0;url=([^"]+)">/.exec(html);
+  assert.ok(refresh, "the progress page moves on by itself");
+  const unescape = (value) => value.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  const target = unescape(refresh[1]);
+  assert.ok(html.includes(`<a class="button primary" href="${refresh[1]}">Continue</a>`), "the Continue link matches the refresh");
+  return new URL(target);
+}

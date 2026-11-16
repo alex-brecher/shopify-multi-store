@@ -127,6 +127,7 @@ export declare class ShopifyConnections {
     private missingScopes;
     /** The next store that is not connected, whose connection expired, or that lacks newly requested access. */
     private nextUnconnected;
+    private connectable;
     handleStoresPage(request: Request): Promise<Response>;
     /**
      * GET /stores/reconnect: the one link tool errors return. Signed out, it signs in with Shopify
@@ -134,7 +135,16 @@ export declare class ShopifyConnections {
      * stores page, where one "Reconnect all" click does the same.
      */
     handleReconnect(request: Request): Promise<Response>;
+    /** Where each store stands for this person: connected, expired, never connected, or missing newly requested access. */
+    private statuses;
     private render;
+    /**
+     * The page shown while the browser goes to Shopify. It is a real page rather than a redirect, so
+     * a long Reconnect all never hits the browser's redirect limit (about 20 hops, which stopped
+     * runs after 5 or 6 stores), and the person sees which store is connecting and how far along it is.
+     * A meta refresh moves on at once; the Continue link covers a browser that does not follow it.
+     */
+    private progressPage;
     private action;
     /**
      * GET shows a confirmation button; only a POST with the /stores CSRF token creates the state and
@@ -143,6 +153,11 @@ export declare class ShopifyConnections {
     connect(request: Request): Promise<Response>;
     /** Create a single-use connection state bound to the /stores session and send the browser to Shopify. */
     private startConnection;
+    /**
+     * Reconnect all hit a store it cannot connect: note it, skip it, and go on to the next store,
+     * so one store does not stop the run. A single Connect shows the error instead.
+     */
+    private skipInChain;
     private connectForm;
     private connectableStore;
     /**
