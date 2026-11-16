@@ -310,7 +310,8 @@ export async function connectHop(response) {
   assert.equal(response.headers.get("cache-control"), "no-store");
   const refresh = /<meta http-equiv="refresh" content="[0-9];url=([^"]+)">/.exec(html);
   assert.ok(refresh, "the progress page moves on by itself");
-  const unescape = (value) => value.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  // One pass, so "&amp;lt;" decodes to "&lt;" and never on to "<".
+  const unescape = (value) => value.replace(/&(amp|quot|#39|lt|gt);/g, (_, name) => ({ amp: "&", quot: '"', "#39": "'", lt: "<", gt: ">" })[name]);
   const target = unescape(refresh[1]);
   assert.ok(html.includes(`<a class="button primary" href="${refresh[1]}">Continue</a>`), "the Continue link matches the refresh");
   return new URL(target);
