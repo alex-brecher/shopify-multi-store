@@ -4,6 +4,26 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-16
+
+Tool and operation parity with GeLi2001/shopify-mcp, adapted to the multi-store design (store alias on every call, dryRun previews, per-user tokens in hosted mode). See docs/PARITY.md.
+
+### Added
+
+- `shopify_manage`, one guided write tool chosen by `operation`: `variants` (create, update, delete), `options` (create, update, delete), `delete` (product or customer), `create_customer`, `customer_address`, `merge_customers`, `create_draft_order`, `complete_draft_order`, `order_status` (cancel, close, open, mark_paid) and `refund`. Each operation reads current state, checks ownership (variants, options and addresses must belong to the named record), defaults to dryRun:true, and never notifies customers unless asked. Draft order previews use draftOrderCalculate, merge previews use customerMergePreview, and refunds use Shopify's suggestedRefund and apply only with a matching `expectedAmount`. `delete`, `merge_customers` and order `cancel` also need `confirm`.
+- `shopify_get` resources: `customer` (with orders), `draft_order`, `variants` (every variant and inventory item field), `order_transactions`, `order_refunds`, `fulfillment_orders`.
+- `shopify_search` resources: `locations`, `price_lists`, `metafield_definitions` (type: owner type), `draft_orders`.
+- `shopify_update_product`: `handle`, `redirectNewHandle`, `seo`, `collectionsToJoin`, `collectionsToLeave`.
+- `shopify_update_order`: `phone`, `poNumber`, `customAttributes`. `shopify_update_customer`: `firstName`, `lastName`, `phone`, `taxExempt`.
+
+### Fixed
+
+- Mutation payload errors under names other than `userErrors` (for example `orderCancelUserErrors`) are now detected, so a rejected `orderCancel` run through `shopify_run_action` or `shopify_graphql_mutation` is reported as rejected instead of applied.
+
+### Changed
+
+- The tool surface cap moves from under 30 to 30 or fewer to make room for `shopify_manage`.
+
 ## [2.0.4] - 2026-11-16
 
 ### Fixed

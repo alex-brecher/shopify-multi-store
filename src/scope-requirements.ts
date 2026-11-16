@@ -32,6 +32,10 @@ export const REQUIRED_SCOPES: Record<string, string[]> = {
   "shopify_search:markets": ["read_markets"],
   "shopify_search:themes": ["read_themes"],
   "shopify_search:delivery_profiles": ["read_shipping"],
+  "shopify_search:locations": ["read_locations"],
+  "shopify_search:price_lists": ["read_products"],
+  "shopify_search:metafield_definitions": [],
+  "shopify_search:draft_orders": ["read_draft_orders"],
   "shopify_get:product": ["read_products"],
   "shopify_get:collection": ["read_products"],
   "shopify_get:order": ["read_orders"],
@@ -41,6 +45,12 @@ export const REQUIRED_SCOPES: Record<string, string[]> = {
   "shopify_get:blog_articles": ["read_content"],
   "shopify_get:uploaded_image": ["read_files"],
   "shopify_get:bulk_operation": [],
+  "shopify_get:customer": ["read_customers", "read_orders"],
+  "shopify_get:draft_order": ["read_draft_orders"],
+  "shopify_get:variants": ["read_products", "read_inventory"],
+  "shopify_get:order_transactions": ["read_orders"],
+  "shopify_get:order_refunds": ["read_orders"],
+  "shopify_get:fulfillment_orders": ["read_merchant_managed_fulfillment_orders"],
 
   // src/report-tools.ts
   "shopify_report:portfolio_snapshot": ["read_products", "read_orders"],
@@ -85,6 +95,18 @@ export const REQUIRED_SCOPES: Record<string, string[]> = {
   shopify_create_fulfillment: ["read_merchant_managed_fulfillment_orders", "write_merchant_managed_fulfillment_orders"],
   shopify_check_access: [],
 
+  // src/commerce-tools.ts (one tool; one entry per operation)
+  "shopify_manage:variants": ["write_products"],
+  "shopify_manage:options": ["write_products"],
+  "shopify_manage:delete": ["write_products", "write_customers"],
+  "shopify_manage:create_customer": ["write_customers"],
+  "shopify_manage:customer_address": ["write_customers"],
+  "shopify_manage:merge_customers": ["write_customers"],
+  "shopify_manage:create_draft_order": ["write_draft_orders"],
+  "shopify_manage:complete_draft_order": ["write_draft_orders"],
+  "shopify_manage:order_status": ["write_orders"],
+  "shopify_manage:refund": ["write_orders"],
+
   // src/discovery-tools.ts
   shopify_search_docs_chunks: [],
 
@@ -114,6 +136,9 @@ export const VARIABLE_SCOPE_TOOLS: Record<string, string> = {
   shopify_update_product: "addTags and removeTags use tagsAdd and tagsRemove, which need write_products for a product.",
   shopify_run_action: "Scope depends on the mutation; shopify_describe_action shows a hint. Request the full set (print-scopes --full).",
   shopify_update_prices: "write_inventory is only required at runtime when the request includes a unitCost.",
+  "shopify_manage:delete": "write_products for a product, write_customers for a customer.",
+  "shopify_search:metafield_definitions": "Scope depends on the owner type (e.g. read_products for PRODUCT).",
+  "shopify_get:fulfillment_orders": "Fulfillment-service orders need read_third_party_fulfillment_orders or read_assigned_fulfillment_orders instead.",
 };
 
 /** The union of every scope handle any tool in REQUIRED_SCOPES might need, for generating a shopify.app.toml. */

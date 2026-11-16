@@ -327,6 +327,11 @@ export function registerAdminTools(server: McpServer) {
     {
       id: gid("Product"),
       title: z.string().min(1).optional(),
+      handle: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).max(255).optional(),
+      redirectNewHandle: z.boolean().optional().describe("With handle: add a redirect from the old URL."),
+      seo: z.object({ title: z.string().max(255).optional(), description: z.string().max(320).optional() }).strict().optional(),
+      collectionsToJoin: z.array(gid("Collection")).max(250).optional(),
+      collectionsToLeave: z.array(gid("Collection")).max(250).optional(),
       descriptionHtml: z.string().max(50000).optional(),
       status: status.optional(),
       vendor: z.string().optional(),

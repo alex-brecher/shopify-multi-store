@@ -119,3 +119,45 @@ Collection writes with a legacy rule set still use 2026-04; tests/api-versions.t
 ## Test runner
 
 The test runner enumerates unit-test files explicitly on every platform. Live smoke tests remain a separate command.
+
+## GeLi2001/shopify-mcp comparison (2.1.0, 2026-11-16)
+
+Compared against GeLi2001/shopify-mcp 1.0.8 (MIT, 45 single-store tools). Nothing was copied; each gap was reimplemented with a store alias, dryRun preview and read-back.
+
+| Theirs | Ours before 2.1.0 | Action taken |
+|---|---|---|
+| get-products, get-product-by-id | `shopify_search products`, `shopify_get product` | Already covered |
+| get-product-variants-detailed, get-inventory-items | Partial (`shopify_get product`, `inventory`) | Added `shopify_get variants` (barcode, tax, policy, weight, cost, origin, HS code) |
+| get-inventory-levels | `shopify_get inventory` | Already covered |
+| create-product, update-product | `shopify_create_product`, `shopify_update_product` | Added handle, SEO, redirectNewHandle, collectionsToJoin/Leave to update |
+| delete-product | `shopify_run_action productDelete` | Added `shopify_manage delete` (preview + confirm) |
+| manage-product-variants, delete-product-variants | Update only | Added `shopify_manage variants` (create, update, delete, ownership check) |
+| manage-product-options | `shopify_run_action` only | Added `shopify_manage options` |
+| get-orders, get-order-by-id | `shopify_search orders`, `shopify_get order` | Already covered |
+| update-order | note, email, address, tags | Added phone, poNumber, customAttributes; metafields via `shopify_metafields` |
+| order-cancel, order-close-open, order-mark-as-paid | `shopify_run_action` only | Added `shopify_manage order_status` (state check, notify off, confirm for cancel) |
+| refund-create | `shopify_run_action` only | Added `shopify_manage refund` (suggestedRefund preview, expectedAmount guard) |
+| get-order-transactions, get-order-refund-details, get-fulfillment-orders | Missing | Added `shopify_get order_transactions`, `order_refunds`, `fulfillment_orders` |
+| create-fulfillment | `shopify_create_fulfillment` | Already covered |
+| create-draft-order, complete-draft-order | `shopify_run_action` only | Added `shopify_manage create_draft_order` (draftOrderCalculate preview) and `complete_draft_order`; `shopify_search draft_orders`, `shopify_get draft_order` |
+| get-customers | `shopify_search customers` | Already covered |
+| get-customer-by-id, get-customer-orders | Missing | Added `shopify_get customer` (with orders page) |
+| create-customer, delete-customer | `shopify_run_action` only | Added `shopify_manage create_customer` (duplicate email check) and `delete` |
+| update-customer | note, email, tags | Added firstName, lastName, phone, taxExempt. Marketing consent stays out of scope |
+| manage-customer-address | Missing | Added `shopify_manage customer_address` |
+| customer-merge | `shopify_run_action` only | Added `shopify_manage merge_customers` (customerMergePreview, confirm) |
+| get-metafields, set-metafields, delete-metafields | `shopify_get metafields`, `shopify_metafields` | Already covered |
+| get-metafield-definitions | Missing | Added `shopify_search metafield_definitions` |
+| manage-tags | `shopify_tags` | Already covered |
+| inventory-set-quantities | `shopify_set_inventory` (compare-and-set) | Kept ours; multi-item absolute sets through `shopify_run_action inventorySetQuantities` |
+| get-shop-info | `shopify_get_shop_info` | Already covered |
+| get-locations | `shopify_report store_locations` | Added `shopify_search locations` |
+| get-markets | `shopify_search markets` | Already covered |
+| get-price-lists | Missing | Added `shopify_search price_lists` |
+| get-collections, get-collection-by-id | `shopify_search collections`, `shopify_get collection` | Already covered |
+| Client credentials token exchange with refresh | `client_credentials` store auth | Already covered |
+| Static token, `--domain`, `SHOPIFY_API_VERSION` | Per-store config, keychain, apiVersion | Already covered |
+| userErrors wrapping (`checkUserErrors`) | Structured errors, but only `userErrors`/`mediaUserErrors` | Fixed: any `*UserErrors` field is detected |
+| Pagination (first + cursor on lists) | Cursor pagination everywhere | Already covered |
+| Rate limits | None in theirs | Ours retries reads with Retry-After and cost data; mutations never auto-retried |
+| Tests (jest, mocked client) | node:test, schema-validated documents | 22 new tests |

@@ -919,3 +919,24 @@ test("guided tools run on the default API version (the one a Worker bundles); on
     assert.deepEqual(await validateDocument(document, DEFAULT_API_VERSION), [], name);
   }
 });
+
+test("update_order and update_customer send the extra OrderInput and CustomerInput fields", async (t) => {
+  const { call, state } = await fixture(t);
+  const order = await call("update_order", {
+    id: gid("Order", 1),
+    phone: "+16135551111",
+    poNumber: "PO-7",
+    customAttributes: [{ key: "gift", value: "yes" }],
+    dryRun: false,
+  });
+  assert.equal(order.isError, undefined, order.content[0].text);
+  assert.deepEqual(sentVariables(state, "UpdateOrder"), [
+    { input: { id: gid("Order", 1), phone: "+16135551111", poNumber: "PO-7", customAttributes: [{ key: "gift", value: "yes" }] } },
+  ]);
+  const customer = await call("update_customer", { id: gid("Customer", 1), firstName: "Ada", lastName: "L", phone: "+16135551111", taxExempt: true, dryRun: false });
+  assert.equal(customer.isError, undefined, customer.content[0].text);
+  assert.deepEqual(sentVariables(state, "UpdateCustomer"), [
+    { input: { id: gid("Customer", 1), firstName: "Ada", lastName: "L", phone: "+16135551111", taxExempt: true } },
+  ]);
+  await assert.rejects(call("update_customer", { id: gid("Customer", 1), phone: "555" }), "phone must be E.164");
+});

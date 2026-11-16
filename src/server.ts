@@ -1,5 +1,6 @@
 import { registerAdminTools } from "./admin-tools.js";
 import { registerParityTools } from "./parity-tools.js";
+import { registerCommerceTools } from "./commerce-tools.js";
 import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerReportTools } from "./report-tools.js";
@@ -58,6 +59,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   options.beforeRegister?.(server);
   registerAdminTools(server);
   registerParityTools(server);
+  registerCommerceTools(server);
   registerReadTools(server);
   registerReportTools(server);
   registerDiscoveryTools(server);

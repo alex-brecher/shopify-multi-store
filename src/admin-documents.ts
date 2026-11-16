@@ -1,5 +1,5 @@
 // Each operation is validated against the pinned Shopify schema during CI.
-export const PRODUCT_FIELDS = `id title handle descriptionHtml status vendor productType tags totalInventory updatedAt options { id name values } featuredMedia { id alt preview { image { url } } }`;
+export const PRODUCT_FIELDS = `id title handle descriptionHtml seo { title description } status vendor productType tags totalInventory updatedAt options { id name values } featuredMedia { id alt preview { image { url } } }`;
 export const VARIANT_FIELDS = `id title sku barcode price compareAtPrice inventoryQuantity selectedOptions { name value } inventoryItem { id tracked }`;
 export const COLLECTION_FIELDS = `id title handle descriptionHtml sortOrder updatedAt productsCount { count precision } image { url altText } ruleSet { appliedDisjunctively rules { column relation condition } }`;
 export const ORDER_FIELDS = `id name createdAt updatedAt displayFinancialStatus displayFulfillmentStatus currentTotalPriceSet { shopMoney { amount currencyCode } }`;

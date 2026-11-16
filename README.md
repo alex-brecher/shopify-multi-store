@@ -252,7 +252,7 @@ The import copies credentials into the operating system credential store and pre
 
 ## MCP tools
 
-The server exposes 29 tools.
+The server exposes 30 tools.
 
 | Tool | Action |
 | --- | --- |
@@ -260,12 +260,12 @@ The server exposes 29 tools.
 | `shopify_get_shop_info` | Read one store's identity. |
 | `shopify_check_access` | Show granted scopes and which tools or resources would fail, across one or many stores. |
 | `shopify_report` | Run a cross-store report (see above). |
-| `shopify_search` | List or search products, collections, orders, customers, publications, redirects, pages, files, metaobjects, markets, themes, or delivery profiles on one store or several. |
-| `shopify_get` | Read one product, collection, order, inventory, metafield set, theme files, blog articles, uploaded image, or bulk operation by ID. |
+| `shopify_search` | List or search products, collections, orders, customers, draft orders, publications, redirects, pages, files, metaobjects, metafield definitions, markets, price lists, locations, themes, or delivery profiles on one store or several. |
+| `shopify_get` | Read one product, product variants in full, collection, order, order transactions, order refunds, fulfillment orders, customer with orders, draft order, inventory, metafield set, theme files, blog articles, uploaded image, or bulk operation by ID. |
 | `shopify_update_prices` | Set price, compare-at price and unit cost for up to 250 SKUs on one store or several. |
 | `shopify_set_inventory` | Set available inventory with compare-and-set protection. |
 | `shopify_create_product` | Create a product with options, variants, and images. |
-| `shopify_update_product` | Update product fields, variants, media, and tags. |
+| `shopify_update_product` | Update product fields (including handle, SEO and collection membership), variants, media, and tags. |
 | `shopify_create_collection` | Create a manual or smart collection and publish it to chosen channels. |
 | `shopify_update_collection` | Update a collection and add products to a manual collection. |
 | `shopify_create_discount` | Create a percentage discount code. |
@@ -273,9 +273,10 @@ The server exposes 29 tools.
 | `shopify_metafields` | Set and delete metafields for any owner. |
 | `shopify_redirects` | Create and delete URL redirects. |
 | `shopify_tags` | Add and remove tags on a product, order, customer, or draft order. |
-| `shopify_update_order` | Update order note, email, shipping address, and tags. |
-| `shopify_update_customer` | Update customer note, email, and tags. |
+| `shopify_update_order` | Update order note, email, phone, PO number, additional details, shipping address, and tags. |
+| `shopify_update_customer` | Update customer name, email, phone, note, tax exemption, and tags. |
 | `shopify_create_fulfillment` | Fulfill an order's open fulfillment orders, with optional tracking. |
+| `shopify_manage` | Guided writes by `operation`: product variants and options, create customer, customer addresses, merge customers, create and complete draft orders, cancel, close, reopen or mark an order paid, refund, and delete a product or customer. |
 | `shopify_find_actions` | Search every Admin API mutation. |
 | `shopify_describe_action` | Describe one mutation. |
 | `shopify_run_action` | Run any mutation on one or more stores. |
@@ -289,6 +290,8 @@ The server exposes 29 tools.
 Read-only operations can run in parallel. Mutations stay isolated to the selected stores.
 
 Every guided write tool defaults to `dryRun: true`, which returns a before/after (or would-create) preview without changing anything; pass `dryRun: false`, after the user authorizes the exact store and change, to apply it. The tool then reads the result back. Tags on products, orders, and customers change with `addTags` and `removeTags`; `replaceTags` replaces every tag and the preview lists the tags it would remove. Write results are never dropped for size: large results are trimmed, keeping status, counts, and every item that did not apply.
+
+`shopify_manage` needs `confirm` for operations that cannot be undone (`delete`, `merge_customers`, order `cancel`), and a refund applies only when `expectedAmount` matches Shopify's suggested refund from the preview.
 
 `shopify_graphql_mutation` and `shopify_run_action` refuse denylisted mutations and need `confirm` set to the mutation name for destructive ones, including mutations that are destructive only because of their arguments, such as a product status of `ARCHIVED`.
 
