@@ -4,6 +4,10 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+### Fixed
+
+- Tests: the workerd test no longer fails intermittently on Windows CI with "fetch failed". The Worker answers an oversized body with 413 without reading it, and over loopback TCP on Windows the closing socket's reset (read ECONNRESET) often destroyed that 413 before the client read it. The oversized request now reaches the Worker through a helper Worker and a service binding inside workerd, so there is no socket to reset. Test-only; the Worker is unchanged.
+
 ## [2.1.0] - 2026-11-16
 
 Tool and operation parity with GeLi2001/shopify-mcp, adapted to the multi-store design (store alias on every call, dryRun previews, per-user tokens in hosted mode). See docs/PARITY.md.
