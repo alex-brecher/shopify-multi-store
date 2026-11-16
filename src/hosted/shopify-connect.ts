@@ -3,6 +3,7 @@ import { shopifyHmacMessage, verifyShopifyHmacAsync } from "../shopify-hmac.js";
 import type { StoreConfig } from "../config.js";
 import type { ShopifyUserConnection, UserShopifyAccess } from "../runtime.js";
 import { auditError } from "./audit.js";
+import { isReadOnly } from "../read-only.js";
 import { THEME_COOKIE, cookie, escapeHtml, htmlPage, readCookie, sameOrigin, themeFrom, themeSwitch, type Theme } from "./html.js";
 import { PAGE_SIGN_IN_CLIENT, appendSetCookie, sha256, type AuthorizationServer, type PageSignInPurpose } from "./oauth.js";
 import type { OAuthStore } from "./store.js";
@@ -562,7 +563,7 @@ export class ShopifyConnections {
       const disconnect = record
         ? `<form class="inline" method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="disconnect"><input type="hidden" name="store" value="${escapeHtml(store.alias)}"><button class="danger" type="submit">Disconnect</button></form>`
         : "";
-      return `<li class="store"><div class="store-main"><div class="store-name">${escapeHtml(store.alias)} ${pill}</div><code class="muted">${escapeHtml(store.shop)}</code>${detail ? `<div class="muted">${detail}</div>` : ""}</div><div class="store-actions">${connect}${disconnect}</div></li>`;
+      return `<li class="store"><div class="store-main"><div class="store-name">${escapeHtml(store.alias)} ${pill}${isReadOnly(store.alias, session.email) ? ` <span class="pill off" title="Changes to this store are turned off for you on this server.">Read only</span>` : ""}</div><code class="muted">${escapeHtml(store.shop)}</code>${detail ? `<div class="muted">${detail}</div>` : ""}</div><div class="store-actions">${connect}${disconnect}</div></li>`;
     });
     const first = unconnected ? await this.nextUnconnected(session.email, [], rows) : undefined;
     const percent = total ? Math.round((ready / total) * 100) : 0;

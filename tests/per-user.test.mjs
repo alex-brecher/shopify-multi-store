@@ -602,3 +602,38 @@ test("a connection missing a newly requested scope is flagged for Reconnect all,
   assert.match(later, /Needs approval.*Reconnect to approve new access/s);
   assert.match(later, /Reconnect all \(2 stores\)/, "the outdated connection joins Reconnect all");
 });
+
+test("read-only mode: a person read-only on one store cannot write there, and nothing reaches Shopify", async (t) => {
+  process.env.SHOPIFY_READ_ONLY_USERS = "Pat@BariatricPal.com:main";
+  t.after(() => { delete process.env.SHOPIFY_READ_ONLY_USERS; });
+  const requests = await shopifyMock(t);
+  const { app, auditPath } = await setup(t);
+  const client = await mcpClient(t, app, await signIn(app, { token: "pat-online-main" }));
+  const { tools } = await client.listTools();
+  assert.ok(tools.some((tool) => tool.name === "shopify_run_action"), "write tools stay listed when only some stores are read-only");
+  const before = requests.length;
+  const refused = await client.callTool({ name: "shopify_run_action", arguments: { stores: ["main"], mutation: "tagsAdd", variables: { id: "gid://shopify/Product/1", tags: ["sale"] }, dryRun: false } });
+  assert.equal(refused.isError, true);
+  assert.match(JSON.stringify(refused), /Read-only: changes to main are turned off for you/);
+  assert.ok(!requests.slice(before).some((request) => /^\s*mutation/.test(request.body.query ?? "")), "no mutation was sent");
+  const read = await client.callTool({ name: "shopify_get_shop_info", arguments: { store: "main" } });
+  assert.notEqual(read.isError, true, JSON.stringify(read));
+  const listed = await client.callTool({ name: "shopify_list_stores", arguments: {} });
+  assert.equal(listed.structuredContent.stores.find((store) => store.alias === "main").readOnly, true);
+  const lines = (await readFile(auditPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const run = lines.find((line) => line.event === "action_run");
+  assert.equal(run.outcome[0].ok, false);
+});
+
+test("read-only mode: a person read-only everywhere does not see write tools; others are unaffected", async (t) => {
+  process.env.SHOPIFY_READ_ONLY_USERS = "pat@bariatricpal.com";
+  t.after(() => { delete process.env.SHOPIFY_READ_ONLY_USERS; });
+  await shopifyMock(t);
+  const { app } = await setup(t);
+  const pat = await mcpClient(t, app, await signIn(app, { token: "pat-online-main" }));
+  const names = (await pat.listTools()).tools.map((tool) => tool.name);
+  for (const write of ["shopify_run_action", "shopify_manage", "shopify_graphql_mutation", "shopify_update_product"]) assert.ok(!names.includes(write), write);
+  for (const read of ["shopify_search", "shopify_get", "shopify_list_stores", "shopify_find_actions"]) assert.ok(names.includes(read), read);
+  const sam = await mcpClient(t, app, await signIn(app, { email: "sam@bariatricpal.com", token: "sam-online-main" }));
+  assert.ok((await sam.listTools()).tools.some((tool) => tool.name === "shopify_run_action"), "other people keep write tools");
+});

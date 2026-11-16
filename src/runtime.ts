@@ -82,6 +82,8 @@ export interface StoreScope {
   access?: UserShopifyAccess;
   /** Set in hosted mode: writes one audit line per action run. */
   auditAction?: (details: ActionAuditDetails) => Promise<void>;
+  /** Set in hosted mode: the signed-in person's verified email, for read-only rules. */
+  user?: string;
 }
 
 /**

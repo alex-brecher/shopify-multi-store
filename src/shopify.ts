@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { serializeStore } from "./concurrency.js";
 import { operation, mutationErrors } from "./operations.js";
+import { assertWritable } from "./read-only.js";
 import { createAdminApiClient } from "@shopify/admin-api-client";
 import { readFileSync } from "node:fs";
 import type { StoreConfig } from "./config.js";
@@ -113,6 +114,8 @@ async function graphqlRequest(store: StoreConfig, document: string, variables: R
 }
 
 export async function adminGraphql(store: StoreConfig, document: string, variables: Record<string, unknown>): Promise<GraphqlEnvelope> {
+  // Read-only rules apply to every tool, because every Admin API call comes through here.
+  assertWritable(store.alias, document);
   const token = await getAccessToken(store);
   const key = `${store.shop}\0${createHash("sha256").update(token).digest("hex")}`;
   return serializeStore(key, () => adminGraphqlWithToken(store, document, variables, token));
