@@ -272,6 +272,7 @@ test("Reconnect all skips a store that fails, goes on to the rest, and names it 
   const skipped = await shopifyBack(app, first, { cookie, email: "someone@else.com" });
   const html = await skipped.clone().text();
   assert.match(html, /wholesale was skipped/);
+  assert.match(html, /content="4;url=/, "a skip note stays up long enough to read");
   assert.match(html, /class="step bad"><span class="dot" aria-hidden="true"><\/span><span class="step-name">wholesale/);
   const next = await connectHop(skipped);
   assert.equal(next.host, "outlet.myshopify.com");
@@ -284,6 +285,24 @@ test("Reconnect all skips a store that fails, goes on to the rest, and names it 
   assert.match(page, /2 of 3 stores connected/);
   const emails = (await store.entries("shopify_token")).map(([, record]) => record.alias).sort();
   assert.deepEqual(emails, ["main", "outlet"]);
+});
+
+test("the stores page offers System, Light and Dark, and remembers the choice in a cookie", async (t) => {
+  await shopifyMock(t);
+  const { app } = await setup(t);
+  const cookie = await storesSession(app, "pat@bariatricpal.com");
+  const page = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.match(page, /<html lang="en"><head>/, "System is the default: no forced theme");
+  assert.match(page, /<a href="\/stores\?theme=system" aria-current="true">System<\/a>/);
+  const set = await call(app, "/stores?theme=dark", { headers: { cookie } });
+  assert.equal(set.status, 303);
+  const theme = cookieNamed(set, "__Host-sms_theme");
+  assert.equal(theme, "__Host-sms_theme=dark");
+  const dark = await (await call(app, "/stores", { headers: { cookie: `${cookie}; ${theme}` } })).text();
+  assert.match(dark, /<html lang="en" data-theme="dark">/);
+  assert.match(dark, /<a href="\/stores\?theme=dark" aria-current="true">Dark<\/a>/);
+  const junk = await (await call(app, "/stores", { headers: { cookie: `${cookie}; __Host-sms_theme="><script>` } })).text();
+  assert.match(junk, /<html lang="en"><head>/, "an unknown cookie value falls back to System");
 });
 
 test("a token exchange that hits a network error is retried once", async (t) => {

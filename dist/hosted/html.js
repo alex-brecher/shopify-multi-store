@@ -4,7 +4,9 @@ export function escapeHtml(value) {
 }
 const STYLE = `
 :root{color-scheme:light dark;--bg:#f7f7f5;--card:#fff;--text:#1d1d1b;--muted:#5f5f5a;--line:#e2e2dc;--accent:#1f5f46;--accent-text:#fff;--warn-bg:#fff4d6;--warn-line:#e0b84a;--danger:#a3261b;--ok-bg:#e3f2ea;--ok-text:#1f5f46;--off-bg:#ecece8;--bad-bg:#fbe4e1;--track:#ecece8}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#20201e;--text:#ececea;--muted:#a6a6a0;--line:#34342f;--accent:#5bb38c;--accent-text:#0d1f17;--warn-bg:#3a3017;--warn-line:#8a6d1f;--danger:#ef8a80;--ok-bg:#1d3a2c;--ok-text:#8fd6b1;--off-bg:#2c2c29;--bad-bg:#43211d;--track:#34342f}}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#161615;--card:#20201e;--text:#ececea;--muted:#a6a6a0;--line:#34342f;--accent:#5bb38c;--accent-text:#0d1f17;--warn-bg:#3a3017;--warn-line:#8a6d1f;--danger:#ef8a80;--ok-bg:#1d3a2c;--ok-text:#8fd6b1;--off-bg:#2c2c29;--bad-bg:#43211d;--track:#34342f}}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{color-scheme:dark;--bg:#161615;--card:#20201e;--text:#ececea;--muted:#a6a6a0;--line:#34342f;--accent:#5bb38c;--accent-text:#0d1f17;--warn-bg:#3a3017;--warn-line:#8a6d1f;--danger:#ef8a80;--ok-bg:#1d3a2c;--ok-text:#8fd6b1;--off-bg:#2c2c29;--bad-bg:#43211d;--track:#34342f}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:40rem;margin:3rem auto;padding:0 1rem}
@@ -60,12 +62,26 @@ li.step.now .step-name{font-weight:600}
 @keyframes pulse{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.spinner,li.step.now .dot{animation:none}}
 details{margin:.75rem 0}
+nav.theme{display:flex;gap:.25rem;align-items:center;flex-wrap:wrap;margin-top:1rem;font-size:.85rem;color:var(--muted)}
+nav.theme a{color:var(--muted);text-decoration:none;padding:.2rem .55rem;border-radius:999px;border:1px solid transparent}
+nav.theme a[aria-current]{color:var(--text);border-color:var(--line);background:var(--bg)}
 summary{cursor:pointer}
 @media (max-width:480px){main{margin:1rem auto}.card{padding:1.1rem}.summary .primary{width:100%}.summary>div:last-child{flex:1 1 100%}}
 `;
+export const THEME_COOKIE = "__Host-sms_theme";
+/** The theme the viewer picked on an earlier visit, from its cookie. */
+export function themeFrom(request) {
+    const value = readCookie(request, THEME_COOKIE);
+    return value === "light" || value === "dark" ? value : "system";
+}
+/** Light, Dark and System links. The pages run no scripts, so each link sets a cookie on the server. */
+export function themeSwitch(current, path) {
+    const links = ["system", "light", "dark"].map((theme) => `<a href="${escapeHtml(path)}?theme=${theme}"${theme === current ? ' aria-current="true"' : ""}>${theme[0].toUpperCase()}${theme.slice(1)}</a>`);
+    return `<nav class="theme" aria-label="Theme">Theme: ${links.join("")}</nav>`;
+}
 /** An HTML page that cannot be framed, cached, or load anything from elsewhere. */
-export function htmlPage({ title, body, status = 200, headers = {}, formAction = "'self'", head = "" }) {
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">${head}<title>${escapeHtml(title)}</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`;
+export function htmlPage({ title, body, status = 200, headers = {}, formAction = "'self'", head = "", theme = "system" }) {
+    const html = `<!doctype html><html lang="en"${theme === "system" ? "" : ` data-theme="${theme}"`}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">${head}<title>${escapeHtml(title)}</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`;
     return new Response(html, {
         status,
         headers: {

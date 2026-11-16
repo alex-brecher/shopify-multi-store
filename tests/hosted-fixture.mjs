@@ -308,7 +308,7 @@ export async function connectHop(response) {
   const html = await response.clone().text();
   assert.equal(response.status, 200, html);
   assert.equal(response.headers.get("cache-control"), "no-store");
-  const refresh = /<meta http-equiv="refresh" content="0;url=([^"]+)">/.exec(html);
+  const refresh = /<meta http-equiv="refresh" content="[0-9];url=([^"]+)">/.exec(html);
   assert.ok(refresh, "the progress page moves on by itself");
   const unescape = (value) => value.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
   const target = unescape(refresh[1]);
