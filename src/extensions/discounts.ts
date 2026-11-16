@@ -335,7 +335,7 @@ registerSearchResource("discounts", {
   document: DISCOUNT_DOCS.list!,
   scopes: ["read_discounts"],
   description:
-    'Code and automatic discounts, newest first, with title, status (ACTIVE, SCHEDULED, EXPIRED), type (__typename), summary, startsAt, endsAt, usage count and the first 3 codes of code discounts. query: Shopify discount search syntax, such as "status:active", "method:code", "method:automatic", "title:summer", "code:FALL20", "discount_type:percentage", "starts_at:>2026-11-01" or "ends_at:<2026-12-01".',
+    'Code and automatic discounts, newest first, with title, status (ACTIVE, SCHEDULED, EXPIRED), type (__typename), summary, startsAt, endsAt, usage count and the first 3 codes of code discounts. query: Shopify discount search syntax, such as "status:active", "method:code", "type:percentage" (also fixed_amount, free_shipping, bxgy), "title:summer", "times_used:>0" or "starts_at:>2026-11-01".',
 });
 
 registerGetResource("discount", {
