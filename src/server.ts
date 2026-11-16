@@ -5,6 +5,7 @@ import { mapConcurrent } from "./concurrency.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerReportTools } from "./report-tools.js";
 import { registerReadTools } from "./read-tools.js";
+import { registerOpsTools } from "./ops-tools.js";
 import { actionPolicyError, destructiveMutations, registerActionTools, parseActionDocument, sendMutationWithOutcome } from "./actions/tools.js";
 import { currentUserAccess, isHostedMode } from "./runtime.js";
 import { isReadOnly, readOnlyEverywhere } from "./read-only.js";
@@ -72,6 +73,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   registerReportTools(server);
   registerDiscoveryTools(server);
   registerActionTools(server);
+  registerOpsTools(server);
 
   server.registerTool(
     "shopify_list_stores",

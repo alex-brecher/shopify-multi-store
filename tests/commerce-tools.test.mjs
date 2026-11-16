@@ -239,7 +239,8 @@ test("shopify_manage registers one tool that lists every operation and its field
   assert.ok(tool);
   assert.equal(tool.definition.annotations.readOnlyHint, false);
   for (const name of Object.keys(MANAGE_OPERATIONS)) assert.match(tool.definition.description, new RegExp(`- ${name}: `));
-  assert.deepEqual(Object.keys(MANAGE_OPERATIONS).sort(), ["complete_draft_order", "create_customer", "create_draft_order", "customer_address", "delete", "merge_customers", "options", "order_status", "refund", "variants"]);
+  // Built-in operations; feature areas in src/extensions add more.
+  for (const name of ["complete_draft_order", "create_customer", "create_draft_order", "customer_address", "delete", "merge_customers", "options", "order_status", "refund", "variants", "webhook"]) assert.ok(name in MANAGE_OPERATIONS, name);
   assert.match(tool.definition.description, /inventoryPolicy\?: DENY\|CONTINUE/);
 });
 

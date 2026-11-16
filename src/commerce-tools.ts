@@ -1,3 +1,5 @@
+import "./extensions/index.js";
+import { MANAGE_OPERATIONS, registerManageOperation } from "./extension-registry.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { textResult, WorkflowError, type Data, type Workflow } from "./admin-workflows.js";
@@ -74,17 +76,7 @@ export function variantInput(v: Data): Data {
   return { ...rest, ...(Object.keys(inventoryItem).length ? { inventoryItem } : {}) };
 }
 
-interface Operation {
-  description: string;
-  shape: z.ZodRawShape;
-  scopes: string[];
-  handler: (w: Workflow, a: Data) => Promise<Data>;
-  /** For irreversible operations: the word confirm must equal before dryRun:false runs. */
-  confirmWord?: (a: Data) => string | undefined;
-}
-
-/** Every shopify_manage operation, keyed by name. Exported for tests and docs. */
-export const MANAGE_OPERATIONS: Record<string, Operation> = {};
+export { MANAGE_OPERATIONS };
 
 /** The strict schema one operation's input is checked against (dryRun defaults to true). */
 export function operationSchema(name: string) {
@@ -114,6 +106,7 @@ function fieldList(shape: z.ZodRawShape, depth = 0): string {
 }
 
 export function registerCommerceTools(server: McpServer) {
+  // Built-in operations register when this module loads; extension areas register on import.
   const names = Object.keys(MANAGE_OPERATIONS) as [string, ...string[]];
   server.registerTool(
     "shopify_manage",
@@ -172,7 +165,7 @@ function register(
   handler: (w: Workflow, a: Data) => Promise<Data>,
   confirmWord?: (a: Data) => string | undefined,
 ) {
-  MANAGE_OPERATIONS[name] = { description, shape, scopes, handler, confirmWord };
+  registerManageOperation(name, { description, shape, scopes, handler, confirmWord });
 }
 
   // ---------------------------------------------------------------- products

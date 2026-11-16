@@ -1,3 +1,5 @@
+import "./extensions/index.js";
+import { EXTRA_GET, EXTRA_SEARCH } from "./extension-registry.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { DOCS } from "./admin-documents.js";
@@ -92,7 +94,7 @@ function declared(document: string, variables: Data): Data {
 }
 
 async function list(w: Workflow, resource: SearchResource, a: Data): Promise<Data> {
-  const listing: Listing = SEARCH_RESOURCES[resource];
+  const listing: Listing = SEARCH_RESOURCES[resource] ?? { ...EXTRA_SEARCH[resource]!, pinned: true };
   if (listing.requires === "type" && !a.type) throw new Error(`${resource} needs type.`);
   if (listing.pinned) w.store = { ...w.store, apiVersion: PARITY_API_VERSION };
   if (listing.scopes.length) await w.requireScopes(listing.scopes);
@@ -102,6 +104,15 @@ async function list(w: Workflow, resource: SearchResource, a: Data): Promise<Dat
 async function get(w: Workflow, resource: GetResource, a: Data): Promise<Data> {
   const id = String(a.id ?? "");
   const type = GID.exec(id)?.[1];
+  const extra = EXTRA_GET[resource];
+  if (extra) {
+    if (!type || !extra.types.includes(type)) throw new Error(`${resource} needs id, a ${extra.types.join(" or ")} GID such as gid://shopify/${extra.types[0]}/123.`);
+    w.store = { ...w.store, apiVersion: PARITY_API_VERSION };
+    if (extra.scopes.length) await w.requireScopes(extra.scopes);
+    const d = await w.run(extra.document, declared(extra.document, { id, first: a.first, after: a.after }));
+    if (!d[extra.root]) throw new Error(`${extra.label} not found in this store.`);
+    return d[extra.root];
+  }
   const allowed = GET_TYPES[resource];
   if (!type || (allowed && !allowed.includes(type)))
     throw new Error(`${resource} needs id, a ${allowed ? allowed.join(" or ") : "Shopify"} GID such as gid://shopify/${allowed?.[0] ?? "Product"}/123.`);
@@ -182,12 +193,12 @@ function storeFailure(alias: string, error: unknown): Data {
 }
 
 export function registerReadTools(server: McpServer): void {
-  const search = Object.keys(SEARCH_RESOURCES) as [SearchResource, ...SearchResource[]];
+  const search = [...Object.keys(SEARCH_RESOURCES), ...Object.keys(EXTRA_SEARCH)] as [SearchResource, ...SearchResource[]];
   server.registerTool(
     "shopify_search",
     {
       title: "Search a Shopify Resource",
-      description: `List or search one kind of record with cursor pagination, on one store (store) or several in parallel (stores; each store returns its own result and cursor). Resources:\n${Object.entries(SEARCH_RESOURCES).map(([name, item]) => `- ${name}: ${item.description}`).join("\n")}`,
+      description: `List or search one kind of record with cursor pagination, on one store (store) or several in parallel (stores; each store returns its own result and cursor). Resources:\n${[...Object.entries(SEARCH_RESOURCES), ...Object.entries(EXTRA_SEARCH)].map(([name, item]) => `- ${name}: ${item.description}`).join("\n")}`,
       inputSchema: z
         .object({
           resource: z.enum(search),
@@ -231,12 +242,12 @@ export function registerReadTools(server: McpServer): void {
     },
   );
 
-  const gets = Object.keys(GET_RESOURCES) as [GetResource, ...GetResource[]];
+  const gets = [...Object.keys(GET_RESOURCES), ...Object.keys(EXTRA_GET)] as [GetResource, ...GetResource[]];
   server.registerTool(
     "shopify_get",
     {
       title: "Get a Shopify Record",
-      description: `Read one record by GID from one store. Follow each returned cursor independently. Resources:\n${Object.entries(GET_RESOURCES).map(([name, text]) => `- ${name}: ${text}`).join("\n")}`,
+      description: `Read one record by GID from one store. Follow each returned cursor independently. Resources:\n${[...Object.entries(GET_RESOURCES), ...Object.entries(EXTRA_GET).map(([name, def]) => [name, def.description] as const)].map(([name, text]) => `- ${name}: ${text}`).join("\n")}`,
       inputSchema: z
         .object({
           resource: z.enum(gets),
