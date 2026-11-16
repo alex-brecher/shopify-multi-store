@@ -4,6 +4,17 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+### Added
+
+- Read-only mode: `SHOPIFY_READ_ONLY`, `SHOPIFY_READ_ONLY_STORES` and `SHOPIFY_READ_ONLY_USERS` (`email` or `email:alias`) block Admin API writes for the whole server, chosen stores or chosen people. Enforced where every Shopify call is sent; refused writes reach nothing. People who are read-only everywhere do not see write tools.
+- `shopify_bulk_export`: one-step export of orders, products, variants, customers, inventory, collections or draft orders (or a custom bulk query) with a search filter. Starts a Shopify bulk operation, waits, and returns the JSONL link and counts.
+- Webhooks: `shopify_search` resource `webhooks`, `shopify_get` resource `webhook`, and `shopify_manage` operation `webhook` (create, update, delete) for HTTPS, Pub/Sub and EventBridge delivery.
+- `src/extension-registry.ts`: feature areas add `shopify_search`/`shopify_get` resources and `shopify_manage` operations from their own file in `src/extensions/`, with their scopes.
+
+### Changed
+
+- Tool cap raised from 30 to 31 for `shopify_bulk_export`; new capabilities go into the existing tools.
+
 ### Fixed
 
 - Tests: the workerd test no longer fails intermittently on Windows CI with "fetch failed". The Worker answers an oversized body with 413 without reading it, and over loopback TCP on Windows the closing socket's reset (read ECONNRESET) often destroyed that 413 before the client read it. The oversized request now reaches the Worker through a helper Worker and a service binding inside workerd, so there is no socket to reset. Test-only; the Worker is unchanged.

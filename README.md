@@ -252,7 +252,7 @@ The import copies credentials into the operating system credential store and pre
 
 ## MCP tools
 
-The server exposes 30 tools.
+The server exposes 31 tools.
 
 | Tool | Action |
 | --- | --- |
@@ -260,6 +260,7 @@ The server exposes 30 tools.
 | `shopify_get_shop_info` | Read one store's identity. |
 | `shopify_check_access` | Show granted scopes and which tools or resources would fail, across one or many stores. |
 | `shopify_report` | Run a cross-store report (see above). |
+| `shopify_bulk_export` | Export a whole resource (orders, products, variants, customers, inventory by location, collections, draft orders, or your own bulk query) with an optional search filter in one step, and get the JSONL download link and row counts. No pagination or size limit. |
 | `shopify_search` | List or search products, collections, orders, customers, draft orders, publications, redirects, pages, files, metaobjects, metafield definitions, markets, price lists, locations, themes, or delivery profiles on one store or several. |
 | `shopify_get` | Read one product, product variants in full, collection, order, order transactions, order refunds, fulfillment orders, customer with orders, draft order, inventory, metafield set, theme files, blog articles, uploaded image, or bulk operation by ID. |
 | `shopify_update_prices` | Set price, compare-at price and unit cost for up to 250 SKUs on one store or several. |
@@ -326,6 +327,19 @@ This server still controls store selection, credentials, execution, and mutation
 Set `OPT_OUT_INSTRUMENTATION=true` to turn off that telemetry.
 
 This integration uses the official [Shopify AI Toolkit](https://github.com/Shopify/shopify-ai-toolkit). It also reflects useful patterns from [Shopify Admin Skills](https://github.com/40rty-ai/shopify-admin-skills).
+
+## Read-only mode
+
+Turn writes off for the whole server, for chosen stores, or for chosen people. These are plain settings, not secrets, so the rules stay visible in your deployment config.
+
+| Setting | Effect |
+| --- | --- |
+| `SHOPIFY_READ_ONLY=true` | No writes on any store, for anyone. Write tools are not listed. |
+| `SHOPIFY_READ_ONLY_STORES=outlet,wholesale` | Nobody can write to those stores. |
+| `SHOPIFY_READ_ONLY_USERS=pat@example.com` | Pat cannot write anywhere and does not see write tools (hosted server). |
+| `SHOPIFY_READ_ONLY_USERS=pat@example.com:wholesale` | Pat cannot write to `wholesale`; other stores follow Pat's Shopify permissions. |
+
+The check runs where every Shopify call is sent, so no tool, including `shopify_run_action` and the raw GraphQL tools, can get around it. A refused write sends nothing to Shopify. Two mutations that change nothing stay allowed: `draftOrderCalculate` (draft order previews) and `bulkOperationRunQuery` (exports). `shopify_list_stores` and the hosted stores page mark read-only stores, and the audit log records refusals as `read_only`.
 
 ## Security model
 
