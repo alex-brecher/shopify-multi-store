@@ -739,8 +739,11 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
             return page(400, "Connection failed", "This connection link expired, was already used, or was started in another browser. Start again from the stores page.");
         }
         if (state.shop !== store.shop || state.alias.toLowerCase() !== store.alias.toLowerCase()) {
-            await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: "shop does not match the store being connected" });
-            return page(400, "Connection failed", "Shopify returned a different store than the one you were connecting.");
+            await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: state.alias, reason: `shop does not match the store being connected (Shopify returned ${store.shop}, expected ${state.shop})` });
+            // Usually two configured aliases for one store (an old .myshopify.com domain that now redirects).
+            // Reconnect all skips the alias instead of ending the run on it.
+            const expected = (await this.visibleStores()).find((candidate) => candidate.alias.toLowerCase() === state.alias.toLowerCase()) ?? store;
+            return this.skipInChain(session, state, expected, `Shopify returned ${store.shop} instead of ${state.shop}. Two store entries may point at the same store.`, () => page(400, "Connection failed", "Shopify returned a different store than the one you were connecting."));
         }
         const code = params.get("code");
         if (!code)

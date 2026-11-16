@@ -287,6 +287,28 @@ test("Reconnect all skips a store that fails, goes on to the rest, and names it 
   assert.deepEqual(emails, ["main", "outlet"]);
 });
 
+test("Reconnect all skips an alias whose Shopify authorization comes back as another configured store", async (t) => {
+  await shopifyMock(t, undefined);
+  // "old-wholesale" is a renamed store's old domain: Shopify answers as wholesale.myshopify.com.
+  process.env.STORES_JSON = JSON.stringify({ stores: [
+    { alias: "main", shop: "main.myshopify.com" },
+    { alias: "wholesale", shop: "wholesale.myshopify.com" },
+    { alias: "old-wholesale", shop: "old-wholesale.myshopify.com" },
+    { alias: "outlet", shop: "outlet.myshopify.com" }
+  ] });
+  const { app } = await setup(t);
+  const cookie = await storesSession(app, "pat@bariatricpal.com");
+  let authorize = await startConnect(app, cookie, "wholesale", true);
+  authorize = await connectHop(await shopifyBack(app, authorize, { cookie }));
+  assert.equal(authorize.host, "old-wholesale.myshopify.com");
+  const skipped = await shopifyBack(app, authorize, { cookie, shop: "wholesale.myshopify.com" });
+  assert.match(await skipped.clone().text(), /old-wholesale was skipped: Shopify returned wholesale\.myshopify\.com/);
+  const next = await connectHop(skipped);
+  assert.equal(next.host, "outlet.myshopify.com");
+  const done = await shopifyBack(app, next, { cookie });
+  assert.equal(done.headers.get("location"), "/stores?skipped=old-wholesale");
+});
+
 test("the stores page offers System, Light and Dark, and remembers the choice in a cookie", async (t) => {
   await shopifyMock(t);
   const { app } = await setup(t);
