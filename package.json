@@ -1,7 +1,7 @@
 {
   "name": "shopify-multi-store-mcp-server",
-  "version": "2.2.0",
-  "description": "Multi-store Shopify Admin MCP server for Claude, Codex, Cursor, and VS Code. Search products, compare inventory and catalogs, run reports, and make guarded updates.",
+  "version": "2.2.1",
+  "description": "One MCP server for every Shopify store: 31 tools for search, reports, bulk exports, inventory, discounts, content, webhooks and guarded writes, plus all Admin API mutations. Read-only mode. Claude, ChatGPT, Codex, Cursor, VS Code, or hosted on Cloudflare.",
   "mcpName": "io.github.alex-brecher/shopify-multi-store",
   "license": "MIT",
   "repository": {
