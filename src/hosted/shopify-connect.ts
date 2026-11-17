@@ -90,7 +90,14 @@ interface Session {
   theme?: Theme;
 }
 
-type StoreStatus = { store: StoreConfig; record?: ShopifyTokenRecord; live: boolean; outdated: boolean };
+/**
+ * Reconnect all also renews connections with less than this left, so a daily or twice-daily
+ * Reconnect all (by hand or a scheduled job) keeps every store connected without a gap.
+ */
+export const RENEW_WITHIN_MS = 12 * 60 * 60 * 1000;
+
+/** due: Reconnect all should (re)connect it now: not connected, expired, missing access, or expiring within RENEW_WITHIN_MS. */
+type StoreStatus = { store: StoreConfig; record?: ShopifyTokenRecord; live: boolean; outdated: boolean; due: boolean };
 
 export interface ShopifyConnectOptions {
   auth: AuthorizationServer;
@@ -481,7 +488,7 @@ export class ShopifyConnections {
   /** The next store that is not connected, whose connection expired, or that lacks newly requested access. */
   private async nextUnconnected(email: string, skip: string[] = [], rows?: StoreStatus[]): Promise<StoreConfig | undefined> {
     const skipped = new Set(skip.map((alias) => alias.toLowerCase()));
-    return (rows ?? await this.statuses(email)).find((row) => this.connectable(row.store) && !skipped.has(row.store.alias.toLowerCase()) && !(row.live && !row.outdated))?.store;
+    return (rows ?? await this.statuses(email)).find((row) => this.connectable(row.store) && !skipped.has(row.store.alias.toLowerCase()) && row.due)?.store;
   }
 
   private connectable(store: StoreConfig): boolean {
@@ -526,7 +533,8 @@ export class ShopifyConnections {
       const record = await this.record(email, store);
       const live = Boolean(record && record.expiresAt > now);
       const outdated = Boolean(live && record && this.missingScopes(record).length);
-      return { store, ...(record ? { record } : {}), live, outdated };
+      const due = !live || outdated || Boolean(record && record.expiresAt - now < RENEW_WITHIN_MS);
+      return { store, ...(record ? { record } : {}), live, outdated, due };
     }));
   }
 
@@ -540,7 +548,7 @@ export class ShopifyConnections {
     const usable = rows.filter((row) => this.connectable(row.store));
     const total = usable.length;
     const ready = usable.filter((row) => row.live && !row.outdated).length;
-    const unconnected = total - ready;
+    const unconnected = usable.filter((row) => row.due).length;
     const failedNames: string[] = [];
     const items = rows.map(({ store, record, live, outdated }) => {
       const user = record?.associatedUser;
@@ -557,7 +565,7 @@ export class ShopifyConnections {
           : live && outdated
             ? [`<span class="pill warn">Needs approval</span>`, `Connected as ${who}. Reconnect to approve new access.`]
             : live
-              ? [`<span class="pill ok">Connected</span>`, `As ${who}. Expires ${relativeTime(record.expiresAt, now)}.`]
+              ? [`<span class="pill ok">Connected</span>`, `As ${who}. Expires ${relativeTime(record.expiresAt, now)}.${record.expiresAt - now < RENEW_WITHIN_MS ? " Reconnect all renews it now." : ""}`]
               : [`<span class="pill warn">Expired</span>`, `Was ${who}. Expired ${relativeTime(record.expiresAt, now)}.`];
       const connect = usableStore ? this.connectForm(session, store.alias, false, record ? "Reconnect" : "Connect") : "";
       const disconnect = record
@@ -868,9 +876,11 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
     if (state.chain) {
       // Reconnect all: go straight on to the next store. With an active Shopify admin session
       // Shopify redirects back without asking, so the whole chain needs no further clicks.
-      const skip = state.skip ?? [];
       const rows = await this.statuses(session.email);
-      const next = await this.nextUnconnected(session.email, skip, rows);
+      // A store just renewed is never picked again, even if Shopify gave it less than RENEW_WITHIN_MS.
+      const skip = state.skip ?? [];
+      const done = [...skip, store.alias];
+      const next = await this.nextUnconnected(session.email, done, rows);
       if (next) return this.startConnection(session, next, true, skip, undefined, rows);
       return redirect(storesLocation(skip));
     }

@@ -688,3 +688,34 @@ test("shopify_bulk_export starts a bulk query, waits, and returns the file; shop
   assert.match(tools.find((tool) => tool.name === "shopify_search").description, /- webhooks:/);
   assert.match(tools.find((tool) => tool.name === "shopify_get").description, /- webhook:/);
 });
+
+test("Reconnect all renews connections with under 12 hours left, so a twice-daily run never lets one lapse", async (t) => {
+  await shopifyMock(t, undefined);
+  const stores = [
+    { alias: "main", shop: "main.myshopify.com" },
+    { alias: "wholesale", shop: "wholesale.myshopify.com" }
+  ];
+  process.env.STORES_JSON = JSON.stringify({ stores });
+  const { app, store, advance } = await setup(t);
+  await connectStore(app, await storesSession(app, "pat@bariatricpal.com"), { alias: "wholesale" });
+
+  advance(11 * 3_600_000);
+  let cookie = await storesSession(app, "pat@bariatricpal.com");
+  let page = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.ok(!/Reconnect all \(/.test(page), "13 hours left is not due yet");
+  assert.match(page, /All set/);
+
+  advance(2 * 3_600_000);
+  cookie = await storesSession(app, "pat@bariatricpal.com");
+  page = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.match(page, /Reconnect all \(1 store\)/, "11 hours left is due");
+  assert.match(page, /Connected<\/span>.*Reconnect all renews it now/s, "still shown as connected");
+
+  const done = await shopifyBack(app, await startConnect(app, cookie, "wholesale", true), { cookie });
+  assert.equal(done.status, 303, await done.clone().text());
+  assert.equal(done.headers.get("location"), "/stores", "the chain ends after the one due store");
+  page = await (await call(app, "/stores", { headers: { cookie } })).text();
+  assert.match(page, /All set/);
+  const renewed = (await store.entries("shopify_token")).find(([, record]) => record.alias === "wholesale")[1];
+  assert.ok(renewed.expiresAt > Date.now() + 13 * 3_600_000 + 23 * 3_600_000, "renewed for a fresh 24 hours");
+});

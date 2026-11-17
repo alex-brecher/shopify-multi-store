@@ -4,6 +4,13 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-17
+
+### Changed
+
+- Reconnect all also renews connections with less than 12 hours left, and those count toward its store total. A twice-daily Reconnect all (for example a scheduled browser job) now keeps every store connected with no gap, instead of waiting until a connection has already expired. Stores due for renewal still show as Connected, with "Reconnect all renews it now".
+- Package and MCP Registry descriptions name the main capabilities (31 tools, bulk exports, read-only mode, hosted per-user sign-in).
+
 ## [2.2.0] - 2026-11-16
 
 ### Added

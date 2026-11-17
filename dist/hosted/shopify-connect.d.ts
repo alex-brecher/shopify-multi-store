@@ -26,6 +26,11 @@ export interface ShopifyTokenRecord {
     connectedAt: number;
     expiresAt: number;
 }
+/**
+ * Reconnect all also renews connections with less than this left, so a daily or twice-daily
+ * Reconnect all (by hand or a scheduled job) keeps every store connected without a gap.
+ */
+export declare const RENEW_WITHIN_MS: number;
 export interface ShopifyConnectOptions {
     auth: AuthorizationServer;
     store: OAuthStore;
