@@ -6,7 +6,7 @@ import type { OAuthStore } from "./store.js";
 import type { AuditLog, AuthAuditEntry } from "./audit.js";
 import { requestSource } from "./request-source.js";
 import { KNOWN_REDIRECT_URIS, RedirectPolicy, isLoopbackRedirect, redirectDisplayHost, redirectUriMatches, type RedirectClass } from "./known-clients.js";
-import { cookie, escapeHtml, formActionSource, htmlPage, readCookie, sameOrigin } from "./html.js";
+import { cookie, escapeHtml, formActionSources, htmlPage, readCookie, sameOrigin } from "./html.js";
 
 export { isLoopbackRedirect };
 export const SCOPE = "mcp";
@@ -683,7 +683,9 @@ ${open ? `<div class="warn"><p>This app's return address is not on this server's
     return htmlPage({
       title: `Approve access - ${this.displayName}`,
       body,
-      formAction: `'self' ${formActionSource(pending.redirectUri)}`,
+      // Chromium checks every form redirect hop: Cursor's www.cursor.com callback
+      // 308s to cursor.com (2026-11-24), so allow both origins.
+      formAction: `'self' ${formActionSources(pending.redirectUri)}`,
       headers: { "set-cookie": cookie(CONSENT_COOKIE, binding, CONSENT_TTL_MS / 1000) }
     });
   }

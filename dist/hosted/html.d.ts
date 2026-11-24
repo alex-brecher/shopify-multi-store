@@ -36,3 +36,5 @@ export declare function cookie(name: string, value: string, maxAgeSeconds: numbe
 export declare function sameOrigin(request: Request, origin: string): boolean;
 /** The CSP form-action source that lets a form post end in a redirect to this URI. */
 export declare function formActionSource(uri: string): string;
+/** Include the www/apex sibling for HTTP(S) callback redirect chains. */
+export declare function formActionSources(uri: string): string;
