@@ -1056,6 +1056,15 @@ test("consent screen shows the client, redirect host, and signed-in Shopify user
   assert.ok(!/<(script|img|link|iframe)\b/i.test(html), "no external assets or scripts");
 });
 
+test("consent CSP allows Cursor's www callback and apex redirect", async (t) => {
+  const { app } = await setup(t);
+  const redirectUri = "https://www.cursor.com/agents/mcp/oauth/callback";
+  const { body: client } = await registerClient(app, { redirect_uris: [redirectUri] });
+  const page = await startToCallback(app, { clientId: client.client_id, redirectUri });
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-security-policy"), /form-action 'self' https:\/\/www\.cursor\.com https:\/\/cursor\.com(?:;|$)/);
+});
+
 test("consent deny returns access_denied, and approval is never remembered", async (t) => {
   const { app } = await setup(t);
   const { body: client } = await registerClient(app);

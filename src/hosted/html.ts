@@ -163,3 +163,20 @@ export function formActionSource(uri: string): string {
     return "'none'";
   }
 }
+
+/** Include the www/apex sibling for HTTP(S) callback redirect chains. */
+export function formActionSources(uri: string): string {
+  const source = formActionSource(uri);
+  try {
+    const url = new URL(uri);
+    const hostname = url.hostname.replace(/\.$/, "");
+    if ((url.protocol !== "http:" && url.protocol !== "https:") ||
+        hostname === "localhost" || hostname.endsWith(".localhost") ||
+        /^[\d.]+$/.test(hostname) ||
+        !/^[a-z\d](?:[a-z\d-]*[a-z\d])?(?:\.[a-z\d](?:[a-z\d-]*[a-z\d])?)*$/i.test(hostname)) return source;
+    url.hostname = url.hostname.startsWith("www.") ? url.hostname.slice(4) : `www.${url.hostname}`;
+    return `${source} ${url.protocol}//${url.host}`;
+  } catch {
+    return source;
+  }
+}

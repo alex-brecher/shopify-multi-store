@@ -4,6 +4,10 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+### Fixed
+
+- Approve on the consent screen no longer hangs for clients whose callback host redirects between www and the bare domain (Cursor web's https://www.cursor.com callback now redirects to https://cursor.com). The consent page's CSP form-action allows both origins.
+
 ## [2.2.1] - 2026-11-17
 
 ### Changed
