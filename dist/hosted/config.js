@@ -68,6 +68,28 @@ export function publicOrigin(env) {
     return publicUrl.origin;
 }
 /**
+ * OFFLINE_TOKEN_USERS: comma-separated verified Shopify staff emails (the email each person signs
+ * in with, as the audit log's user column shows it), matched without regard to case. These
+ * people get Shopify's expiring offline tokens, renewed by the server, instead of 24-hour
+ * per-user tokens. Unset or empty: nobody.
+ */
+export function offlineTokenUsers(env, warn = (message) => console.warn(message)) {
+    const users = list(env.OFFLINE_TOKEN_USERS) ?? [];
+    // ASCII addresses only, folded with an ASCII-only lower case (no Unicode case folding), so no
+    // look-alike or locale-folded address can match someone else's. A bad entry is dropped with one
+    // warning; it never stops the server.
+    const valid = users.filter((user) => ASCII_EMAIL.test(user));
+    const dropped = users.length - valid.length;
+    if (dropped)
+        warn(`OFFLINE_TOKEN_USERS: ignored ${dropped} ${dropped === 1 ? "entry that is" : "entries that are"} not a plain ASCII email address.`);
+    return [...new Set(valid.map(asciiLower))];
+}
+const ASCII_EMAIL = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+/** Lower-case A-Z only. Other characters are left as they are. */
+export function asciiLower(value) {
+    return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
+}
+/**
  * Everything createHostedApp needs from the settings, for any platform. The caller adds the
  * platform's parts: the OAuth store, the audit log, and (on Node) the DNS-pinned client
  * metadata fetcher. Throws on a missing encryption key or an invalid setting, so a
@@ -80,6 +102,7 @@ export async function hostedOptionsFromEnv(env, platform) {
     const appClientSecret = env.SHOPIFY_APP_CLIENT_SECRET?.trim() || undefined;
     const scopes = list(env.SHOPIFY_APP_SCOPES) ?? fullScopes();
     const identityStore = env.SHOPIFY_IDENTITY_STORE?.trim() || undefined;
+    const offlineUsers = offlineTokenUsers(env);
     if (identityStore && !(await platform.loadStores()).some((store) => store.alias.toLowerCase() === identityStore.toLowerCase())) {
         throw new Error(`SHOPIFY_IDENTITY_STORE names ${identityStore}, which is not a configured store alias.`);
     }
@@ -103,7 +126,8 @@ export async function hostedOptionsFromEnv(env, platform) {
             clientId: (store) => env[clientIdEnvName(store.alias)]?.trim() || (store.auth.type === "client_credentials" ? store.auth.clientId : undefined) || appClientId,
             clientSecret: (store) => env[secretEnvName(store.alias)]?.trim() || appClientSecret,
             scopes,
-            ...(identityStore ? { identityStore } : {})
+            ...(identityStore ? { identityStore } : {}),
+            ...(offlineUsers.length ? { offlineTokenUsers: offlineUsers } : {})
         }
     };
 }

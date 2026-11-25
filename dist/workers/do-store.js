@@ -113,6 +113,15 @@ export class OAuthStoreObject {
                 await this.storage.put(storageKey(kind, operation.key), { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) });
                 return { value: next, claimed: true };
             }
+            case "putIfAbsent": {
+                if (await this.live(kind, operation.key))
+                    return false;
+                if (COUNTED.has(kind))
+                    await this.adjustCount(kind, 1);
+                await this.storage.put(storageKey(kind, operation.key), { value: operation.value, ...(operation.expiresAt !== undefined ? { expiresAt: operation.expiresAt } : {}) });
+                await this.scheduleSweep();
+                return true;
+            }
             case "deleteMatching": {
                 const doomed = (await this.all(kind)).filter(([, entry]) => matches(entry.value, operation.match)).map(([key]) => storageKey(kind, key));
                 await this.deleteKeys(doomed);
@@ -207,6 +216,9 @@ export class DurableObjectStore {
     }
     claim(kind, key, flag) {
         return this.call({ op: "claim", kind, key, flag });
+    }
+    async putIfAbsent(kind, key, value, expiresAt) {
+        return (await this.call({ op: "putIfAbsent", kind, key, value, ...(expiresAt !== undefined ? { expiresAt } : {}) })) === true;
     }
     async deleteMatching(kind, match) {
         return (await this.call({ op: "deleteMatching", kind, match })) ?? 0;

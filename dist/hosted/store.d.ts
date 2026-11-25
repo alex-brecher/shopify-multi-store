@@ -1,5 +1,5 @@
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "revoked_family" | "counter";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "shopify_offline" | "shopify_lease" | "revoked_family" | "counter";
 /** Every record kind, for stores that enumerate them. */
 export declare const RECORD_KINDS: readonly RecordKind[];
 /** Options for OAuthStore.increment. */
@@ -26,6 +26,11 @@ export interface OAuthStore {
         value: T;
         claimed: boolean;
     } | undefined>;
+    /**
+     * Atomically create a record only if there is no live one under the key. True when this call
+     * created it. Of several concurrent calls for one key exactly one gets true. Used for leases.
+     */
+    putIfAbsent<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<boolean>;
     /**
      * Delete every record of a kind whose top-level fields equal all of `match`. Returns the
      * number removed. Declarative (not a callback), so a remote store such as a Durable Object
@@ -72,6 +77,7 @@ export declare class MemoryStore implements OAuthStore {
         value: T;
         claimed: boolean;
     } | undefined>;
+    putIfAbsent<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<boolean>;
     increment(kind: RecordKind, key: string, options?: IncrementOptions): Promise<{
         value: number;
         applied: boolean;

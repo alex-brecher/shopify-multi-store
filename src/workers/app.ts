@@ -45,17 +45,45 @@ export function createWorker(options: WorkerOptions = {}) {
     return createHostedApp({ ...hosted, store: new DurableObjectStore(env.OAUTH_STORE), audit: new D1AuditLog(env.AUDIT_DB) });
   }
 
+  function cachedApp(env: WorkerEnv, origin: string): Promise<HostedApp> {
+    const configured = typeof env.MCP_PUBLIC_URL === "string" && env.MCP_PUBLIC_URL.trim() ? "configured" : origin;
+    let app = apps.get(configured);
+    if (!app) {
+      app = appFor(env, origin);
+      apps.set(configured, app);
+      // A configuration error is reported on every request until it is fixed and the Worker redeployed.
+      app.catch(() => apps.delete(configured));
+    }
+    return app;
+  }
+
   return {
+    /**
+     * Cron trigger (triggers.crons in wrangler.jsonc): renew the offline tokens of people on
+     * OFFLINE_TOKEN_USERS, so stores nobody used for weeks stay connected. Does nothing when
+     * the allowlist is empty or no cron is configured.
+     */
+    async scheduled(_controller: unknown, env: WorkerEnv, ctx?: ExecutionContextLike): Promise<void> {
+      const offline = typeof env.OFFLINE_TOKEN_USERS === "string" && env.OFFLINE_TOKEN_USERS.trim();
+      if (!offline) return;
+      if (!(typeof env.MCP_PUBLIC_URL === "string" && env.MCP_PUBLIC_URL.trim())) {
+        console.error("Scheduled offline token refresh skipped: set MCP_PUBLIC_URL so the job knows the server's origin.");
+        return;
+      }
+      const run = (async () => {
+        const app = await cachedApp(env, env.MCP_PUBLIC_URL as string);
+        const result = await app.shopify.refreshOfflineTokens();
+        console.log(`Scheduled offline token refresh: ${result.refreshed.length} renewed, ${result.failed.length} failed, ${result.skipped.length} not due.`);
+      })().catch((error: unknown) => {
+        console.error(`Scheduled offline token refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      ctx?.waitUntil(run);
+      await run;
+    },
+
     async fetch(request: Request, env: WorkerEnv, _ctx?: ExecutionContextLike): Promise<Response> {
       const origin = new URL(request.url).origin;
-      const configured = typeof env.MCP_PUBLIC_URL === "string" && env.MCP_PUBLIC_URL.trim() ? "configured" : origin;
-      let app = apps.get(configured);
-      if (!app) {
-        app = appFor(env, origin);
-        apps.set(configured, app);
-        // A configuration error is reported on every request until it is fixed and the Worker redeployed.
-        app.catch(() => apps.delete(configured));
-      }
+      const app = cachedApp(env, origin);
       // Cloudflare's edge sets CF-Connecting-IP to the client's address; a client cannot set it.
       setRequestSource(request, request.headers.get("cf-connecting-ip") ?? undefined);
       try {

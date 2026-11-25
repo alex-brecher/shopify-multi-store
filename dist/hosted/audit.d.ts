@@ -19,7 +19,7 @@ export interface AuditEntry {
 }
 /** Sign-in, token, and request-authorization events. Tokens are never included. */
 export interface AuthAuditEntry {
-    event: "sign_in" | "sign_in_denied" | "consent_approved" | "consent_denied" | "token_issued" | "token_refreshed" | "refresh_denied" | "request_unauthorized" | "request_forbidden" | "shopify_connected" | "shopify_connect_denied" | "shopify_disconnected";
+    event: "sign_in" | "sign_in_denied" | "consent_approved" | "consent_denied" | "token_issued" | "token_refreshed" | "refresh_denied" | "request_unauthorized" | "request_forbidden" | "shopify_connected" | "shopify_connect_denied" | "shopify_disconnected" | "shopify_token_refreshed" | "shopify_refresh_failed";
     timestamp: string;
     user?: string;
     clientId?: string;

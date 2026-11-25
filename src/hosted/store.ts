@@ -3,10 +3,10 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "revoked_family" | "counter";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "shopify_offline" | "shopify_lease" | "revoked_family" | "counter";
 
 /** Every record kind, for stores that enumerate them. */
-export const RECORD_KINDS: readonly RecordKind[] = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "revoked_family", "counter"];
+export const RECORD_KINDS: readonly RecordKind[] = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "shopify_offline", "shopify_lease", "revoked_family", "counter"];
 
 /** Options for OAuthStore.increment. */
 export interface IncrementOptions {
@@ -30,6 +30,11 @@ export interface OAuthStore {
    * rotation, where a second use of a token is a reuse.
    */
   claim<T>(kind: RecordKind, key: string, flag: string): Promise<{ value: T; claimed: boolean } | undefined>;
+  /**
+   * Atomically create a record only if there is no live one under the key. True when this call
+   * created it. Of several concurrent calls for one key exactly one gets true. Used for leases.
+   */
+  putIfAbsent<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<boolean>;
   /**
    * Delete every record of a kind whose top-level fields equal all of `match`. Returns the
    * number removed. Declarative (not a callback), so a remote store such as a Durable Object
@@ -114,6 +119,14 @@ export class MemoryStore implements OAuthStore {
     this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
     await this.changed();
     return { value: next as T, claimed: true };
+  }
+
+  async putIfAbsent<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<boolean> {
+    // Read and write with no await in between, as in claim().
+    if (this.live(kind, key)) return false;
+    this.data[kind][key] = { value, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+    await this.changed();
+    return true;
   }
 
   async increment(kind: RecordKind, key: string, options: IncrementOptions = {}): Promise<{ value: number; applied: boolean }> {
