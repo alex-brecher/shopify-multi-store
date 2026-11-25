@@ -58,6 +58,9 @@ For the people named in `OFFLINE_TOKEN_USERS` (verified Shopify staff emails, th
 - If Shopify refuses a refresh (the app was uninstalled or its access revoked, or the refresh token ended), the store shows **Not connected** with the reason on `/stores`, the audit log records `shopify_refresh_failed`, and tools say the store is not connected. Nothing falls back to another person's connection. Reconnect the store to approve again.
 - The stores page shows such stores as "Connected, renews automatically". To move a person from 24-hour connections to self-renewing ones, add their email and have them press **Reconnect all** once.
 - Disconnect removes the person from the store's approvers; the offline token is deleted when nobody approves it any more.
+- Removing someone's staff account in Shopify does not end their offline access (the app's token stays valid). Take them off `OFFLINE_TOKEN_USERS` and redeploy, which ends it at once.
+- Shopify keeps one expiring offline token per app and store, so two servers (for example staging and production) using the same Shopify app with offline tokens retire each other's tokens. Give each deployment its own Shopify app.
+- Only Shopify's answer for a dead refresh token (HTTP 401 `invalid_request`) stops a store. Other refusals, such as a wrong client secret, are audited and retried, so fixing the setting is enough.
 
 ## Connect from your AI app
 

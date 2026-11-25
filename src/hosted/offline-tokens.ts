@@ -34,6 +34,8 @@ const WAIT_STEPS = 100;
 const RECORD_GRACE_MS = 30 * 24 * 3600_000;
 /** Shopify's documented refresh token lifetime (90 days), used if a response leaves it out. */
 const DEFAULT_REFRESH_LIFETIME_S = 7_776_000;
+/** Shopify's documented access token lifetime (1 hour), used if a refresh response leaves it out. */
+const DEFAULT_ACCESS_LIFETIME_S = 3600;
 
 /** One store's expiring offline token pair, both encrypted. */
 export interface OfflineTokenRecord {
@@ -107,9 +109,13 @@ function binding(label: string, store: { alias: string; shop: string }) {
 export function expiringOfflineToken(payload: Record<string, unknown>, refresh = false): ExpiringOfflineToken | { error: string } {
   if (typeof payload.access_token !== "string" || !payload.access_token) return { error: "Shopify did not return an access token." };
   if (payload.associated_user) return { error: "Shopify returned a per-user token instead of an offline token. It was discarded." };
-  if (typeof payload.refresh_token !== "string" || !payload.refresh_token || typeof payload.expires_in !== "number" || payload.expires_in <= 0) {
+  if (typeof payload.refresh_token !== "string" || !payload.refresh_token) {
     return { error: "Shopify returned an offline token that does not expire, so it cannot be renewed. It was discarded." };
   }
+  // A refresh answer with both tokens is always kept (Shopify rotated already); a missing lifetime
+  // falls back to the documented 1 hour. A code exchange must state it.
+  const expiresIn = typeof payload.expires_in === "number" && payload.expires_in > 0 ? payload.expires_in : refresh ? DEFAULT_ACCESS_LIFETIME_S : undefined;
+  if (expiresIn === undefined) return { error: "Shopify returned an offline token that does not expire, so it cannot be renewed. It was discarded." };
   const refreshExpiresIn = typeof payload.refresh_token_expires_in === "number" && payload.refresh_token_expires_in > 0
     ? payload.refresh_token_expires_in
     : refresh ? DEFAULT_REFRESH_LIFETIME_S : undefined;
@@ -118,12 +124,12 @@ export function expiringOfflineToken(payload: Record<string, unknown>, refresh =
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token,
     ...(typeof payload.scope === "string" ? { scope: payload.scope } : {}),
-    expiresIn: payload.expires_in,
+    expiresIn,
     refreshExpiresIn
   };
 }
 
-type PostResult = { ok: true; payload: Record<string, unknown> } | { ok: false; status?: number; final: boolean; error: unknown };
+type PostResult = { ok: true; payload: Record<string, unknown> } | { ok: false; status?: number; code?: string; final: boolean; error: unknown };
 
 export class OfflineTokens {
   private readonly sleep: (ms: number) => Promise<void>;
@@ -155,7 +161,11 @@ export class OfflineTokens {
 
   // ---------- Shopify token endpoint ----------
 
-  /** POST a form to the store's token endpoint, with one retry on a network error, timeout, 429 or 5xx. */
+  /**
+   * POST a form to the store's token endpoint, with one retry on a network error, timeout, 429 or
+   * 5xx. Shopify documents that retry as safe for a refresh too: the presented refresh token stays
+   * usable until the app uses the newer one.
+   */
   private async post(store: StoreConfig, fields: Record<string, string>): Promise<PostResult> {
     let last: PostResult = { ok: false, final: false, error: new Error("not attempted") };
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -171,7 +181,8 @@ export class OfflineTokens {
         if (response.ok) return { ok: true, payload };
         // 4xx other than 429 is Shopify's final answer; retrying returns the same thing.
         const final = response.status >= 400 && response.status < 500 && response.status !== 429;
-        last = { ok: false, status: response.status, final, error: Object.assign(new Error(`HTTP ${response.status}`), { status: response.status }) };
+        const code = typeof payload.error === "string" ? payload.error : undefined;
+        last = { ok: false, status: response.status, ...(code ? { code } : {}), final, error: Object.assign(new Error(`HTTP ${response.status}`), { status: response.status }) };
         if (final) return last;
       } catch (error) {
         last = { ok: false, final: false, error };
@@ -259,12 +270,15 @@ export class OfflineTokens {
 
   /** Take one person off a store's approvers; with nobody left the record is deleted. */
   async remove(email: string, store: StoreConfig): Promise<void> {
-    const record = await this.record(store);
-    if (!record) return;
-    const rest = record.authorizedBy.filter((approver) => approver !== email.toLowerCase());
-    if (rest.length === record.authorizedBy.length) return;
-    if (rest.length) await this.put({ ...record, authorizedBy: rest });
-    else await this.options.store.delete("shopify_offline", offlineKey(store.alias));
+    // Under the lease, so a refresh finishing at the same moment is not written over.
+    await this.withLease(store, async () => {
+      const record = await this.record(store);
+      if (!record) return;
+      const rest = record.authorizedBy.filter((approver) => approver !== email.toLowerCase());
+      if (rest.length === record.authorizedBy.length) return;
+      if (rest.length) await this.put({ ...record, authorizedBy: rest });
+      else await this.options.store.delete("shopify_offline", offlineKey(store.alias));
+    });
   }
 
   private async encryptPair(store: StoreConfig, token: ExpiringOfflineToken): Promise<[string, string]> {
@@ -306,8 +320,13 @@ export class OfflineTokens {
     try {
       return (await decryptToken(this.options.encryptionKeys, record.encryptedToken, binding(ACCESS_LABEL, store))).token;
     } catch {
-      await this.fail(store, record, "The stored token could not be read (encryption key changed). Reconnect the store.", "unreadable");
-      throw new OfflineTokenError("unreadable", "The stored token could not be read. Reconnect the store.");
+      const reason = "The stored token could not be read (encryption key changed). Reconnect the store.";
+      // Read outside the lease: mark it failed only if the pair is still the one that failed.
+      await this.withLease(store, async () => {
+        const current = await this.record(store);
+        if (current && !current.failure && current.encryptedToken === record.encryptedToken) await this.fail(store, current, reason, "unreadable").catch(() => {});
+      }).catch(() => {});
+      throw new OfflineTokenError("unreadable", reason);
     }
   }
 
@@ -350,13 +369,16 @@ export class OfflineTokens {
     }
     const result = await this.post(store, { client_id: clientId, client_secret: secret, grant_type: "refresh_token", refresh_token: refreshToken });
     if (!result.ok) {
-      if (result.final) {
-        const reason = result.status === 401
-          ? "Shopify refused the refresh token: it expired, was revoked, or the app was uninstalled. Reconnect the store."
-          : `Shopify refused to renew the connection (HTTP ${result.status}). Reconnect the store.`;
+      // Only Shopify's documented answer for a dead refresh token (401 invalid_request: unknown,
+      // replaced, expired, revoked or uninstalled; or an OAuth invalid_grant) stops the store.
+      // Anything else (a wrong client secret, a frozen shop, 403, 404) is left for an operator
+      // to fix and retried later, so one bad setting does not disconnect every store.
+      const refused = (result.status === 401 && result.code !== "invalid_client") || (result.status === 400 && (result.code === "invalid_grant" || result.code === "invalid_request"));
+      if (refused) {
+        const reason = "Shopify refused the refresh token: it expired, was revoked, or the app was uninstalled. Reconnect the store.";
         return this.fail(store, record, reason, "refused", result.error, result.status);
       }
-      await this.options.audit({ event: "shopify_refresh_failed", store: store.alias, reason: `temporary failure (${trigger}); will retry`, error: auditError(result.error), ...(result.status ? { status: result.status } : {}) });
+      await this.options.audit({ event: "shopify_refresh_failed", store: store.alias, reason: `${result.final ? `not renewed (HTTP ${result.status}${result.code ? ` ${result.code}` : ""}); check the app credentials` : "temporary failure"} (${trigger}); will retry`, error: auditError(result.error), ...(result.status ? { status: result.status } : {}) });
       throw new OfflineTokenError("transient", `Shopify did not renew the connection to store "${store.alias}" just now. Try again in a minute.`);
     }
     const token = expiringOfflineToken(result.payload, true);

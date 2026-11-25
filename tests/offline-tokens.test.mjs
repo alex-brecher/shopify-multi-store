@@ -30,6 +30,7 @@ function fakeShopify() {
   const current = new Map();
   let issued = 0;
   let refusing = false;
+  let override;
   let gate;
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetch = async (url, init) => {
@@ -49,6 +50,7 @@ function fakeShopify() {
     calls.push({ shop, kind, body });
     if (kind === "refresh") {
       if (gate) await gate;
+      if (override) return json(override.body, override.status);
       if (refusing || current.get(shop) !== body.refresh_token) return json({ error: "invalid_request", error_description: "This request requires an active refresh_token" }, 401);
     } else {
       assert.equal(body.expiring, "1", "an offline code exchange asks for an expiring token");
@@ -64,6 +66,7 @@ function fakeShopify() {
     calls,
     current,
     refuse() { refusing = true; },
+    answer(status, body) { override = status ? { status, body } : undefined; },
     hold() { let open; gate = new Promise((resolve) => { open = resolve; }); return () => { gate = undefined; open(); }; }
   };
 }
@@ -443,4 +446,44 @@ test("the Worker's cron handler refreshes offline tokens, and does nothing witho
   assert.ok(after.issuedAt >= now);
   assert.ok(after.refreshExpiresAt > now + 89 * day);
   assert.equal(after.failure, undefined);
+});
+
+test("only a dead refresh token stops a store: a wrong client secret or a 403 is retried later, and a 200 without lifetimes is kept", async (t) => {
+  const { app, store, shopify, advance, auditPath } = await offlineApp(t);
+  const cookie = await storesSession(app, PAT);
+  await reconnectAll(app, cookie);
+  const use = async () => { const access = app.shopify.accessFor(PAT); await access.load(); return access.token("main"); };
+  advance(2 * 3600_000);
+  for (const [status, body] of [[401, { error: "invalid_client" }], [403, { errors: "Forbidden" }], [402, {}]]) {
+    shopify.answer(status, body);
+    await assert.rejects(use(), /did not renew the connection to store "main" just now/);
+    assert.equal((await store.get("shopify_offline", offlineKey("main"))).failure, undefined, `HTTP ${status} does not stop the store`);
+  }
+  const notices = (await auditLines(auditPath)).filter((line) => line.event === "shopify_refresh_failed");
+  assert.equal(notices.length, 3);
+  assert.match(notices[0].reason, /HTTP 401 invalid_client\); check the app credentials/);
+  // Fixed: the next use refreshes with the refresh token still held. A 200 without lifetimes is kept.
+  const held = shopify.current.get("main.myshopify.com");
+  shopify.answer(200, { access_token: "shpat_bare", refresh_token: "shprt_bare" });
+  assert.equal(await use(), "shpat_bare");
+  assert.equal(shopify.calls.at(-1).body.refresh_token, held);
+  const record = await store.get("shopify_offline", offlineKey("main"));
+  assert.equal(record.expiresAt - record.issuedAt, 3_600_000);
+  assert.equal(record.refreshExpiresAt - record.issuedAt, 7_776_000_000);
+  // Shopify's answer for a dead refresh token does stop it.
+  shopify.answer(undefined);
+  advance(2 * 3600_000);
+  shopify.answer(401, { error: "invalid_request", error_description: "This request requires an active refresh_token" });
+  assert.equal(await use(), undefined);
+  assert.match((await store.get("shopify_offline", offlineKey("main"))).failure.reason, /Shopify refused the refresh token/);
+});
+
+test("the stores page tells allowlisted people they act with the app's access, and others the 24-hour rule", async (t) => {
+  const { app } = await offlineApp(t, [PAT]);
+  const pat = await storesPage(app, await storesSession(app, PAT));
+  assert.match(pat, /act with the app's full access, not only your staff permissions/);
+  assert.doesNotMatch(pat, /Shopify ends each connection after 24 hours/);
+  const sam = await storesPage(app, await storesSession(app, SAM, "wholesale", "online-wholesale-sam"));
+  assert.match(sam, /Shopify ends each connection after 24 hours/);
+  assert.doesNotMatch(sam, /renew automatically/);
 });

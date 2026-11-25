@@ -87,7 +87,11 @@ export declare class OfflineTokens {
     /** The store's record if this person approved offline access on it. */
     authorizedFor(email: string, store: StoreConfig): Promise<OfflineTokenRecord | undefined>;
     private put;
-    /** POST a form to the store's token endpoint, with one retry on a network error, timeout, 429 or 5xx. */
+    /**
+     * POST a form to the store's token endpoint, with one retry on a network error, timeout, 429 or
+     * 5xx. Shopify documents that retry as safe for a refresh too: the presented refresh token stays
+     * usable until the app uses the newer one.
+     */
     private post;
     /** Exchange an authorization code (from an authorize URL without per-user) for an expiring offline token. */
     exchange(store: StoreConfig, code: string): Promise<ExpiringOfflineToken | {

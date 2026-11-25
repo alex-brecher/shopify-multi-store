@@ -290,10 +290,11 @@ export class ShopifyConnections {
                 const offlineStore = offlineStores.get(key);
                 pending = offlineStore
                     ? this.offline.accessToken(offlineStore).catch((error) => {
-                        // Refused or unreadable: not connected. Busy or a passing Shopify failure: say so.
-                        if (error instanceof OfflineTokenError && (error.kind === "busy" || error.kind === "transient"))
-                            throw new Error(error.message);
-                        return undefined;
+                        // Refused, unreadable or gone: not connected. Anything else (busy, a passing Shopify or
+                        // store failure) is reported as is and retried by the next call.
+                        if (error instanceof OfflineTokenError && (error.kind === "refused" || error.kind === "unreadable" || error.kind === "missing"))
+                            return undefined;
+                        throw error instanceof OfflineTokenError ? new Error(error.message) : error;
                     })
                     : this.decryptStored(email, records.get(key));
                 decrypted.set(key, pending);
@@ -561,8 +562,8 @@ export class ShopifyConnections {
             : "";
         const skippedNames = failedNames;
         const autoNote = this.offlineFor(session.email)
-            ? `<p class="muted">Your connections renew automatically: this server keeps a Shopify app token for each store you connect, so you do not need to reconnect every day. Stores not yet switched show Reconnect all once.</p>`
-            : "";
+            ? `<p class="muted">Your connections renew automatically: this server keeps the Shopify app's own token for each store you connect, so you do not reconnect every day. On those stores AI apps act with the app's full access, not only your staff permissions. Stores not yet switched need Reconnect all once.</p>`
+            : `<p class="muted">Shopify ends each connection after 24 hours, or when you log out of the Shopify admin. While you are logged in to Shopify, Reconnect all goes through every store without more clicks. AI apps act as you in each connected store, limited by your Shopify staff permissions.</p>`;
         const body = `<div class="card">
 <h1>Your Shopify stores</h1>
 <p class="muted">Signed in with Shopify as ${escapeHtml(session.email)}</p>
@@ -570,7 +571,7 @@ ${summary}
 ${message ? `<div class="warn"><p>${escapeHtml(message)}</p></div>` : ""}
 ${skippedNames.length ? `<div class="warn"><p>Could not connect ${skippedNames.join(", ")}. Make sure you are staff on ${skippedNames.length === 1 ? "that store" : "those stores"} with the same email, then press Reconnect on ${skippedNames.length === 1 ? "it" : "each one"}.</p></div>` : ""}
 ${total ? `<ul class="stores">${items.join("")}</ul>` : `<p class="muted">No stores are configured on this server.</p>`}
-${autoNote}<p class="muted">Shopify ends each connection after 24 hours, or when you log out of the Shopify admin. While you are logged in to Shopify, Reconnect all goes through every store without more clicks. AI apps act as you in each connected store, limited by your Shopify staff permissions.</p>
+${autoNote}
 <details><summary class="muted">Server details</summary><p class="muted">${escapeHtml(displayName)}. These connections belong to this server only: <code>${escapeHtml(this.options.auth.issuer)}</code>. AI apps reach it at <code>${escapeHtml(this.options.auth.resource)}</code>. Another server URL keeps its own connections.</p></details>
 <form method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="signout"><div class="actions"><button type="submit">Sign out</button></div></form>
 ${themeSwitch(session.theme ?? "system", "/stores")}
