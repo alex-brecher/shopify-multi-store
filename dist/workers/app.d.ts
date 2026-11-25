@@ -15,5 +15,11 @@ export declare function settingsFrom(env: WorkerEnv): HostedEnv;
  * works before its host name is known.
  */
 export declare function createWorker(options?: WorkerOptions): {
+    /**
+     * Cron trigger (triggers.crons in wrangler.jsonc): renew the offline tokens of people on
+     * OFFLINE_TOKEN_USERS, so stores nobody used for weeks stay connected. Does nothing when
+     * the allowlist is empty or no cron is configured.
+     */
+    scheduled(_controller: unknown, env: WorkerEnv, ctx?: ExecutionContextLike): Promise<void>;
     fetch(request: Request, env: WorkerEnv, _ctx?: ExecutionContextLike): Promise<Response>;
 };

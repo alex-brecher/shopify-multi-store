@@ -79,6 +79,20 @@ export function publicOrigin(env: HostedEnv): string {
 }
 
 /**
+ * OFFLINE_TOKEN_USERS: comma-separated verified Shopify staff emails (the email each person signs
+ * in with, as the audit log's user column shows it), matched without regard to case. These
+ * people get Shopify's expiring offline tokens, renewed by the server, instead of 24-hour
+ * per-user tokens. Unset or empty: nobody.
+ */
+export function offlineTokenUsers(env: HostedEnv): string[] {
+  const users = list(env.OFFLINE_TOKEN_USERS) ?? [];
+  for (const user of users) {
+    if (!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(user)) throw new Error("OFFLINE_TOKEN_USERS must be a comma-separated list of Shopify staff email addresses.");
+  }
+  return [...new Set(users.map((user) => user.toLowerCase()))];
+}
+
+/**
  * Everything createHostedApp needs from the settings, for any platform. The caller adds the
  * platform's parts: the OAuth store, the audit log, and (on Node) the DNS-pinned client
  * metadata fetcher. Throws on a missing encryption key or an invalid setting, so a
@@ -94,6 +108,7 @@ export async function hostedOptionsFromEnv(
   const appClientSecret = env.SHOPIFY_APP_CLIENT_SECRET?.trim() || undefined;
   const scopes = list(env.SHOPIFY_APP_SCOPES) ?? fullScopes();
   const identityStore = env.SHOPIFY_IDENTITY_STORE?.trim() || undefined;
+  const offlineUsers = offlineTokenUsers(env);
   if (identityStore && !(await platform.loadStores()).some((store) => store.alias.toLowerCase() === identityStore.toLowerCase())) {
     throw new Error(`SHOPIFY_IDENTITY_STORE names ${identityStore}, which is not a configured store alias.`);
   }
@@ -117,7 +132,8 @@ export async function hostedOptionsFromEnv(
       clientId: (store: StoreConfig) => env[clientIdEnvName(store.alias)]?.trim() || (store.auth.type === "client_credentials" ? store.auth.clientId : undefined) || appClientId,
       clientSecret: (store: StoreConfig) => env[secretEnvName(store.alias)]?.trim() || appClientSecret,
       scopes,
-      ...(identityStore ? { identityStore } : {})
+      ...(identityStore ? { identityStore } : {}),
+      ...(offlineUsers.length ? { offlineTokenUsers: offlineUsers } : {})
     }
   };
 }

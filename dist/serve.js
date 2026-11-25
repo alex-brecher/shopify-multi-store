@@ -51,7 +51,16 @@ export async function serve(env = process.env) {
     server.requestTimeout = 60_000;
     await new Promise((resolveListen) => server.listen(config.port, config.host, resolveListen));
     process.stderr.write(`shopify-multi-store serving ${config.publicUrl}/mcp on ${config.host}:${config.port}\n`);
+    // People on OFFLINE_TOKEN_USERS: renew their offline tokens every 6 hours, as the Worker's cron does.
+    const renew = app.shopify.offlineEnabled
+        ? setInterval(() => {
+            app.shopify.refreshOfflineTokens().catch((error) => process.stderr.write(`Offline token refresh failed: ${error instanceof Error ? error.message : String(error)}\n`));
+        }, 6 * 3600_000)
+        : undefined;
+    renew?.unref();
     const shutdown = () => {
+        if (renew)
+            clearInterval(renew);
         server.close();
         void app.close();
     };

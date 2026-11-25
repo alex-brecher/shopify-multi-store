@@ -31,6 +31,8 @@ export interface ShopifyTokenRecord {
  * Reconnect all (by hand or a scheduled job) keeps every store connected without a gap.
  */
 export declare const RENEW_WITHIN_MS: number;
+/** The Shopify account an offline token acts as, for audit lines: the app, not a staff member. */
+export declare const OFFLINE_ACCOUNT = "app:offline-token";
 export interface ShopifyConnectOptions {
     auth: AuthorizationServer;
     store: OAuthStore;
@@ -46,8 +48,15 @@ export interface ShopifyConnectOptions {
     scopes: string[];
     /** Alias of the store listed first (preselected) on the sign-in chooser. Defaults to the first configured store. */
     identityStore?: string;
+    /**
+     * Verified Shopify staff emails (lower case) that get expiring offline tokens renewed by the
+     * server instead of 24-hour per-user tokens. Empty or unset: nobody, and nothing changes.
+     */
+    offlineTokenUsers?: string[];
     fetch?: typeof fetch;
     now?: () => number;
+    /** Wait between checks while another request renews a store's offline token. Tests shorten it. */
+    sleep?: (ms: number) => Promise<void>;
 }
 /** One AES-256-GCM key with the id stored next to each ciphertext it produced. */
 export interface EncryptionKey {
@@ -94,7 +103,23 @@ export declare class ShopifyConnections {
     private readonly options;
     private readonly now;
     private readonly fetcher;
+    private readonly offlineUsers;
+    private readonly offline;
     constructor(options: ShopifyConnectOptions);
+    /** True when OFFLINE_TOKEN_USERS names anyone. */
+    get offlineEnabled(): boolean;
+    /** This person gets self-renewing offline tokens. */
+    private offlineFor;
+    /**
+     * The scheduled job (Worker cron, or a timer in `serve`): renew every offline token approved
+     * by someone still on the allowlist that is a day old, so unused stores stay connected.
+     * Does nothing, and reads nothing, when the allowlist is empty.
+     */
+    refreshOfflineTokens(): Promise<{
+        refreshed: string[];
+        failed: string[];
+        skipped: string[];
+    }>;
     get storesUrl(): string;
     /** One link that signs in if needed and reconnects every expired or unconnected store. */
     get reconnectUrl(): string;
@@ -117,6 +142,7 @@ export declare class ShopifyConnections {
     /** POST /login/shopify: the store picked on the chooser. The browser must hold the sign-in's binding cookie. */
     chooseLogin(request: Request): Promise<Response>;
     private redirectLogin;
+    /** Shopify's authorize URL: per-user by default; offline (no grant_options) for an allowlisted person's offline leg. */
     private authorizeUrl;
     /** A page sign-in finished: open a /stores session, then show the page or reconnect every store. */
     signedIn(email: string, purpose?: PageSignInPurpose): Promise<Response>;
@@ -158,6 +184,8 @@ export declare class ShopifyConnections {
     connect(request: Request): Promise<Response>;
     /** Create a single-use connection state bound to the /stores session and send the browser to Shopify. */
     private startConnection;
+    /** This person connected the store with their own per-user token, as the same verified email, in the last few minutes. */
+    private freshlyVerified;
     /**
      * Reconnect all hit a store it cannot connect: note it, skip it, and go on to the next store,
      * so one store does not stop the run. A single Connect shows the error instead.
@@ -178,4 +206,8 @@ export declare class ShopifyConnections {
     private loginCallback;
     /** Shopify callback for connecting one more store from the /stores session. */
     private connectionCallback;
+    /** The offline leg's callback: exchange the code for an expiring offline token and keep it for the store. */
+    private offlineCallback;
+    /** After a store connected: Reconnect all goes on to the next store; a single Connect returns to the stores page. */
+    private continueChain;
 }

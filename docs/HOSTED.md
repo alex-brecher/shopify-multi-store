@@ -47,6 +47,18 @@ Shopify online tokens are per user and per store. Shopify ends each one after 24
 - Each store must be connected with the same verified Shopify email the person signed in with. If someone's staff email differs between stores, they cannot connect the store where it differs.
 - If the person is not staff on a store, Shopify shows its own error for that store and the chain stops there. The other stores stay as they are; the stores page connects each one on its own too.
 
+### Self-renewing connections (`OFFLINE_TOKEN_USERS`)
+
+For the people named in `OFFLINE_TOKEN_USERS` (verified Shopify staff emails, the same email the audit log's `user` column shows for their `sign_in` events), the server keeps Shopify's [expiring offline access token](https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/offline-access-tokens) for each store they connect and renews it itself, so they do not reconnect every day. Everyone else keeps the 24-hour per-user tokens above, unchanged; with the variable unset or empty nothing changes for anyone.
+
+- An offline token acts as the app with every scope the app was granted, not with the person's staff permissions. Name only people who should have that access on every store they can connect.
+- Connecting a store still starts with the person's own per-user authorization, which proves they are staff on that store with the same verified email. Only then does the server ask Shopify for the store's offline token (no `grant_options[]=per-user`, and `expiring=1` on the code exchange). Both steps pass without clicks while the person is logged in to the Shopify admin.
+- Shopify keeps one offline token per app and store, so the server stores it once per store, encrypted with the token encryption keys, together with the allowlisted people who approved it there. A person can use a store's offline token only after approving it on that store themselves.
+- The access token lasts 1 hour and the refresh token 90 days. The server refreshes before use when under 5 minutes are left, one request per store at a time (a lease in the Durable Object or the file store), and Shopify returns a new refresh token on every refresh. A scheduled job (the Worker's cron trigger, or a 6-hour timer in `serve`) renews every store whose pair is a day old, so unused stores stay connected.
+- If Shopify refuses a refresh (the app was uninstalled or its access revoked, or the refresh token ended), the store shows **Not connected** with the reason on `/stores`, the audit log records `shopify_refresh_failed`, and tools say the store is not connected. Nothing falls back to another person's connection. Reconnect the store to approve again.
+- The stores page shows such stores as "Connected, renews automatically". To move a person from 24-hour connections to self-renewing ones, add their email and have them press **Reconnect all** once.
+- Disconnect removes the person from the store's approvers; the offline token is deleted when nobody approves it any more.
+
 ## Connect from your AI app
 
 You need one thing from whoever runs the server: the MCP URL, `https://<host>/mcp`. Most apps then sign you in with OAuth: a browser opens, you click Sign in with Shopify and log in with your staff account (or type the name of a store you do have a login for), and you approve the app on the consent screen. You approve the app each time you connect it; once connected, the app stays signed in through refresh tokens.
@@ -193,6 +205,7 @@ These settings apply to `shopify-multi-store serve`. The Worker uses the same na
 | `STORES_JSON` | one of | | The stores this server serves, as JSON in the `stores.json` format. Store entries need only `alias` and `shop`. |
 | `SHOPIFY_MULTI_STORE_CONFIG` | one of | | Path to `stores.json` instead of `STORES_JSON` |
 | `SHOPIFY_IDENTITY_STORE` | no | first store | Alias of the store listed first (preselected) on the sign-in chooser |
+| `OFFLINE_TOKEN_USERS` | no | | Comma list of verified Shopify staff emails (case does not matter) whose store connections use Shopify's expiring offline tokens, renewed by the server, instead of 24-hour per-user tokens. Gives them the app's full scopes on each store they connect. See [Self-renewing connections](#self-renewing-connections-offline_token_users). |
 | `SHOPIFY_READ_ONLY` | no | `false` | `true` blocks every Admin API write on every store, for everyone. Write tools are then not listed. See [Read-only mode](../README.md#read-only-mode). |
 | `SHOPIFY_READ_ONLY_STORES` | no | | Comma list of store aliases where nobody can write. |
 | `SHOPIFY_READ_ONLY_USERS` | no | | Comma list of `email` (read-only everywhere: write tools are not listed for them) or `email:alias` (read-only on that store only). Emails are the verified Shopify staff emails people sign in with. |
@@ -293,7 +306,7 @@ After this, the only credentials that work are Shopify online tokens that each p
 ## Security model
 
 - Only Shopify staff of a configured store can sign in. The identity is the `associated_user` email of a Shopify online token, which must be verified (`email_verified: true`). Offline (app-level) tokens are discarded.
-- Shopify permissions are the only access rule. Every call uses the caller's own online token; Shopify applies that person's staff permissions. There is no fallback to an app token or a static token.
+- Shopify permissions are the only access rule. Every call uses the caller's own online token; Shopify applies that person's staff permissions. There is no fallback to an app token or a static token. The one exception is people named in `OFFLINE_TOKEN_USERS`, who use the app's offline token on stores they approved it on themselves (see [Self-renewing connections](#self-renewing-connections-offline_token_users)).
 - Each store connection must carry the same verified email as the sign-in, so nobody can act through someone else's staff account.
 - The Shopify callback verifies Shopify's HMAC with the app secret and a timestamp at most 300 seconds old, and that the shop is a configured store.
 - Every sign-in, whether an app connecting or a page sign-in at `/stores`, is bound to the browser that started it by a short-lived `__Host-` cookie. The sign-in page and the Shopify callback both check it before the state is used, so a forwarded sign-in link cannot log someone in as another person, and a refused callback does not burn the real sign-in. Store connections use a single-use 10-minute state bound to the `/stores` browser session.
@@ -317,4 +330,4 @@ After this, the only credentials that work are Shopify online tokens that each p
 - A client whose OAuth callback is not built in, not configured, and not allowed by `OAUTH_ALLOW_ANY_REDIRECT` is refused at registration. Add the callback.
 - Local-machine tools are not available: preview store creation and status, and `imageFile` uploads (use `sourceUrl`).
 - The audit log is a local file on `serve`. Ship it to your log system if you need retention.
-- Shopify online tokens expire after 24 hours (or when the person logs out of the Shopify admin) and cannot be refreshed; people reconnect with one click (see above).
+- Shopify online tokens expire after 24 hours (or when the person logs out of the Shopify admin) and cannot be refreshed; people reconnect with one click (see above). People on `OFFLINE_TOKEN_USERS` are the exception.

@@ -3,10 +3,10 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /** Record kinds kept by the authorization server. Secrets (codes, tokens) are stored only as sha256 keys. */
-export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "revoked_family" | "counter";
+export type RecordKind = "client" | "pending" | "code" | "access" | "refresh" | "consent" | "approval" | "session" | "shopify_state" | "shopify_token" | "shopify_offline" | "revoked_family" | "counter";
 
 /** Every record kind, for stores that enumerate them. */
-export const RECORD_KINDS: readonly RecordKind[] = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "revoked_family", "counter"];
+export const RECORD_KINDS: readonly RecordKind[] = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "shopify_offline", "revoked_family", "counter"];
 
 /** Options for OAuthStore.increment. */
 export interface IncrementOptions {

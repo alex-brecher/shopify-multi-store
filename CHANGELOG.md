@@ -4,6 +4,12 @@ This file records notable changes to Shopify Multi-Store MCP.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-25
+
+### Added
+
+- `OFFLINE_TOKEN_USERS`: people on this list (verified Shopify staff emails) get Shopify's expiring offline access tokens, renewed by the server, instead of 24-hour per-user tokens, so they no longer reconnect every day. They still confirm their staff login on each store with a per-user token first, and use a store's offline token only after approving it there themselves. Tokens refresh before use (single-flight per store) and from a Worker cron trigger (`scheduled`) or a 6-hour timer in `serve`. A refused refresh shows the store as Not connected with the reason and is audited as `shopify_refresh_failed`. Unset or empty, nothing changes.
+
 ### Fixed
 
 - Approve on the consent screen no longer hangs for clients whose callback host redirects between www and the bare domain (Cursor web's https://www.cursor.com callback now redirects to https://cursor.com). The consent page's CSP form-action allows both origins.

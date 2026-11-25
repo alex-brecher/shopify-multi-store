@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 /** Every record kind, for stores that enumerate them. */
-export const RECORD_KINDS = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "revoked_family", "counter"];
+export const RECORD_KINDS = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "shopify_offline", "revoked_family", "counter"];
 /** Every field in `match` equals the value's field of the same name. */
 export function matches(value, match) {
     if (!value || typeof value !== "object")

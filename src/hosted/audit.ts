@@ -37,7 +37,9 @@ export interface AuthAuditEntry {
     | "request_forbidden"
     | "shopify_connected"
     | "shopify_connect_denied"
-    | "shopify_disconnected";
+    | "shopify_disconnected"
+    | "shopify_token_refreshed"
+    | "shopify_refresh_failed";
   timestamp: string;
   user?: string;
   clientId?: string;

@@ -7,6 +7,7 @@ import { isReadOnly } from "../read-only.js";
 import { THEME_COOKIE, cookie, escapeHtml, htmlPage, readCookie, sameOrigin, themeFrom, themeSwitch, type Theme } from "./html.js";
 import { PAGE_SIGN_IN_CLIENT, appendSetCookie, sha256, type AuthorizationServer, type PageSignInPurpose } from "./oauth.js";
 import type { OAuthStore } from "./store.js";
+import { OfflineTokenError, OfflineTokens, type OfflineTokenRecord } from "./offline-tokens.js";
 
 /**
  * Shopify sign-in and per-user Shopify access for the hosted connector.
@@ -19,6 +20,12 @@ import type { OAuthStore } from "./store.js";
  * permissions, so Shopify decides what every tool call may do. Tokens are encrypted at rest
  * with AES-256-GCM (Web Crypto, the same on Node and Workers) and never leave the server. Shopify ends online tokens after 24 hours, or
  * when the person logs out of the Shopify admin.
+ *
+ * People on OFFLINE_TOKEN_USERS (by verified Shopify staff email) instead get Shopify's expiring
+ * offline token on each store they connect, which the server renews itself (see
+ * offline-tokens.ts). They still confirm who they are on every store with a per-user token
+ * first, and may use a store only after they approved offline access on it themselves.
+ * Everyone else keeps the per-user tokens described above, unchanged.
  */
 
 const SESSION_COOKIE = "__Host-sms_stores";
@@ -67,6 +74,8 @@ interface StateRecord {
   chain: boolean;
   /** Reconnect all: stores that failed earlier in this run and are skipped, so the run goes on. */
   skip?: string[];
+  /** This leg asks Shopify for an expiring offline token (allowlisted people only). */
+  offline?: true;
 }
 
 interface SessionRecord {
@@ -96,8 +105,20 @@ interface Session {
  */
 export const RENEW_WITHIN_MS = 12 * 60 * 60 * 1000;
 
-/** due: Reconnect all should (re)connect it now: not connected, expired, missing access, or expiring within RENEW_WITHIN_MS. */
-type StoreStatus = { store: StoreConfig; record?: ShopifyTokenRecord; live: boolean; outdated: boolean; due: boolean };
+/**
+ * How long a per-user connection counts as a fresh check of who someone is on a store, so the
+ * offline approval that follows it may be kept. Same as the connection state's lifetime.
+ */
+const VERIFIED_WITHIN_MS = 10 * 60_000;
+
+/** The Shopify account an offline token acts as, for audit lines: the app, not a staff member. */
+export const OFFLINE_ACCOUNT = "app:offline-token";
+
+/**
+ * due: Reconnect all should (re)connect it now: not connected, expired, missing access, or expiring within RENEW_WITHIN_MS.
+ * offline: an allowlisted person's offline connection to this store (live or stopped); auto: it is live and renews itself.
+ */
+type StoreStatus = { store: StoreConfig; record?: ShopifyTokenRecord; live: boolean; outdated: boolean; due: boolean; offline?: OfflineTokenRecord; auto?: boolean };
 
 export interface ShopifyConnectOptions {
   auth: AuthorizationServer;
@@ -114,8 +135,15 @@ export interface ShopifyConnectOptions {
   scopes: string[];
   /** Alias of the store listed first (preselected) on the sign-in chooser. Defaults to the first configured store. */
   identityStore?: string;
+  /**
+   * Verified Shopify staff emails (lower case) that get expiring offline tokens renewed by the
+   * server instead of 24-hour per-user tokens. Empty or unset: nobody, and nothing changes.
+   */
+  offlineTokenUsers?: string[];
   fetch?: typeof fetch;
   now?: () => number;
+  /** Wait between checks while another request renews a store's offline token. Tests shorten it. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // ---------- Encryption ----------
@@ -287,11 +315,44 @@ function storesLocation(skip: string[] = []): string {
 export class ShopifyConnections {
   private readonly now: () => number;
   private readonly fetcher: typeof fetch;
+  private readonly offlineUsers: ReadonlySet<string>;
+  private readonly offline: OfflineTokens;
 
   constructor(private readonly options: ShopifyConnectOptions) {
     this.now = options.now ?? Date.now;
     this.fetcher = options.fetch ?? ((input, init) => fetch(input, init));
+    this.offlineUsers = new Set((options.offlineTokenUsers ?? []).map((email) => email.trim().toLowerCase()).filter(Boolean));
+    this.offline = new OfflineTokens({
+      store: options.store,
+      encryptionKeys: options.encryptionKeys,
+      clientId: options.clientId,
+      clientSecret: options.clientSecret,
+      audit: (entry) => options.auth.auditAuth(entry),
+      fetch: this.fetcher,
+      now: this.now,
+      ...(options.sleep ? { sleep: options.sleep } : {})
+    });
     options.auth.startLogin = (loginState) => this.startLogin(loginState);
+  }
+
+  /** True when OFFLINE_TOKEN_USERS names anyone. */
+  get offlineEnabled(): boolean {
+    return this.offlineUsers.size > 0;
+  }
+
+  /** This person gets self-renewing offline tokens. */
+  private offlineFor(email: string): boolean {
+    return this.offlineUsers.has(email.toLowerCase());
+  }
+
+  /**
+   * The scheduled job (Worker cron, or a timer in `serve`): renew every offline token approved
+   * by someone still on the allowlist that is a day old, so unused stores stay connected.
+   * Does nothing, and reads nothing, when the allowlist is empty.
+   */
+  async refreshOfflineTokens(): Promise<{ refreshed: string[]; failed: string[]; skipped: string[] }> {
+    if (!this.offlineEnabled) return { refreshed: [], failed: [], skipped: [] };
+    return this.offline.refreshAll(await this.options.loadStores(), (email) => this.offlineUsers.has(email));
   }
 
   get storesUrl(): string {
@@ -313,13 +374,29 @@ export class ShopifyConnections {
   accessFor(email: string): UserShopifyAccess {
     const tokens = new Map<string, ShopifyUserConnection>();
     const records = new Map<string, { store: StoreConfig; record: ShopifyTokenRecord }>();
+    /** Allowlisted callers: stores they use through the store's offline token. */
+    const offlineStores = new Map<string, StoreConfig>();
     const decrypted = new Map<string, Promise<string | undefined>>();
+    const allowlisted = this.offlineFor(email);
     let loading: Promise<void> | undefined;
     const load = (): Promise<void> => {
       loading ??= (async () => {
         const stores = await this.options.loadStores();
-        const found = await Promise.all(stores.map(async (store) => ({ store, record: await this.options.store.get<ShopifyTokenRecord>("shopify_token", tokenKey(email, store.alias)) })));
-        for (const { store, record } of found) {
+        const found = await Promise.all(stores.map(async (store) => ({
+          store,
+          record: await this.options.store.get<ShopifyTokenRecord>("shopify_token", tokenKey(email, store.alias)),
+          // Only a store this person approved offline access on themselves; never another person's approval.
+          ...(allowlisted ? { offline: await this.offline.authorizedFor(email, store) } : {})
+        })));
+        for (const { store, record, offline } of found) {
+          if (offline) {
+            const alias = store.alias.toLowerCase();
+            // A stopped offline connection reads as not connected (no fallback); an ended one as expired.
+            if (offline.failure) continue;
+            offlineStores.set(alias, store);
+            tokens.set(alias, { expiresAt: offline.refreshExpiresAt, shopifyEmail: OFFLINE_ACCOUNT });
+            continue;
+          }
           if (!record || record.shop !== store.shop) continue;
           const alias = store.alias.toLowerCase();
           records.set(alias, { store, record });
@@ -335,8 +412,17 @@ export class ShopifyConnections {
       const key = alias.toLowerCase();
       let pending = decrypted.get(key);
       if (!pending) {
-        pending = this.decryptStored(email, records.get(key));
+        const offlineStore = offlineStores.get(key);
+        pending = offlineStore
+          ? this.offline.accessToken(offlineStore).catch((error: unknown) => {
+            // Refused or unreadable: not connected. Busy or a passing Shopify failure: say so.
+            if (error instanceof OfflineTokenError && (error.kind === "busy" || error.kind === "transient")) throw new Error(error.message);
+            return undefined;
+          })
+          : this.decryptStored(email, records.get(key));
         decrypted.set(key, pending);
+        // A passing failure is retried by the next call rather than cached.
+        pending.catch(() => decrypted.delete(key));
       }
       const value = await pending;
       // A rotated-away key or a tampered record reads as "not connected" from here on.
@@ -424,13 +510,14 @@ export class ShopifyConnections {
     return new Response(null, { status: 302, headers: { location: this.authorizeUrl(store, loginState), "cache-control": "no-store" } });
   }
 
-  private authorizeUrl(store: StoreConfig, state: string): string {
+  /** Shopify's authorize URL: per-user by default; offline (no grant_options) for an allowlisted person's offline leg. */
+  private authorizeUrl(store: StoreConfig, state: string, offline = false): string {
     const target = new URL(`https://${store.shop}/admin/oauth/authorize`);
     target.searchParams.set("client_id", this.options.clientId(store)!);
     target.searchParams.set("scope", this.options.scopes.join(","));
     target.searchParams.set("redirect_uri", `${this.options.auth.issuer}/shopify/callback`);
     target.searchParams.set("state", state);
-    target.searchParams.append("grant_options[]", "per-user");
+    if (!offline) target.searchParams.append("grant_options[]", "per-user");
     return target.toString();
   }
 
@@ -477,7 +564,7 @@ export class ShopifyConnections {
    * its read_ scope). Non-empty after the requested scopes grow, so Reconnect all picks the store
    * up and Shopify asks the person to approve the new access.
    */
-  private missingScopes(record: ShopifyTokenRecord): string[] {
+  private missingScopes(record: { scope: string; connectedAt: number }): string[] {
     // A connection made in the last 10 minutes already went through Shopify's approval with the
     // current scopes; if Shopify still left one out, asking again would loop Reconnect all.
     if (record.connectedAt > this.now() - 10 * 60 * 1000) return [];
@@ -529,8 +616,20 @@ export class ShopifyConnections {
   private async statuses(email: string): Promise<StoreStatus[]> {
     const now = this.now();
     const stores = await this.visibleStores();
+    const allowlisted = this.offlineFor(email);
     return Promise.all(stores.map(async (store) => {
       const record = await this.record(email, store);
+      if (allowlisted) {
+        const offline = await this.offline.authorizedFor(email, store);
+        if (offline && !offline.failure && offline.refreshExpiresAt > now) {
+          const outdated = this.missingScopes(offline).length > 0;
+          return { store, ...(record ? { record } : {}), offline, auto: true, live: true, outdated, due: outdated };
+        }
+        // Not on offline access yet, stopped, or ended: Reconnect all moves the store to it.
+        const live = !offline && Boolean(record && record.expiresAt > now);
+        const outdated = Boolean(live && record && this.missingScopes(record).length);
+        return { store, ...(record ? { record } : {}), ...(offline ? { offline } : {}), auto: false, live, outdated, due: true };
+      }
       const live = Boolean(record && record.expiresAt > now);
       const outdated = Boolean(live && record && this.missingScopes(record).length);
       const due = !live || outdated || Boolean(record && record.expiresAt - now < RENEW_WITHIN_MS);
@@ -550,7 +649,7 @@ export class ShopifyConnections {
     const ready = usable.filter((row) => row.live && !row.outdated).length;
     const unconnected = usable.filter((row) => row.due).length;
     const failedNames: string[] = [];
-    const items = rows.map(({ store, record, live, outdated }) => {
+    const items = rows.map(({ store, record, live, outdated, offline, auto }) => {
       const user = record?.associatedUser;
       const who = user ? `${escapeHtml(user.email ?? `Shopify user ${user.id}`)}${user.accountOwner ? " (store owner)" : ""}${user.collaborator ? " (collaborator)" : ""}` : "";
       const usableStore = this.connectable(store);
@@ -558,6 +657,12 @@ export class ShopifyConnections {
       if (failed) failedNames.push(escapeHtml(store.alias));
       const [pill, detail] = !usableStore
         ? [`<span class="pill off">Not set up</span>`, "This server has no Shopify app for this store."]
+        : offline && !auto
+        ? [`<span class="pill bad">Not connected</span>`, escapeHtml(offline.failure ? `Automatic renewal stopped: ${offline.failure.reason}` : `Automatic renewal ended ${relativeTime(offline.refreshExpiresAt, now)}. Reconnect the store.`)]
+        : auto && outdated
+        ? [`<span class="pill warn">Needs approval</span>`, "Connected, renews automatically. Reconnect to approve new access."]
+        : auto
+        ? [`<span class="pill ok">Connected</span>`, "Connected, renews automatically. Uses this server's Shopify app access, which you approved."]
         : failed
         ? [`<span class="pill bad">Could not connect</span>`, "Reconnect all skipped this store. Use Reconnect to see why."]
         : !record
@@ -581,6 +686,9 @@ export class ShopifyConnections {
         : `<span class="pill ok">All set</span>`}</div>`
       : "";
     const skippedNames = failedNames;
+    const autoNote = this.offlineFor(session.email)
+      ? `<p class="muted">Your connections renew automatically: this server keeps a Shopify app token for each store you connect, so you do not need to reconnect every day. Stores not yet switched show Reconnect all once.</p>`
+      : "";
     const body = `<div class="card">
 <h1>Your Shopify stores</h1>
 <p class="muted">Signed in with Shopify as ${escapeHtml(session.email)}</p>
@@ -588,7 +696,7 @@ ${summary}
 ${message ? `<div class="warn"><p>${escapeHtml(message)}</p></div>` : ""}
 ${skippedNames.length ? `<div class="warn"><p>Could not connect ${skippedNames.join(", ")}. Make sure you are staff on ${skippedNames.length === 1 ? "that store" : "those stores"} with the same email, then press Reconnect on ${skippedNames.length === 1 ? "it" : "each one"}.</p></div>` : ""}
 ${total ? `<ul class="stores">${items.join("")}</ul>` : `<p class="muted">No stores are configured on this server.</p>`}
-<p class="muted">Shopify ends each connection after 24 hours, or when you log out of the Shopify admin. While you are logged in to Shopify, Reconnect all goes through every store without more clicks. AI apps act as you in each connected store, limited by your Shopify staff permissions.</p>
+${autoNote}<p class="muted">Shopify ends each connection after 24 hours, or when you log out of the Shopify admin. While you are logged in to Shopify, Reconnect all goes through every store without more clicks. AI apps act as you in each connected store, limited by your Shopify staff permissions.</p>
 <details><summary class="muted">Server details</summary><p class="muted">${escapeHtml(displayName)}. These connections belong to this server only: <code>${escapeHtml(this.options.auth.issuer)}</code>. AI apps reach it at <code>${escapeHtml(this.options.auth.resource)}</code>. Another server URL keeps its own connections.</p></details>
 <form method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="signout"><div class="actions"><button type="submit">Sign out</button></div></form>
 ${themeSwitch(session.theme ?? "system", "/stores")}
@@ -664,6 +772,8 @@ ${note ? `<div class="warn"><p>${escapeHtml(note)}</p></div>` : ""}
       const store = (await this.visibleStores()).find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
       if (!store) return this.render(session, "That store was not found.", 404);
       await this.options.store.delete("shopify_token", tokenKey(session.email, store.alias));
+      // Off the store's offline approvers too; the token itself goes when nobody approves it.
+      if (this.offlineEnabled) await this.offline.remove(session.email, store);
       await this.options.auth.auditAuth({ event: "shopify_disconnected", user: session.email, store: store.alias });
       return redirect("/stores");
     }
@@ -714,9 +824,19 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
   /** Create a single-use connection state bound to the /stores session and send the browser to Shopify. */
   private async startConnection(session: { key: string; email: string; theme?: Theme }, store: StoreConfig, chain: boolean, skip: string[] = [], note?: string, known?: StoreStatus[]): Promise<Response> {
     const state = randomToken(32);
-    const record: StateRecord = { email: session.email, alias: store.alias, shop: store.shop, sessionSha256: session.key, chain, ...(skip.length ? { skip } : {}) };
+    // An allowlisted person first proves who they are on the store with a per-user token; once
+    // that is fresh, the next leg asks Shopify for the store's offline token.
+    const offline = this.offlineFor(session.email) && await this.freshlyVerified(session.email, store);
+    const record: StateRecord = { email: session.email, alias: store.alias, shop: store.shop, sessionSha256: session.key, chain, ...(skip.length ? { skip } : {}), ...(offline ? { offline: true as const } : {}) };
     await this.options.store.put("shopify_state", sha256(state), record, this.now() + STATE_TTL_MS);
-    return this.progressPage(session, store, this.authorizeUrl(store, state), chain, skip, note, known);
+    return this.progressPage(session, store, this.authorizeUrl(store, state, offline), chain, skip, note, known);
+  }
+
+  /** This person connected the store with their own per-user token, as the same verified email, in the last few minutes. */
+  private async freshlyVerified(email: string, store: StoreConfig): Promise<boolean> {
+    const record = await this.record(email, store);
+    const now = this.now();
+    return Boolean(record && record.associatedUser.email === email && record.connectedAt > now - VERIFIED_WITHIN_MS && record.expiresAt > now);
   }
 
   /**
@@ -861,6 +981,7 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
     }
     const code = params.get("code");
     if (!code) return this.skipInChain(session, state, store, "Shopify did not return an authorization code.", () => page(400, "Connection failed", "Shopify did not return an authorization code."));
+    if (state.offline) return this.offlineCallback(session, state, store, code);
     const token = await this.exchange(store, secret, code);
     if ("error" in token) {
       await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: token.offline ? "Shopify returned an offline token" : token.failed ? "token exchange failed" : "no verified staff email", ...(token.failed ? { error: auditError(token.failed) } : {}) });
@@ -873,6 +994,34 @@ ${this.connectForm(session, checked.store.alias, chain, "Continue to Shopify", "
       return this.skipInChain(session, state, store, `Shopify reported ${token.associatedUser.email!}, not ${session.email}.`, () => page(403, "Connection refused", `You are signed in as ${escapeHtml(session.email)}, but Shopify reported ${escapeHtml(token.associatedUser.email!)} for ${escapeHtml(store.alias)}. Log in to that store's admin with the same staff email, then try again.`));
     }
     await this.saveToken(session.email, store, token);
+    // Allowlisted: identity confirmed on this store; now ask Shopify for its offline token.
+    if (this.offlineFor(session.email)) return this.startConnection(session, store, state.chain, state.skip ?? []);
+    return this.continueChain(session, state, store);
+  }
+
+  /** The offline leg's callback: exchange the code for an expiring offline token and keep it for the store. */
+  private async offlineCallback(session: Session, state: StateRecord, store: StoreConfig, code: string): Promise<Response> {
+    // Checked again here: still allowlisted, and still freshly verified as themselves on this store.
+    if (!this.offlineFor(session.email) || !(await this.freshlyVerified(session.email, store))) {
+      await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: "offline approval without a fresh per-user check, or not on OFFLINE_TOKEN_USERS" });
+      return this.skipInChain(session, state, store, "Your Shopify login on this store could not be confirmed. Reconnect it.", () => page(403, "Connection refused", "Your Shopify login on this store could not be confirmed. Reconnect it from the stores page."));
+    }
+    let token: Awaited<ReturnType<OfflineTokens["approve"]>>;
+    try {
+      token = await this.offline.approve(session.email, store, code);
+    } catch (error) {
+      token = { error: error instanceof Error ? error.message : "Shopify did not issue a token. Try again.", failed: error };
+    }
+    if ("error" in token) {
+      await this.options.auth.auditAuth({ event: "shopify_connect_denied", user: session.email, store: store.alias, reason: token.failed ? "offline token exchange failed" : `offline token refused: ${token.error}`, ...(token.failed ? { error: auditError(token.failed) } : {}) });
+      return this.skipInChain(session, state, store, token.error, () => page(502, "Connection failed", escapeHtml(token.error)));
+    }
+    await this.options.auth.auditAuth({ event: "shopify_connected", user: session.email, store: store.alias, shopifyEmail: OFFLINE_ACCOUNT, reason: `offline token, renews automatically; refresh token expires ${new Date(this.now() + token.refreshExpiresIn * 1000).toISOString()}` });
+    return this.continueChain(session, state, store);
+  }
+
+  /** After a store connected: Reconnect all goes on to the next store; a single Connect returns to the stores page. */
+  private async continueChain(session: Session, state: StateRecord, store: StoreConfig): Promise<Response> {
     if (state.chain) {
       // Reconnect all: go straight on to the next store. With an active Shopify admin session
       // Shopify redirects back without asking, so the whole chain needs no further clicks.
