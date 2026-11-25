@@ -17,7 +17,9 @@ export declare function publicOrigin(env: HostedEnv): string;
  * people get Shopify's expiring offline tokens, renewed by the server, instead of 24-hour
  * per-user tokens. Unset or empty: nobody.
  */
-export declare function offlineTokenUsers(env: HostedEnv): string[];
+export declare function offlineTokenUsers(env: HostedEnv, warn?: (message: string) => void): string[];
+/** Lower-case A-Z only. Other characters are left as they are. */
+export declare function asciiLower(value: string): string;
 /**
  * Everything createHostedApp needs from the settings, for any platform. The caller adds the
  * platform's parts: the OAuth store, the audit log, and (on Node) the DNS-pinned client

@@ -93,6 +93,11 @@ export declare function decryptToken(keys: EncryptionKey[], value: string, bindi
     token: string;
     keyId: string;
 }>;
+/**
+ * Last resort after decryptToken failed: try every configured key, whatever key id the value
+ * names. Undefined when none of them can read it (the key was removed, or the value is damaged).
+ */
+export declare function decryptWithAnyKey(keys: EncryptionKey[], value: string, binding: Binding): Promise<string | undefined>;
 export { shopifyHmacMessage };
 /**
  * Verify the hmac Shopify adds to OAuth redirects. With nowMs, also require a timestamp within

@@ -69,6 +69,7 @@ export declare class OfflineTokenError extends Error {
     constructor(kind: "refused" | "unreadable" | "transient" | "busy" | "missing", message: string);
 }
 export declare function offlineKey(alias: string): string;
+export declare function leaseKey(alias: string): string;
 /**
  * Validate an authorization-code or refresh response. Only an expiring offline token is accepted:
  * no associated_user (that would be an online token) and a refresh token with an expiry.
@@ -98,8 +99,12 @@ export declare class OfflineTokens {
         error: string;
         failed?: unknown;
     }>;
-    /** Take the store's lease. Of concurrent callers on any isolate, exactly one gets it. */
+    /**
+     * Take the store's lease. Of concurrent callers on any isolate, exactly one gets it. Returns the
+     * lease id, which release() needs, or undefined when someone else holds it.
+     */
     private lease;
+    /** Release only a lease this caller still owns (one that expired and was taken over is left alone). */
     private release;
     /**
      * Run work holding the store's lease, waiting for another holder to finish first. done(record)
@@ -124,12 +129,17 @@ export declare class OfflineTokens {
      * OFFLINE_REFRESH_WITHIN_MS left. Throws OfflineTokenError when there is none.
      */
     accessToken(store: StoreConfig): Promise<string>;
+    /**
+     * Decrypt one stored token. undefined only when no configured key can read it (the key was
+     * removed, or the value is damaged); any other failure throws a transient error and changes nothing.
+     */
+    private readable;
     private decryptAccess;
     /**
      * Refresh the store's pair if it is still stale once this caller holds the lease. Callers in
      * this isolate share one attempt; callers on other isolates wait on the lease.
      */
-    refreshIfStale(store: StoreConfig, trigger: "use" | "scheduled"): Promise<OfflineTokenRecord | undefined>;
+    refreshIfStale(store: StoreConfig, trigger: "use" | "scheduled" | "forced"): Promise<OfflineTokenRecord | undefined>;
     /** One refresh call. The caller holds the store's lease. */
     private refresh;
     /** Mark the store's offline connection as stopped, with the reason, and audit it. */

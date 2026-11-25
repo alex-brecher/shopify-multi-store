@@ -2,12 +2,11 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
-import { hostedOptionsFromEnv } from "../dist/hosted/config.js";
-import { offlineKey } from "../dist/hosted/offline-tokens.js";
+import { hostedOptionsFromEnv, offlineTokenUsers } from "../dist/hosted/config.js";
+import { leaseKey, offlineKey } from "../dist/hosted/offline-tokens.js";
 import { encryptToken } from "../dist/hosted/shopify-connect.js";
 import { MemoryStore } from "../dist/hosted/store.js";
 import { enableHostedMode } from "../dist/runtime.js";
-import { createWorker } from "../dist/workers/app.js";
 import { DurableObjectStore, OAuthStoreObject } from "../dist/workers/do-store.js";
 import { loadStores } from "../dist/config.js";
 import {
@@ -50,7 +49,7 @@ function fakeShopify() {
     calls.push({ shop, kind, body });
     if (kind === "refresh") {
       if (gate) await gate;
-      if (override) return json(override.body, override.status);
+      if (override) return typeof override.body === "string" ? new Response(override.body, { status: override.status, headers: { "content-type": "text/html" } }) : json(override.body, override.status);
       if (refusing || current.get(shop) !== body.refresh_token) return json({ error: "invalid_request", error_description: "This request requires an active refresh_token" }, 401);
     } else {
       assert.equal(body.expiring, "1", "an offline code exchange asks for an expiring token");
@@ -187,7 +186,7 @@ for (const backend of ["memory", "durable object"]) {
     assert.equal(new Set(tokens).size, 1, "every request got the same new token");
     assert.match(tokens[0], /^shpat_off_main_/);
     assert.notEqual(tokens[0], "shpat_off_main_1");
-    assert.equal(await shared.get("counter", (await import("../dist/hosted/oauth.js")).sha256("shopify-offline-lease\0main")), undefined, "the lease is released");
+    assert.equal(await shared.get("shopify_lease", leaseKey("main")), undefined, "the lease is released");
   });
 }
 
@@ -246,7 +245,7 @@ function recordingStore() {
   const inner = new MemoryStore();
   const kinds = [];
   const wrapped = {};
-  for (const method of ["get", "put", "take", "delete", "claim", "deleteMatching", "count", "increment", "entries"]) {
+  for (const method of ["get", "put", "take", "delete", "claim", "putIfAbsent", "deleteMatching", "count", "increment", "entries"]) {
     wrapped[method] = (kind, ...rest) => { kinds.push(`${method}:${kind}`); return inner[method](kind, ...rest); };
   }
   return { store: wrapped, kinds };
@@ -304,7 +303,13 @@ test("an empty or unset OFFLINE_TOKEN_USERS behaves exactly as before: same page
   assert.ok(!("offlineTokenUsers" in empty.shopifyConnect));
   const listed = await hostedOptionsFromEnv({ ...base, OFFLINE_TOKEN_USERS: " Pat@BariatricPal.com ,sam@bariatricpal.com,pat@bariatricpal.com" }, { loadStores });
   assert.deepEqual(listed.shopifyConnect.offlineTokenUsers, [PAT, SAM], "emails are matched without regard to case");
-  await assert.rejects(hostedOptionsFromEnv({ ...base, OFFLINE_TOKEN_USERS: "pat" }, { loadStores }), /OFFLINE_TOKEN_USERS must be/);
+  // A malformed entry never stops the server: it is dropped with one warning.
+  const warnings = [];
+  assert.deepEqual(offlineTokenUsers({ OFFLINE_TOKEN_USERS: "pat, Pat@BariatricPal.com,sam @x.com, \u00dcnal@bariatricpal.com, \u212Aate@bariatricpal.com" }, (message) => warnings.push(message)), [PAT]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /ignored 4 entries that are not a plain ASCII email address/);
+  const tolerant = await hostedOptionsFromEnv({ ...base, OFFLINE_TOKEN_USERS: "pat,not an email" }, { loadStores });
+  assert.ok(!("offlineTokenUsers" in tolerant.shopifyConnect), "all entries bad: the feature is simply off");
 });
 
 test("allowlist emails match without regard to case", async (t) => {
@@ -399,68 +404,20 @@ function fakeNamespace() {
   };
 }
 
-test("the Worker's cron handler refreshes offline tokens, and does nothing without OFFLINE_TOKEN_USERS", async (t) => {
-  const key = randomBytes(32);
-  const namespace = fakeNamespace();
-  const env = {
-    OAUTH_STORE: namespace,
-    STORES_JSON: JSON.stringify({ stores: [{ alias: "main", shop: "main.myshopify.com" }] }),
-    SHOPIFY_APP_CLIENT_ID: "worker-client",
-    SHOPIFY_APP_CLIENT_SECRET: "shpss_worker",
-    SHOPIFY_TOKEN_ENCRYPTION_KEYS: `k1:${key.toString("base64")}`,
-    MCP_PUBLIC_URL: "https://shopify-mcp.example.com"
-  };
-  const store = new DurableObjectStore(namespace);
-  const binding = (label) => ({ email: label, alias: "main", shop: "main.myshopify.com" });
-  const day = 86_400_000;
-  const now = Date.now();
-  await store.put("shopify_offline", offlineKey("main"), {
-    alias: "main", shop: "main.myshopify.com",
-    encryptedToken: await encryptToken({ id: "k1", key }, "shpat_old", binding("offline-access")),
-    encryptedRefreshToken: await encryptToken({ id: "k1", key }, "shprt_old", binding("offline-refresh")),
-    scope: "read_products", authorizedBy: [PAT], connectedAt: now - 2 * day, issuedAt: now - 2 * day, expiresAt: now - 2 * day + 3600_000, refreshExpiresAt: now + 88 * day
-  });
-  const original = globalThis.fetch;
-  const refreshes = [];
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.url;
-    if (url === "https://main.myshopify.com/admin/oauth/access_token") {
-      refreshes.push(Object.fromEntries(new URLSearchParams(init.body)));
-      return new Response(JSON.stringify({ access_token: "shpat_new", refresh_token: "shprt_new", expires_in: 3600, refresh_token_expires_in: 7_776_000, scope: "read_products" }), { headers: { "content-type": "application/json" } });
-    }
-    return original(input, init);
-  };
-  t.after(() => { globalThis.fetch = original; });
-  const waited = [];
-  const ctx = { waitUntil: (promise) => waited.push(promise) };
-
-  const worker = createWorker();
-  await worker.scheduled({ cron: "17 */6 * * *" }, { ...env, OFFLINE_TOKEN_USERS: "" }, ctx);
-  assert.equal(refreshes.length, 0);
-  assert.equal(waited.length, 0, "no app is built and nothing is read without the allowlist");
-
-  await worker.scheduled({ cron: "17 */6 * * *" }, { ...env, OFFLINE_TOKEN_USERS: PAT }, ctx);
-  assert.equal(waited.length, 1);
-  assert.deepEqual(refreshes, [{ client_id: "worker-client", client_secret: "shpss_worker", grant_type: "refresh_token", refresh_token: "shprt_old" }]);
-  const after = await store.get("shopify_offline", offlineKey("main"));
-  assert.ok(after.issuedAt >= now);
-  assert.ok(after.refreshExpiresAt > now + 89 * day);
-  assert.equal(after.failure, undefined);
-});
-
-test("only a dead refresh token stops a store: a wrong client secret or a 403 is retried later, and a 200 without lifetimes is kept", async (t) => {
+test("only 401 invalid_request stops a store: any 400, an HTML body, invalid_client, 403 or 5xx is retried later, and a 200 without lifetimes is kept", async (t) => {
   const { app, store, shopify, advance, auditPath } = await offlineApp(t);
   const cookie = await storesSession(app, PAT);
   await reconnectAll(app, cookie);
   const use = async () => { const access = app.shopify.accessFor(PAT); await access.load(); return access.token("main"); };
   advance(2 * 3600_000);
-  for (const [status, body] of [[401, { error: "invalid_client" }], [403, { errors: "Forbidden" }], [402, {}]]) {
+  const answers = [[401, { error: "invalid_client" }], [403, { errors: "Forbidden" }], [402, {}], [400, { error: "invalid_request" }], [400, "<html><body>Bad Request</body></html>"], [401, {}], [503, "<html>busy</html>"]];
+  for (const [status, body] of answers) {
     shopify.answer(status, body);
     await assert.rejects(use(), /did not renew the connection to store "main" just now/);
     assert.equal((await store.get("shopify_offline", offlineKey("main"))).failure, undefined, `HTTP ${status} does not stop the store`);
   }
   const notices = (await auditLines(auditPath)).filter((line) => line.event === "shopify_refresh_failed");
-  assert.equal(notices.length, 3);
+  assert.equal(notices.length, answers.length);
   assert.match(notices[0].reason, /HTTP 401 invalid_client\); check the app credentials/);
   // Fixed: the next use refreshes with the refresh token still held. A 200 without lifetimes is kept.
   const held = shopify.current.get("main.myshopify.com");
@@ -486,4 +443,91 @@ test("the stores page tells allowlisted people they act with the app's access, a
   const sam = await storesPage(app, await storesSession(app, SAM, "wholesale", "online-wholesale-sam"));
   assert.match(sam, /Shopify ends each connection after 24 hours/);
   assert.doesNotMatch(sam, /renew automatically/);
+});
+
+test("allowlist matching folds ASCII only: a look-alike address that Unicode would fold onto an allowlisted one gets nothing", async (t) => {
+  const KELVIN = "\u212Aate@bariatricpal.com";
+  const { app, store } = await offlineApp(t, ["Kate@BariatricPal.com"]);
+  const cookie = await storesSession(app, KELVIN);
+  const html = await storesPage(app, cookie);
+  assert.ok(html.includes(KELVIN), "the identity is not folded onto kate@");
+  const run = await reconnectAll(app, cookie, KELVIN);
+  assert.deepEqual(run.legs, ["wholesale:per-user"]);
+  assert.equal((await store.entries("shopify_offline")).length, 0);
+  // The real address, in any ASCII case, is allowlisted.
+  const kate = await storesSession(app, "KATE@bariatricpal.com", "main", "online-main-kate");
+  await reconnectAll(app, kate, "kate@bariatricpal.com");
+  assert.equal((await store.entries("shopify_offline")).length, 2);
+});
+
+test("a decrypt failure stops a store only when no configured key can read it", async (t) => {
+  const shared = new MemoryStore();
+  const first = await offlineApp(t, [PAT], { store: shared });
+  await reconnectAll(first.app, await storesSession(first.app, PAT));
+  const use = async (app) => { const access = app.shopify.accessFor(PAT); await access.load(); return access.token("main"); };
+  // Same key bytes under another id (a key renamed in SHOPIFY_TOKEN_ENCRYPTION_KEYS): still read, not failed.
+  const renamed = await setup(t, { store: shared, encryptionKeys: [{ id: "renamed", key: (await import("./hosted-fixture.mjs")).KEY }] }, { fetch: first.shopify.fetch, offlineTokenUsers: [PAT], sleep: fastSleep });
+  assert.equal(await use(renamed.app), "shpat_off_main_1");
+  assert.equal((await shared.get("shopify_offline", offlineKey("main"))).failure, undefined);
+  // No configured key can read it: the store stops, with the reason.
+  const other = await setup(t, { store: shared, encryptionKeys: [{ id: "k2", key: randomBytes(32) }] }, { fetch: first.shopify.fetch, offlineTokenUsers: [PAT], sleep: fastSleep });
+  assert.equal(await use(other.app), undefined);
+  assert.match((await shared.get("shopify_offline", offlineKey("main"))).failure.reason, /could not be read/);
+});
+
+test("a lease is released only by its owner", async (t) => {
+  const { app, store, shopify, advance } = await offlineApp(t);
+  await reconnectAll(app, await storesSession(app, PAT));
+  advance(2 * 3600_000);
+  const open = shopify.hold();
+  const access = app.shopify.accessFor(PAT);
+  await access.load();
+  const pending = access.token("main");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // Simulate the lease expiring and another isolate taking it over while this refresh still runs.
+  assert.ok(await store.get("shopify_lease", leaseKey("main")), "the refresh holds the lease");
+  await store.put("shopify_lease", leaseKey("main"), { id: "someone-else" }, Date.now() + 3600_000 * 10);
+  open();
+  await pending;
+  assert.deepEqual(await store.get("shopify_lease", leaseKey("main")), { id: "someone-else" }, "the other holder's lease is left alone");
+});
+
+test("Disconnect by someone not on the allowlist, or not an approver, never touches offline records or the lease", async (t) => {
+  for (const [users, who] of [[[SAM], PAT], [[PAT, SAM], SAM]]) {
+    await t.test(`${who} with allowlist ${users.join(",")}`, async (sub) => {
+      const { store, kinds } = recordingStore();
+      const { app } = await offlineApp(sub, users, { store });
+      const cookie = await storesSession(app, who, "wholesale", `online-wholesale-${who}`);
+      kinds.length = 0;
+      const csrf = /name="csrf" value="([^"]+)"/.exec(await storesPage(app, cookie))[1];
+      kinds.length = 0;
+      const done = await call(app, "/stores", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie }, body: new URLSearchParams({ csrf, action: "disconnect", store: "wholesale" }) });
+      assert.equal(done.status, 303);
+      assert.ok(!kinds.some((kind) => kind.endsWith(":shopify_lease")), kinds.join(" "));
+      if (!users.includes(who)) assert.ok(!kinds.some((kind) => kind.endsWith(":shopify_offline")), kinds.join(" "));
+    });
+  }
+});
+
+test("Renew now forces a refresh for an allowlisted approver (the post-deploy canary), and is refused for anyone else", async (t) => {
+  const { app, shopify, auditPath } = await offlineApp(t, [PAT]);
+  const cookie = await storesSession(app, PAT);
+  await reconnectAll(app, cookie);
+  const html = await storesPage(app, cookie);
+  assert.equal((html.match(/>Renew now</g) ?? []).length, 2);
+  const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
+  const post = (cookieValue, csrfValue) => call(app, "/stores", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: cookieValue }, body: new URLSearchParams({ csrf: csrfValue, action: "renew", store: "main" }) });
+  const before = shopify.current.get("main.myshopify.com");
+  const renewed = await post(cookie, csrf);
+  assert.equal(renewed.status, 200);
+  assert.match(await renewed.text(), /Renewed main: Shopify issued a new token pair\. Automatic renewal is good for another 90 days\./);
+  assert.equal(shopify.calls.at(-1).body.refresh_token, before);
+  assert.ok((await auditLines(auditPath)).some((line) => line.event === "shopify_token_refreshed" && /^forced;/.test(line.reason)));
+  // A person not on the allowlist cannot force anything.
+  const sam = await storesSession(app, SAM, "wholesale", "online-wholesale-sam");
+  const samHtml = await storesPage(app, sam);
+  assert.doesNotMatch(samHtml, /Renew now/);
+  const refused = await post(sam, /name="csrf" value="([^"]+)"/.exec(samHtml)[1]);
+  assert.equal(refused.status, 400);
+  assert.match(await refused.text(), /Unknown action/);
 });

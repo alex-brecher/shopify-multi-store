@@ -21,6 +21,7 @@ type Operation =
   | { op: "get" | "take" | "delete"; kind: RecordKind; key: string }
   | { op: "put"; kind: RecordKind; key: string; value: unknown; expiresAt?: number }
   | { op: "claim"; kind: RecordKind; key: string; flag: string }
+  | { op: "putIfAbsent"; kind: RecordKind; key: string; value: unknown; expiresAt?: number }
   | { op: "increment"; kind: RecordKind; key: string; max?: number; expiresAt?: number }
   | { op: "deleteMatching"; kind: RecordKind; match: Record<string, string | number | boolean> }
   | { op: "count" | "entries"; kind: RecordKind };
@@ -137,6 +138,13 @@ export class OAuthStoreObject {
         await this.storage.put(storageKey(kind, operation.key), { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) });
         return { value: next, claimed: true };
       }
+      case "putIfAbsent": {
+        if (await this.live(kind, operation.key)) return false;
+        if (COUNTED.has(kind)) await this.adjustCount(kind, 1);
+        await this.storage.put(storageKey(kind, operation.key), { value: operation.value, ...(operation.expiresAt !== undefined ? { expiresAt: operation.expiresAt } : {}) });
+        await this.scheduleSweep();
+        return true;
+      }
       case "deleteMatching": {
         const doomed = (await this.all(kind)).filter(([, entry]) => matches(entry.value, operation.match)).map(([key]) => storageKey(kind, key));
         await this.deleteKeys(doomed);
@@ -226,6 +234,10 @@ export class DurableObjectStore implements OAuthStore {
 
   claim<T>(kind: RecordKind, key: string, flag: string): Promise<{ value: T; claimed: boolean } | undefined> {
     return this.call<{ value: T; claimed: boolean }>({ op: "claim", kind, key, flag });
+  }
+
+  async putIfAbsent<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<boolean> {
+    return (await this.call<boolean>({ op: "putIfAbsent", kind, key, value, ...(expiresAt !== undefined ? { expiresAt } : {}) })) === true;
   }
 
   async deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number> {

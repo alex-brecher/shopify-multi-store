@@ -1,6 +1,7 @@
 import { auditError } from "./audit.js";
 import { sha256 } from "./oauth.js";
-import { decryptToken, encryptToken } from "./shopify-connect.js";
+import { randomToken } from "../platform/crypto.js";
+import { decryptToken, decryptWithAnyKey, encryptToken } from "./shopify-connect.js";
 /**
  * Shopify expiring offline access tokens for the people on OFFLINE_TOKEN_USERS.
  *
@@ -43,7 +44,7 @@ export class OfflineTokenError extends Error {
 export function offlineKey(alias) {
     return sha256(`shopify-offline\0${alias.toLowerCase()}`);
 }
-function leaseKey(alias) {
+export function leaseKey(alias) {
     return sha256(`shopify-offline-lease\0${alias.toLowerCase()}`);
 }
 // Distinct AAD labels (no "@", so never an email) keep the access and refresh ciphertexts from
@@ -152,13 +153,17 @@ export class OfflineTokens {
         return expiringOfflineToken(result.payload);
     }
     // ---------- Single-flight lease ----------
-    /** Take the store's lease. Of concurrent callers on any isolate, exactly one gets it. */
+    /**
+     * Take the store's lease. Of concurrent callers on any isolate, exactly one gets it. Returns the
+     * lease id, which release() needs, or undefined when someone else holds it.
+     */
     async lease(store) {
-        const { applied } = await this.options.store.increment("counter", leaseKey(store.alias), { max: 1, expiresAt: this.now + LEASE_MS });
-        return applied;
+        const id = randomToken(16);
+        return (await this.options.store.putIfAbsent("shopify_lease", leaseKey(store.alias), { id }, this.now + LEASE_MS)) ? id : undefined;
     }
-    release(store) {
-        return this.options.store.delete("counter", leaseKey(store.alias));
+    /** Release only a lease this caller still owns (one that expired and was taken over is left alone). */
+    async release(id) {
+        await this.options.store.deleteMatching("shopify_lease", { id });
     }
     /**
      * Run work holding the store's lease, waiting for another holder to finish first. done(record)
@@ -168,12 +173,13 @@ export class OfflineTokens {
      */
     async withLease(store, work, done) {
         for (let step = 0; step <= WAIT_STEPS; step += 1) {
-            if (await this.lease(store)) {
+            const id = await this.lease(store);
+            if (id) {
                 try {
                     return await work();
                 }
                 finally {
-                    await this.release(store).catch(() => { });
+                    await this.release(id).catch(() => { });
                 }
             }
             if (step === WAIT_STEPS)
@@ -218,6 +224,8 @@ export class OfflineTokens {
     }
     /** Take one person off a store's approvers; with nobody left the record is deleted. */
     async remove(email, store) {
+        if (!(await this.authorizedFor(email, store)))
+            return;
         // Under the lease, so a refresh finishing at the same moment is not written over.
         await this.withLease(store, async () => {
             const record = await this.record(store);
@@ -269,20 +277,42 @@ export class OfflineTokens {
         }
         return this.decryptAccess(store, record);
     }
-    async decryptAccess(store, record) {
+    /**
+     * Decrypt one stored token. undefined only when no configured key can read it (the key was
+     * removed, or the value is damaged); any other failure throws a transient error and changes nothing.
+     */
+    async readable(store, value, label) {
         try {
-            return (await decryptToken(this.options.encryptionKeys, record.encryptedToken, binding(ACCESS_LABEL, store))).token;
+            return (await decryptToken(this.options.encryptionKeys, value, binding(label, store))).token;
         }
         catch {
-            const reason = "The stored token could not be read (encryption key changed). Reconnect the store.";
-            // Read outside the lease: mark it failed only if the pair is still the one that failed.
-            await this.withLease(store, async () => {
-                const current = await this.record(store);
-                if (current && !current.failure && current.encryptedToken === record.encryptedToken)
-                    await this.fail(store, current, reason, "unreadable").catch(() => { });
-            }).catch(() => { });
-            throw new OfflineTokenError("unreadable", reason);
+            // Try every configured key before calling it unreadable.
         }
+        try {
+            const token = await decryptWithAnyKey(this.options.encryptionKeys, value, binding(label, store));
+            if (token !== undefined) {
+                console.error(`Offline token for ${store.alias} was read with a key other than the one it names.`);
+                return token;
+            }
+        }
+        catch (error) {
+            await this.options.audit({ event: "shopify_refresh_failed", store: store.alias, reason: "stored token could not be decrypted just now; will retry", error: auditError(error) });
+            throw new OfflineTokenError("transient", `The connection to store "${store.alias}" could not be read just now. Try again in a minute.`);
+        }
+        return undefined;
+    }
+    async decryptAccess(store, record) {
+        const token = await this.readable(store, record.encryptedToken, ACCESS_LABEL);
+        if (token !== undefined)
+            return token;
+        const reason = "The stored token could not be read (encryption key changed). Reconnect the store.";
+        // Read outside the lease: mark it failed only if the pair is still the one that failed.
+        await this.withLease(store, async () => {
+            const current = await this.record(store);
+            if (current && !current.failure && current.encryptedToken === record.encryptedToken)
+                await this.fail(store, current, reason, "unreadable").catch(() => { });
+        }).catch(() => { });
+        throw new OfflineTokenError("unreadable", reason);
     }
     /**
      * Refresh the store's pair if it is still stale once this caller holds the lease. Callers in
@@ -292,9 +322,12 @@ export class OfflineTokens {
         const key = `${trigger}\0${store.alias.toLowerCase()}`;
         let pending = this.inflight.get(key);
         if (!pending) {
-            const stale = (record) => trigger === "use"
-                ? record.expiresAt - this.now < OFFLINE_REFRESH_WITHIN_MS
-                : this.now - record.issuedAt >= SCHEDULED_REFRESH_AFTER_MS;
+            // forced: an operator's "Renew now" (the post-deploy canary); always spends the refresh token.
+            const stale = (record) => trigger === "forced"
+                ? true
+                : trigger === "use"
+                    ? record.expiresAt - this.now < OFFLINE_REFRESH_WITHIN_MS
+                    : this.now - record.issuedAt >= SCHEDULED_REFRESH_AFTER_MS;
             pending = this.withLease(store, async () => {
                 const record = await this.record(store);
                 if (!record || record.failure || !stale(record))
@@ -312,20 +345,17 @@ export class OfflineTokens {
         const secret = this.options.clientSecret(store);
         if (!clientId || !secret)
             throw new OfflineTokenError("transient", `This server has no Shopify app credentials for store "${store.alias}".`);
-        let refreshToken;
-        try {
-            refreshToken = (await decryptToken(this.options.encryptionKeys, record.encryptedRefreshToken, binding(REFRESH_LABEL, store))).token;
-        }
-        catch {
+        const refreshToken = await this.readable(store, record.encryptedRefreshToken, REFRESH_LABEL);
+        if (refreshToken === undefined) {
             return this.fail(store, record, "The stored refresh token could not be read (encryption key changed). Reconnect the store.", "unreadable");
         }
         const result = await this.post(store, { client_id: clientId, client_secret: secret, grant_type: "refresh_token", refresh_token: refreshToken });
         if (!result.ok) {
-            // Only Shopify's documented answer for a dead refresh token (401 invalid_request: unknown,
-            // replaced, expired, revoked or uninstalled; or an OAuth invalid_grant) stops the store.
-            // Anything else (a wrong client secret, a frozen shop, 403, 404) is left for an operator
-            // to fix and retried later, so one bad setting does not disconnect every store.
-            const refused = (result.status === 401 && result.code !== "invalid_client") || (result.status === 400 && (result.code === "invalid_grant" || result.code === "invalid_request"));
+            // Only Shopify's documented answer for a dead refresh token, HTTP 401 with error
+            // invalid_request (unknown, replaced, expired, revoked or uninstalled), stops the store.
+            // Anything else (any 400, 401 invalid_client, a frozen shop, 403, 404, an HTML body, 5xx)
+            // is logged and retried later, so one bad setting or a Shopify hiccup disconnects nothing.
+            const refused = result.status === 401 && result.code === "invalid_request";
             if (refused) {
                 const reason = "Shopify refused the refresh token: it expired, was revoked, or the app was uninstalled. Reconnect the store.";
                 return this.fail(store, record, reason, "refused", result.error, result.status);

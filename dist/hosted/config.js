@@ -73,13 +73,21 @@ export function publicOrigin(env) {
  * people get Shopify's expiring offline tokens, renewed by the server, instead of 24-hour
  * per-user tokens. Unset or empty: nobody.
  */
-export function offlineTokenUsers(env) {
+export function offlineTokenUsers(env, warn = (message) => console.warn(message)) {
     const users = list(env.OFFLINE_TOKEN_USERS) ?? [];
-    for (const user of users) {
-        if (!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(user))
-            throw new Error("OFFLINE_TOKEN_USERS must be a comma-separated list of Shopify staff email addresses.");
-    }
-    return [...new Set(users.map((user) => user.toLowerCase()))];
+    // ASCII addresses only, folded with an ASCII-only lower case (no Unicode case folding), so no
+    // look-alike or locale-folded address can match someone else's. A bad entry is dropped with one
+    // warning; it never stops the server.
+    const valid = users.filter((user) => ASCII_EMAIL.test(user));
+    const dropped = users.length - valid.length;
+    if (dropped)
+        warn(`OFFLINE_TOKEN_USERS: ignored ${dropped} ${dropped === 1 ? "entry that is" : "entries that are"} not a plain ASCII email address.`);
+    return [...new Set(valid.map(asciiLower))];
+}
+const ASCII_EMAIL = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+/** Lower-case A-Z only. Other characters are left as they are. */
+export function asciiLower(value) {
+    return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
 }
 /**
  * Everything createHostedApp needs from the settings, for any platform. The caller adds the

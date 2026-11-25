@@ -16,6 +16,12 @@ type Operation = {
     key: string;
     flag: string;
 } | {
+    op: "putIfAbsent";
+    kind: RecordKind;
+    key: string;
+    value: unknown;
+    expiresAt?: number;
+} | {
     op: "increment";
     kind: RecordKind;
     key: string;
@@ -64,6 +70,7 @@ export declare class DurableObjectStore implements OAuthStore {
         value: T;
         claimed: boolean;
     } | undefined>;
+    putIfAbsent<T>(kind: RecordKind, key: string, value: T, expiresAt?: number): Promise<boolean>;
     deleteMatching(kind: RecordKind, match: Record<string, string | number | boolean>): Promise<number>;
     count(kind: RecordKind): Promise<number>;
     increment(kind: RecordKind, key: string, options?: IncrementOptions): Promise<{

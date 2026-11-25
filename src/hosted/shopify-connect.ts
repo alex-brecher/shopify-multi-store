@@ -8,6 +8,7 @@ import { THEME_COOKIE, cookie, escapeHtml, htmlPage, readCookie, sameOrigin, the
 import { PAGE_SIGN_IN_CLIENT, appendSetCookie, sha256, type AuthorizationServer, type PageSignInPurpose } from "./oauth.js";
 import type { OAuthStore } from "./store.js";
 import { OfflineTokenError, OfflineTokens, type OfflineTokenRecord } from "./offline-tokens.js";
+import { asciiLower } from "./config.js";
 
 /**
  * Shopify sign-in and per-user Shopify access for the hosted connector.
@@ -239,6 +240,27 @@ export async function decryptToken(keys: EncryptionKey[], value: string, binding
   throw new Error("Unknown encrypted token format.");
 }
 
+/**
+ * Last resort after decryptToken failed: try every configured key, whatever key id the value
+ * names. Undefined when none of them can read it (the key was removed, or the value is damaged).
+ */
+export async function decryptWithAnyKey(keys: EncryptionKey[], value: string, binding: Binding): Promise<string | undefined> {
+  const parts = value.split(".");
+  const v2 = parts[0] === TOKEN_FORMAT && parts.length === 5;
+  const v1 = parts[0] === "v1" && parts.length === 4;
+  if (!v2 && !v1) return undefined;
+  const [iv, tag, ciphertext] = (v2 ? parts.slice(2) : parts.slice(1)) as [string, string, string];
+  const aad = v2 ? tokenAad(TOKEN_FORMAT, parts[1]!, binding) : tokenAad("v1", "", binding);
+  for (const key of keys) {
+    try {
+      return await open(key.key, aad, iv, tag, ciphertext);
+    } catch {
+      // Not this key.
+    }
+  }
+  return undefined;
+}
+
 // ---------- Shopify request signatures ----------
 
 // One implementation for the connect script and the hosted connector: src/shopify-hmac.ts.
@@ -277,7 +299,9 @@ function onlineToken(payload: Record<string, unknown>): OnlineToken | { error: s
   }
   const associatedUser: ShopifyAssociatedUser = {
     id: String(rawUser.id),
-    email: rawUser.email.trim().toLowerCase(),
+    // ASCII-only lower case: Unicode folding could turn a look-alike address (a Kelvin sign
+    // "\u212A" folds to "k") into someone else's. Identical for ASCII addresses.
+    email: asciiLower(rawUser.email.trim()),
     emailVerified: true,
     ...(typeof rawUser.first_name === "string" ? { firstName: rawUser.first_name } : {}),
     ...(typeof rawUser.last_name === "string" ? { lastName: rawUser.last_name } : {}),
@@ -321,7 +345,7 @@ export class ShopifyConnections {
   constructor(private readonly options: ShopifyConnectOptions) {
     this.now = options.now ?? Date.now;
     this.fetcher = options.fetch ?? ((input, init) => fetch(input, init));
-    this.offlineUsers = new Set((options.offlineTokenUsers ?? []).map((email) => email.trim().toLowerCase()).filter(Boolean));
+    this.offlineUsers = new Set((options.offlineTokenUsers ?? []).map((email) => asciiLower(email.trim())).filter(Boolean));
     this.offline = new OfflineTokens({
       store: options.store,
       encryptionKeys: options.encryptionKeys,
@@ -342,7 +366,7 @@ export class ShopifyConnections {
 
   /** This person gets self-renewing offline tokens. */
   private offlineFor(email: string): boolean {
-    return this.offlineUsers.has(email.toLowerCase());
+    return this.offlineUsers.has(asciiLower(email));
   }
 
   /**
@@ -673,11 +697,15 @@ export class ShopifyConnections {
             : live
               ? [`<span class="pill ok">Connected</span>`, `As ${who}. Expires ${relativeTime(record.expiresAt, now)}.${record.expiresAt - now < RENEW_WITHIN_MS ? " Reconnect all renews it now." : ""}`]
               : [`<span class="pill warn">Expired</span>`, `Was ${who}. Expired ${relativeTime(record.expiresAt, now)}.`];
-      const connect = usableStore ? this.connectForm(session, store.alias, false, record ? "Reconnect" : "Connect") : "";
+      const connect = usableStore ? this.connectForm(session, store.alias, false, record || offline ? "Reconnect" : "Connect") : "";
+      // Allowlisted: renew this store's offline token now (the post-deploy canary in the runbook).
+      const renew = auto
+        ? `<form class="inline" method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="renew"><input type="hidden" name="store" value="${escapeHtml(store.alias)}"><button type="submit">Renew now</button></form>`
+        : "";
       const disconnect = record
         ? `<form class="inline" method="post" action="/stores">${csrfField}<input type="hidden" name="action" value="disconnect"><input type="hidden" name="store" value="${escapeHtml(store.alias)}"><button class="danger" type="submit">Disconnect</button></form>`
         : "";
-      return `<li class="store"><div class="store-main"><div class="store-name">${escapeHtml(store.alias)} ${pill}${isReadOnly(store.alias, session.email) ? ` <span class="pill off" title="Changes to this store are turned off for you on this server.">Read only</span>` : ""}</div><code class="muted">${escapeHtml(store.shop)}</code>${detail ? `<div class="muted">${detail}</div>` : ""}</div><div class="store-actions">${connect}${disconnect}</div></li>`;
+      return `<li class="store"><div class="store-main"><div class="store-name">${escapeHtml(store.alias)} ${pill}${isReadOnly(store.alias, session.email) ? ` <span class="pill off" title="Changes to this store are turned off for you on this server.">Read only</span>` : ""}</div><code class="muted">${escapeHtml(store.shop)}</code>${detail ? `<div class="muted">${detail}</div>` : ""}</div><div class="store-actions">${connect}${renew}${disconnect}</div></li>`;
     });
     const first = unconnected ? await this.nextUnconnected(session.email, [], rows) : undefined;
     const percent = total ? Math.round((ready / total) * 100) : 0;
@@ -768,13 +796,31 @@ ${note ? `<div class="warn"><p>${escapeHtml(note)}</p></div>` : ""}
       await this.options.store.delete("session", session.key);
       return htmlPage({ title: "Signed out", body: `<div class="card"><h1>Signed out</h1><p><a href="/stores">Sign in again</a>.</p></div>`, headers: { "set-cookie": cookie(SESSION_COOKIE, "", 0) } });
     }
+    if (action === "renew" && this.offlineFor(session.email)) {
+      const alias = form.get("store") ?? "";
+      const store = (await this.visibleStores()).find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
+      if (!store) return this.render(session, "That store was not found.", 404);
+      const approved = await this.offline.authorizedFor(session.email, store);
+      if (!approved || approved.failure) return this.render(session, `${store.alias} does not renew automatically for you yet. Reconnect it first.`, 400);
+      let message: string;
+      try {
+        const after = await this.offline.refreshIfStale(store, "forced");
+        message = after && !after.failure
+          ? `Renewed ${store.alias}: Shopify issued a new token pair. Automatic renewal is good for another ${Math.round((after.refreshExpiresAt - this.now()) / 86_400_000)} days.`
+          : `${store.alias} was not renewed${after?.failure ? `: ${after.failure.reason}` : "."}`;
+      } catch (error) {
+        message = `${store.alias} was not renewed: ${error instanceof Error ? error.message : "unknown error"}`;
+      }
+      return this.render(session, message);
+    }
     if (action === "disconnect") {
       const alias = form.get("store") ?? "";
       const store = (await this.visibleStores()).find((candidate) => candidate.alias.toLowerCase() === alias.toLowerCase());
       if (!store) return this.render(session, "That store was not found.", 404);
       await this.options.store.delete("shopify_token", tokenKey(session.email, store.alias));
-      // Off the store's offline approvers too; the token itself goes when nobody approves it.
-      if (this.offlineEnabled) await this.offline.remove(session.email, store);
+      // Allowlisted: off the store's offline approvers too; the token goes when nobody approves it.
+      // Everyone else's Disconnect never touches offline records or the store lease.
+      if (this.offlineFor(session.email)) await this.offline.remove(session.email, store);
       await this.options.auth.auditAuth({ event: "shopify_disconnected", user: session.email, store: store.alias });
       return redirect("/stores");
     }

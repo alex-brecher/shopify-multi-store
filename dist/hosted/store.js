@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 /** Every record kind, for stores that enumerate them. */
-export const RECORD_KINDS = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "shopify_offline", "revoked_family", "counter"];
+export const RECORD_KINDS = ["client", "pending", "code", "access", "refresh", "consent", "approval", "session", "shopify_state", "shopify_token", "shopify_offline", "shopify_lease", "revoked_family", "counter"];
 /** Every field in `match` equals the value's field of the same name. */
 export function matches(value, match) {
     if (!value || typeof value !== "object")
@@ -59,6 +59,14 @@ export class MemoryStore {
         this.data[kind][key] = { value: next, ...(entry.expiresAt !== undefined ? { expiresAt: entry.expiresAt } : {}) };
         await this.changed();
         return { value: next, claimed: true };
+    }
+    async putIfAbsent(kind, key, value, expiresAt) {
+        // Read and write with no await in between, as in claim().
+        if (this.live(kind, key))
+            return false;
+        this.data[kind][key] = { value, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+        await this.changed();
+        return true;
     }
     async increment(kind, key, options = {}) {
         // Read and write with no await in between, as in claim().

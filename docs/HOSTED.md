@@ -49,7 +49,7 @@ Shopify online tokens are per user and per store. Shopify ends each one after 24
 
 ### Self-renewing connections (`OFFLINE_TOKEN_USERS`)
 
-For the people named in `OFFLINE_TOKEN_USERS` (verified Shopify staff emails, the same email the audit log's `user` column shows for their `sign_in` events), the server keeps Shopify's [expiring offline access token](https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/offline-access-tokens) for each store they connect and renews it itself, so they do not reconnect every day. Everyone else keeps the 24-hour per-user tokens above, unchanged; with the variable unset or empty nothing changes for anyone.
+For the people named in `OFFLINE_TOKEN_USERS` (verified Shopify staff emails, the same email the audit log's `user` column shows for their `sign_in` events; plain ASCII addresses only, matched with an ASCII-only case fold; an entry that is not one is ignored with a warning in the logs and never stops the server), the server keeps Shopify's [expiring offline access token](https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/offline-access-tokens) for each store they connect and renews it itself, so they do not reconnect every day. Everyone else keeps the 24-hour per-user tokens above, unchanged; with the variable unset or empty nothing changes for anyone.
 
 - An offline token acts as the app with every scope the app was granted, not with the person's staff permissions. Name only people who should have that access on every store they can connect.
 - Connecting a store still starts with the person's own per-user authorization, which proves they are staff on that store with the same verified email. Only then does the server ask Shopify for the store's offline token (no `grant_options[]=per-user`, and `expiring=1` on the code exchange). Both steps pass without clicks while the person is logged in to the Shopify admin.
@@ -60,7 +60,9 @@ For the people named in `OFFLINE_TOKEN_USERS` (verified Shopify staff emails, th
 - Disconnect removes the person from the store's approvers; the offline token is deleted when nobody approves it any more.
 - Removing someone's staff account in Shopify does not end their offline access (the app's token stays valid). Take them off `OFFLINE_TOKEN_USERS` and redeploy, which ends it at once.
 - Shopify keeps one expiring offline token per app and store, so two servers (for example staging and production) using the same Shopify app with offline tokens retire each other's tokens. Give each deployment its own Shopify app.
-- Only Shopify's answer for a dead refresh token (HTTP 401 `invalid_request`) stops a store. Other refusals, such as a wrong client secret, are audited and retried, so fixing the setting is enough.
+- Only Shopify's answer for a dead refresh token, HTTP 401 with `"error": "invalid_request"`, stops a store. Everything else (any 400, 401 `invalid_client`, 402, 403, 404, an HTML body, 429, 5xx, a network error) is audited as `shopify_refresh_failed` and retried on the next use or scheduled run, with the record kept, so fixing a setting is enough. Likewise a stored token stops the store only when no configured encryption key can read it.
+- **Renew now** on `/stores` (allowlisted people, on stores they approved) forces a refresh right away and reports the result. It exists for the post-deploy canary and for checking a store by hand; it is audited as `shopify_token_refreshed` with reason `forced`.
+- Approvals are kept per store in `authorizedBy`. Taking someone off `OFFLINE_TOKEN_USERS` stops their use of offline tokens at once (and their Disconnect no longer touches offline records), but their email stays in `authorizedBy` until the store's record is replaced or expires; if they are added back, their earlier approvals count again. To clear it, have them Disconnect the store while still on the list, or let another approver reconnect it.
 
 ## Connect from your AI app
 
